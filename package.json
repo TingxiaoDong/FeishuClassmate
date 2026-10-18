@@ -31,11 +31,13 @@
     "asr-openclaw-bridge": "node scripts/asr-openclaw-bridge.mjs",
     "format": "prettier --write .",
     "classmate": "tsx src/runtime/cli-main.ts",
-    "classmate:scheduler": "tsx src/runtime/cli-main.ts scheduler"
+    "classmate:scheduler": "tsx src/runtime/cli-main.ts scheduler",
+    "classmateos": "tsx classmateos/server/main.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "@sinclair/typebox": "0.34.48",
+    "fastify": "^5.12.7",
     "node-cron": "^4.2.1",
     "yaml": "^2.9.1",
     "zod": "^4.3.6"

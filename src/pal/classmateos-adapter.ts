@@ -135,7 +135,9 @@ class CosIm implements ImService {
     });
   }
 
-  async askUser(params: Parameters<ImService['askUser']>[0]) {
+  async askUser(
+    params: Parameters<ImService['askUser']>[0],
+  ): Promise<PalResult<{ answer: string; timedOut: boolean }>> {
     // P1：发卡片后经 /cards/{id}/actions + WS 事件回流。P0 先发卡不等回答。
     const res = await this.sendMessage({
       receiveId: params.userId,
@@ -146,7 +148,7 @@ class CosIm implements ImService {
         options: params.options ?? [],
       },
     });
-    if (!res.ok) return res;
+    if (!res.ok) return { ok: false, error: res.error, code: res.code };
     return { ok: true, value: { answer: '', timedOut: true } };
   }
 }
