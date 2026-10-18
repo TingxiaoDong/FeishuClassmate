@@ -20,6 +20,9 @@ export interface ValidationError {
   message: string;
 }
 
+/** 迁移溯源字段（P4）：飞书源 record_id，允许写入但不在 schema.ts 中定义。 */
+export const MIGRATION_META_FIELDS = new Set(['feishu_record_id']);
+
 function optionsOf(field: FieldDef): string[] | undefined {
   const opts = field.property?.options;
   if (!Array.isArray(opts)) return undefined;
@@ -35,6 +38,10 @@ export function validateRecordFields(
   const byName = new Map(table.fields.map((f) => [f.field_name, f]));
 
   for (const [name, value] of Object.entries(fields)) {
+    if (MIGRATION_META_FIELDS.has(name)) {
+      if (typeof value !== 'string') errors.push({ field: name, message: 'expected string (migration meta)' });
+      continue;
+    }
     const def = byName.get(name);
     if (!def) {
       errors.push({ field: name, message: `unknown field for table ${table.key}` });

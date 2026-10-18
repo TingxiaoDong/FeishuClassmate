@@ -81,6 +81,8 @@ function tableSql(def) {
   const fieldNames = new Set(def.fields.map((f) => f.field_name));
   const cols = [
     'record_id text PRIMARY KEY',
+    // 迁移溯源（P4）：飞书源 record_id，用于灰度对账与幂等去重。
+    'feishu_record_id text',
     ...def.fields.map(columnSql),
     // System columns — skipped when the Bitable schema already defines them.
     ...(fieldNames.has('created_at') ? [] : ['created_at timestamptz NOT NULL DEFAULT now()']),

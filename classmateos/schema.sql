@@ -6,6 +6,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS "projects" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "project_id" text,
   "title" text,
   "owner_open_id" jsonb,
@@ -20,6 +21,7 @@ COMMENT ON TABLE "projects" IS 'Projects';
 
 CREATE TABLE IF NOT EXISTS "gantt" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "gantt_id" text,
   "project_id" text,
   "owner_open_id" jsonb,
@@ -35,6 +37,7 @@ COMMENT ON TABLE "gantt" IS 'Gantt';
 
 CREATE TABLE IF NOT EXISTS "equipment" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "equipment_id" text,
   "name" text,
   "location" text,
@@ -51,6 +54,7 @@ COMMENT ON TABLE "equipment" IS 'Equipment';
 
 CREATE TABLE IF NOT EXISTS "research" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "report_id" text,
   "week" text,
   "topic" text,
@@ -64,6 +68,7 @@ COMMENT ON TABLE "research" IS 'Research';
 
 CREATE TABLE IF NOT EXISTS "weekly_digests" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "digest_id" text,
   "week" text,
   "doc_token" text,
@@ -78,6 +83,7 @@ COMMENT ON TABLE "weekly_digests" IS 'WeeklyDigests';
 
 CREATE TABLE IF NOT EXISTS "submissions" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "submission_id" text,
   "paper_id" text,
   "title" text,
@@ -95,6 +101,7 @@ COMMENT ON TABLE "submissions" IS 'Submissions';
 
 CREATE TABLE IF NOT EXISTS "standups" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "standup_id" text,
   "date" text,
   "student_open_id" jsonb,
@@ -108,6 +115,7 @@ COMMENT ON TABLE "standups" IS 'Standups';
 
 CREATE TABLE IF NOT EXISTS "tool_trace" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "trace_id" text,
   "tool_name" text,
   "session_key" text,
@@ -124,6 +132,7 @@ COMMENT ON TABLE "tool_trace" IS 'ToolTrace';
 
 CREATE TABLE IF NOT EXISTS "papers" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "paper_id" text,
   "title" text,
   "authors" text,
@@ -144,6 +153,7 @@ COMMENT ON TABLE "papers" IS 'Papers';
 
 CREATE TABLE IF NOT EXISTS "experiments" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "exp_id" text,
   "project_id" text,
   "student_open_id" jsonb,
@@ -162,6 +172,7 @@ COMMENT ON TABLE "experiments" IS 'Experiments';
 
 CREATE TABLE IF NOT EXISTS "reservations" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "reservation_id" text,
   "equipment_id" text,
   "requester_open_id" jsonb,
@@ -176,6 +187,7 @@ COMMENT ON TABLE "reservations" IS 'Reservations';
 
 CREATE TABLE IF NOT EXISTS "assignments" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "assign_id" text,
   "assigner_open_id" jsonb,
   "assignee_open_id" jsonb,
@@ -194,6 +206,7 @@ COMMENT ON TABLE "assignments" IS 'Assignments';
 
 CREATE TABLE IF NOT EXISTS "training_runs" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "run_id" text,
   "project_id" text,
   "student_open_id" jsonb,
@@ -217,6 +230,7 @@ COMMENT ON TABLE "training_runs" IS 'TrainingRuns';
 
 CREATE TABLE IF NOT EXISTS "checkpoints" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "ckpt_id" text,
   "run_id" text,
   "tag" text,
@@ -235,6 +249,7 @@ COMMENT ON TABLE "checkpoints" IS 'Checkpoints';
 
 CREATE TABLE IF NOT EXISTS "sim_runs" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "sim_id" text,
   "ckpt_id" text,
   "simulator" text CHECK ("simulator" IS NULL OR "simulator" IN ('MuJoCo', 'IsaacGym', 'PyBullet', 'Gazebo', 'RoboSuite', '其他')),
@@ -252,6 +267,7 @@ COMMENT ON TABLE "sim_runs" IS 'SimRuns';
 
 CREATE TABLE IF NOT EXISTS "skill_tree" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "entry_id" text,
   "student_open_id" jsonb,
   "skill_tag" text[] CHECK ("skill_tag" IS NULL OR "skill_tag" <@ ARRAY['MuJoCo', 'IsaacGym', 'PyBullet', 'Gazebo', 'ROS', 'ROS2', 'MoveIt', 'PyTorch', 'JAX', 'TF2', 'RL', 'IL', 'Diffusion-Policy', 'Python', 'C++', 'CUDA', 'Docker', 'K8s', 'Slurm', 'URDF', 'MJCF', 'CAD', 'Fusion360', 'Solidworks', 'SLAM', 'RTABMap', 'Cartographer', 'ArUco', 'AprilTag', 'ORCA', 'FCL', 'OptiTrack', 'Vicon', 'Git', 'Linux', 'LaTeX', 'HuggingFace', 'OpenVLA', 'RT-2', 'Open3D', 'PCL', 'ROS-Perception']::text[]),
@@ -268,6 +284,7 @@ COMMENT ON TABLE "skill_tree" IS 'SkillTree';
 
 CREATE TABLE IF NOT EXISTS "reading_group" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "session_id" text,
   "date" timestamptz,
   "presenter_open_id" jsonb,
@@ -286,6 +303,7 @@ COMMENT ON TABLE "reading_group" IS 'ReadingGroup';
 
 CREATE TABLE IF NOT EXISTS "one_on_ones" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "meeting_id" text,
   "supervisor_open_id" jsonb,
   "student_open_id" jsonb,
@@ -301,6 +319,7 @@ COMMENT ON TABLE "one_on_ones" IS 'OneOnOnes';
 
 CREATE TABLE IF NOT EXISTS "failure_archive" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "failure_id" text,
   "reporter_open_id" jsonb,
   "title" text,
@@ -322,6 +341,7 @@ COMMENT ON TABLE "failure_archive" IS 'FailureArchive';
 
 CREATE TABLE IF NOT EXISTS "lab_faq" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "faq_id" text,
   "question" text,
   "answer_md" text,
@@ -339,6 +359,7 @@ COMMENT ON TABLE "lab_faq" IS 'LabFAQ';
 
 CREATE TABLE IF NOT EXISTS "mentor_answers" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "answer_id" text,
   "question_text" text,
   "asker_open_id" jsonb,
@@ -354,6 +375,7 @@ COMMENT ON TABLE "mentor_answers" IS 'MentorAnswers';
 
 CREATE TABLE IF NOT EXISTS "lab_memes" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "meme_id" text,
   "content_text" text,
   "image_attachments" jsonb,
@@ -370,6 +392,7 @@ COMMENT ON TABLE "lab_memes" IS 'LabMemes';
 
 CREATE TABLE IF NOT EXISTS "task_decomposition" (
   record_id text PRIMARY KEY,
+  feishu_record_id text,
   "task_id" text,
   "supervision_session_id" text,
   "student_open_id" jsonb,
