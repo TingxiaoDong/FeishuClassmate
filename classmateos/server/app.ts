@@ -23,6 +23,7 @@ import { LocalFileStore } from './files.js';
 import { buildDashboardSummary } from './dashboard.js';
 import { canAccessRecord, filterAccessible } from './row-access.js';
 import { CollabHub, collabTextFromUpdate } from './collab.js';
+import { MemoryPushProvider, type Device, type PushProvider } from './push.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -43,6 +44,8 @@ export interface AppOptions {
   eventBus?: BotEventBus;
   /** 文件存储；缺省用内存临时目录的 LocalFileStore。 */
   fileStore?: LocalFileStore;
+  /** 推送 provider；缺省 MemoryPushProvider（真实 APNs/FCM 属外部环境项）。 */
+  pushProvider?: PushProvider;
 }
 
 interface StoredMessage {
@@ -179,6 +182,80 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!chats.has(chat_id)) return reply.code(404).send({ message: 'chat not found' });
     const items = [...(messages.get(chat_id) ?? [])].reverse();
     return { items, has_more: false };
+  });
+
+  // ---------------- 推送通知（设备注册 + 消息事件触发） ----------------
+
+  const pushProvider = opts.pushProvider ?? new MemoryPushProvider();
+  const devices = new Map<string, Device>();
+
+  app.post('/api/v1/devices', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { platform, device_token } = (req.body ?? {}) as { platform?: string; device_token?: string };
+    if ((platform !== 'ios' && platform !== 'android') || !device_token) {
+      return reply.code(400).send({ message: 'platform(ios|android) and device_token required' });
+    }
+    // 同一 token 重复注册 → 幂等更新归属（换绑账号场景）
+    const existing = [...devices.values()].find((d) => d.device_token === device_token);
+    if (existing) {
+      existing.user_id = p.sub;
+      existing.platform = platform;
+      return existing;
+    }
+    const device: Device = {
+      device_id: `dev_${randomUUID()}`,
+      user_id: p.sub,
+      platform,
+      device_token,
+      created_at: new Date().toISOString(),
+    };
+    devices.set(device.device_id, device);
+    return reply.code(201).send(device);
+  });
+
+  app.get('/api/v1/devices', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    return { items: [...devices.values()].filter((d) => d.user_id === p.sub) };
+  });
+
+  app.delete('/api/v1/devices/:device_id', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { device_id } = req.params as { device_id: string };
+    const device = devices.get(device_id);
+    if (!device) return reply.code(404).send({ message: 'device not found' });
+    if (device.user_id !== p.sub && p.role !== 'admin') {
+      return reply.code(403).send({ message: 'only owner can unregister' });
+    }
+    devices.delete(device_id);
+    return reply.code(204).send();
+  });
+
+  // 消息事件 → 会话成员（除发送者）名下设备推送。推送失败不阻塞业务。
+  eventBus.subscribe((e) => {
+    if (e.event_type !== 'message.receive' || !e.message) return;
+    const chat = chats.get(String(e.message.chat_id ?? ''));
+    if (!chat) return;
+    const senderId = String(e.message.sender_id ?? '');
+    const senderName = opts.users.find((u) => u.user_id === senderId)?.name ?? senderId;
+    const text = typeof e.message.content === 'object' && e.message.content
+      ? String((e.message.content as Record<string, unknown>).text ?? `[${String(e.message.msg_type)}]`)
+      : `[${String(e.message.msg_type)}]`;
+    for (const memberId of chat.member_ids) {
+      if (memberId === senderId) continue;
+      for (const d of devices.values()) {
+        if (d.user_id !== memberId) continue;
+        void pushProvider
+          .send(d.device_token, d.platform, {
+            title: chat.name ?? senderName,
+            body: `${senderName}: ${text}`,
+            data: { chat_id: chat.chat_id, message_id: String(e.message.message_id ?? '') },
+          })
+          .catch(() => undefined);
+      }
+    }
   });
 
   // ---------------- bot 网关 ----------------
