@@ -12,11 +12,14 @@
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ALL_TABLES, type TableDef } from '../../src/bitable/schema.js';
 import { signToken, verifyToken } from './auth.js';
 import { MemoryTableStore, type TableStore } from './store.js';
 import { validateRecordFields } from './validation.js';
 import { BotEventBus } from './events.js';
+import { LocalFileStore } from './files.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -35,6 +38,8 @@ export interface AppOptions {
   botToken?: string;
   store?: TableStore;
   eventBus?: BotEventBus;
+  /** 文件存储；缺省用内存临时目录的 LocalFileStore。 */
+  fileStore?: LocalFileStore;
 }
 
 interface StoredMessage {
@@ -360,6 +365,65 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       socket.send(JSON.stringify(e));
     });
     socket.on('close', unsubscribe);
+  });
+
+  // ---------------- 文件（预签名语义，本地存储 P1） ----------------
+
+  const fileStore =
+    opts.fileStore ??
+    new LocalFileStore({
+      dir: join(tmpdir(), `classmateos-files-${process.pid}`),
+      urlPrefix: '/api/v1/files',
+      secret: opts.secret,
+    });
+
+  // 原始字节上传的 body parser
+  app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+
+  app.post('/api/v1/files/upload-url', async (req, reply) => {
+    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const { file_name, size, content_type } = (req.body ?? {}) as {
+      file_name?: string;
+      size?: number;
+      content_type?: string;
+    };
+    if (!file_name || typeof size !== 'number') {
+      return reply.code(400).send({ message: 'file_name and size required' });
+    }
+    const g = fileStore.requestUpload({ fileName: file_name, size, contentType: content_type });
+    return { file_key: g.fileKey, upload_url: g.uploadUrl, expires_in: g.expiresIn };
+  });
+
+  app.get('/api/v1/files/:file_key/download-url', async (req, reply) => {
+    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const { file_key } = req.params as { file_key: string };
+    const grant = fileStore.getDownload(file_key);
+    if (!grant) return reply.code(404).send({ message: 'file not found' });
+    return { download_url: grant.downloadUrl, expires_in: grant.expiresIn };
+  });
+
+  // 签名直传/直取（无需登录态，凭 URL 签名）
+  app.put('/api/v1/files/:file_key/content', async (req, reply) => {
+    const { file_key } = req.params as { file_key: string };
+    const { exp, sig } = req.query as { exp?: string; sig?: string };
+    if (!exp || !sig || !fileStore.verify(file_key, 'put', Number(exp), sig)) {
+      return reply.code(403).send({ message: 'invalid or expired signature' });
+    }
+    const body = req.body;
+    if (!Buffer.isBuffer(body)) return reply.code(400).send({ message: 'binary body required' });
+    await fileStore.write(file_key, body);
+    return reply.code(201).send({ file_key, size: body.length });
+  });
+
+  app.get('/api/v1/files/:file_key/content', async (req, reply) => {
+    const { file_key } = req.params as { file_key: string };
+    const { exp, sig } = req.query as { exp?: string; sig?: string };
+    if (!exp || !sig || !fileStore.verify(file_key, 'get', Number(exp), sig)) {
+      return reply.code(403).send({ message: 'invalid or expired signature' });
+    }
+    const data = await fileStore.read(file_key);
+    if (!data) return reply.code(404).send({ message: 'file not found' });
+    return reply.type('application/octet-stream').send(data);
   });
 
   return app;
