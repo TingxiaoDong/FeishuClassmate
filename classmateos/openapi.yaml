@@ -23,6 +23,8 @@ tags:
   - name: tables
   - name: files
   - name: bot
+  - name: calendar
+  - name: tasks
 
 paths:
   # ---------------------------------------------------------------------------
@@ -438,6 +440,122 @@ paths:
       responses:
         '101': { description: Switching Protocols }
 
+  # ---------------------------------------------------------------------------
+  # 日历 / 任务（P1：会议排期、帮扶提醒）
+  # ---------------------------------------------------------------------------
+  /calendar/events:
+    get:
+      tags: [calendar]
+      summary: 查询时间窗内的日程
+      parameters:
+        - { name: from, in: query, required: true, schema: { type: integer, format: int64 }, description: ms 时间戳 }
+        - { name: to, in: query, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '200':
+          description: 日程列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/CalendarEvent' } }
+    post:
+      tags: [calendar]
+      summary: 创建日程
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, start_ms, end_ms]
+              properties:
+                title: { type: string }
+                start_ms: { type: integer, format: int64 }
+                end_ms: { type: integer, format: int64 }
+                attendee_ids: { type: array, items: { type: string } }
+                description: { type: string }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CalendarEvent' }
+        '422': { description: 时间窗非法（end<=start） }
+
+  /calendar/events/{event_id}:
+    delete:
+      tags: [calendar]
+      summary: 删除日程
+      parameters:
+        - { name: event_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已删除 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tasks:
+    get:
+      tags: [tasks]
+      summary: 任务列表（可按指派人/状态过滤）
+      parameters:
+        - { name: assignee_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string, enum: [pending, in_progress, done, cancelled] } }
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/TaskItem' } }
+    post:
+      tags: [tasks]
+      summary: 创建任务（帮扶提醒等场景）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string }
+                assignee_id: { type: string }
+                due_ms: { type: integer, format: int64 }
+                description: { type: string }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskItem' }
+
+  /tasks/{task_id}:
+    patch:
+      tags: [tasks]
+      summary: 更新任务（状态/标题/截止时间）
+      parameters:
+        - { name: task_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                status: { type: string, enum: [pending, in_progress, done, cancelled] }
+                due_ms: { type: integer, format: int64 }
+                description: { type: string }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TaskItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -555,6 +673,31 @@ components:
             user_id: { type: string }
             action: { type: string }
             form_values: { type: object, additionalProperties: true }
+
+    CalendarEvent:
+      type: object
+      required: [event_id, title, start_ms, end_ms, created_by]
+      properties:
+        event_id: { type: string }
+        title: { type: string }
+        start_ms: { type: integer, format: int64 }
+        end_ms: { type: integer, format: int64 }
+        attendee_ids: { type: array, items: { type: string } }
+        description: { type: string }
+        created_by: { type: string }
+
+    TaskItem:
+      type: object
+      required: [task_id, title, status, created_by, created_at]
+      properties:
+        task_id: { type: string }
+        title: { type: string }
+        status: { type: string, enum: [pending, in_progress, done, cancelled] }
+        assignee_id: { type: string }
+        due_ms: { type: integer, format: int64 }
+        description: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
 
 security:
   - bearerAuth: []

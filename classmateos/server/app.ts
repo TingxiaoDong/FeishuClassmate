@@ -426,5 +426,149 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return reply.type('application/octet-stream').send(data);
   });
 
+  // ---------------- 日历 / 任务（P1：会议排期、帮扶提醒） ----------------
+
+  interface StoredEvent {
+    event_id: string;
+    title: string;
+    start_ms: number;
+    end_ms: number;
+    attendee_ids: string[];
+    description?: string;
+    created_by: string;
+  }
+  interface StoredTask {
+    task_id: string;
+    title: string;
+    status: 'pending' | 'in_progress' | 'done' | 'cancelled';
+    assignee_id?: string;
+    due_ms?: number;
+    description?: string;
+    created_by: string;
+    created_at: string;
+  }
+  const events = new Map<string, StoredEvent>();
+  const tasks = new Map<string, StoredTask>();
+  const TASK_STATUSES = new Set(['pending', 'in_progress', 'done', 'cancelled']);
+
+  app.post('/api/v1/calendar/events', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const body = (req.body ?? {}) as {
+      title?: string;
+      start_ms?: number;
+      end_ms?: number;
+      attendee_ids?: string[];
+      description?: string;
+    };
+    if (!body.title || typeof body.start_ms !== 'number' || typeof body.end_ms !== 'number') {
+      return reply.code(400).send({ message: 'title, start_ms, end_ms required' });
+    }
+    if (body.end_ms <= body.start_ms) {
+      return reply.code(422).send({ message: 'end_ms must be after start_ms' });
+    }
+    const ev: StoredEvent = {
+      event_id: `evt_cal_${randomUUID()}`,
+      title: body.title,
+      start_ms: body.start_ms,
+      end_ms: body.end_ms,
+      attendee_ids: [...new Set([p.sub, ...(body.attendee_ids ?? [])])],
+      description: body.description,
+      created_by: p.sub,
+    };
+    events.set(ev.event_id, ev);
+    return reply.code(201).send(ev);
+  });
+
+  app.get('/api/v1/calendar/events', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { from, to } = req.query as { from?: string; to?: string };
+    const fromMs = Number(from);
+    const toMs = Number(to);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+      return reply.code(400).send({ message: 'from and to (ms) required' });
+    }
+    // 只返回本人参与或创建的、与时间窗相交的日程
+    const items = [...events.values()]
+      .filter(
+        (e) =>
+          (e.created_by === p.sub || e.attendee_ids.includes(p.sub)) &&
+          e.end_ms > fromMs &&
+          e.start_ms < toMs,
+      )
+      .sort((a, b) => a.start_ms - b.start_ms);
+    return { items };
+  });
+
+  app.delete('/api/v1/calendar/events/:event_id', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { event_id } = req.params as { event_id: string };
+    const ev = events.get(event_id);
+    if (!ev) return reply.code(404).send({ message: 'event not found' });
+    if (ev.created_by !== p.sub) return reply.code(403).send({ message: 'only creator can delete' });
+    events.delete(event_id);
+    return reply.code(204).send();
+  });
+
+  app.post('/api/v1/tasks', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const body = (req.body ?? {}) as {
+      title?: string;
+      assignee_id?: string;
+      due_ms?: number;
+      description?: string;
+    };
+    if (!body.title) return reply.code(400).send({ message: 'title required' });
+    const task: StoredTask = {
+      task_id: `task_${randomUUID()}`,
+      title: body.title,
+      status: 'pending',
+      assignee_id: body.assignee_id,
+      due_ms: body.due_ms,
+      description: body.description,
+      created_by: p.sub,
+      created_at: new Date().toISOString(),
+    };
+    tasks.set(task.task_id, task);
+    return reply.code(201).send(task);
+  });
+
+  app.get('/api/v1/tasks', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { assignee_id, status } = req.query as { assignee_id?: string; status?: string };
+    let items = [...tasks.values()];
+    // 可见性：本人创建的或指派给本人的
+    items = items.filter((t) => t.created_by === p.sub || t.assignee_id === p.sub);
+    if (assignee_id) items = items.filter((t) => t.assignee_id === assignee_id);
+    if (status) items = items.filter((t) => t.status === status);
+    return { items };
+  });
+
+  app.patch('/api/v1/tasks/:task_id', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { task_id } = req.params as { task_id: string };
+    const task = tasks.get(task_id);
+    if (!task) return reply.code(404).send({ message: 'task not found' });
+    if (task.created_by !== p.sub && task.assignee_id !== p.sub) {
+      return reply.code(403).send({ message: 'only creator or assignee can update' });
+    }
+    const body = (req.body ?? {}) as Partial<StoredTask>;
+    if (body.status !== undefined) {
+      if (!TASK_STATUSES.has(body.status)) {
+        return reply.code(422).send({ message: `status must be one of: ${[...TASK_STATUSES].join(', ')}` });
+      }
+      task.status = body.status;
+    }
+    if (body.title !== undefined) task.title = body.title;
+    if (body.due_ms !== undefined) task.due_ms = body.due_ms;
+    if (body.description !== undefined) task.description = body.description;
+    return task;
+  });
+
   return app;
 }
