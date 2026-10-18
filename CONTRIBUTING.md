@@ -5,7 +5,7 @@ Thanks for your interest! 本项目欢迎各种形式的贡献 — 新 skill / b
 ## 快速开始
 
 ```bash
-git clone https://github.com/BaiTianHaoNian/feishu-classmate.git
+git clone https://github.com/TingxiaoDong/FeishuClassmate.git
 cd feishu-classmate
 pnpm install
 pnpm build && pnpm typecheck && pnpm test

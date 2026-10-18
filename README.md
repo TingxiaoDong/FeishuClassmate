@@ -82,7 +82,7 @@
 
 ```bash
 # 克隆 + 装依赖
-git clone https://github.com/BaiTianHaoNian/feishu-classmate.git
+git clone https://github.com/TingxiaoDong/FeishuClassmate.git
 cd feishu-classmate
 pnpm install
 
@@ -314,7 +314,7 @@ feishu-classmate/
   title  = {Feishu Classmate: A Lab-Scenario AI Assistant on OpenClaw + MetaClaw},
   author = {Feishu Classmate Contributors},
   year   = {2026},
-  url    = {https://github.com/BaiTianHaoNian/feishu-classmate},
+  url    = {https://github.com/TingxiaoDong/FeishuClassmate},
   note   = {Built on @larksuite/openclaw-lark and aiming-lab/MetaClaw (skills mode)}
 }
 ```
