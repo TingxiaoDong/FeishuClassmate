@@ -6,6 +6,7 @@
  * POST /bot/messages（X-Bot-Token），其余走用户态 bearer。
  */
 
+import type { BotEventSource } from './bot-events.js';
 import type {
   AuthProvider,
   CalendarService,
@@ -29,6 +30,11 @@ export interface ClassmateOSAdapterOptions {
   /** Bot 令牌（/bot/* 端点，X-Bot-Token）。 */
   botToken?: string;
   timeoutMs?: number;
+  /**
+   * Bot 事件源（WsBotEventSource）。提供后 askUser 会发送卡片并阻塞等待
+   * 对应 card_id 的 card.action 事件（带 timeout）。
+   */
+  eventSource?: BotEventSource;
 }
 
 class Http {
@@ -107,7 +113,10 @@ function toUser(raw: Record<string, unknown>): PalUser {
 }
 
 class CosIm implements ImService {
-  constructor(private readonly http: Http) {}
+  constructor(
+    private readonly http: Http,
+    private readonly eventSource?: BotEventSource,
+  ) {}
 
   async sendMessage(params: Parameters<ImService['sendMessage']>[0]): Promise<PalResult<PalMessage>> {
     const res = await this.http.call<Record<string, unknown>>(
@@ -138,18 +147,39 @@ class CosIm implements ImService {
   async askUser(
     params: Parameters<ImService['askUser']>[0],
   ): Promise<PalResult<{ answer: string; timedOut: boolean }>> {
-    // P1：发卡片后经 /cards/{id}/actions + WS 事件回流。P0 先发卡不等回答。
+    const cardId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const res = await this.sendMessage({
       receiveId: params.userId,
       receiveIdType: 'user_id',
       msgType: 'interactive_card',
       content: {
+        card_id: cardId,
         question: params.question,
         options: params.options ?? [],
       },
     });
     if (!res.ok) return { ok: false, error: res.error, code: res.code };
-    return { ok: true, value: { answer: '', timedOut: true } };
+
+    // 无事件源：发完即返回（退化为异步卡片，回答经 WS 另行处理）。
+    if (!this.eventSource) return { ok: true, value: { answer: '', timedOut: true } };
+
+    const timeoutMs = params.timeoutMs ?? 60_000;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        unsubscribe();
+        resolve({ ok: true, value: { answer: '', timedOut: true } });
+      }, timeoutMs);
+      const unsubscribe = this.eventSource!.onEvent((event) => {
+        if (event.event_type !== 'card.action') return;
+        if (event.card_action?.card_id !== cardId) return;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve({
+          ok: true,
+          value: { answer: event.card_action.action, timedOut: false },
+        });
+      });
+    });
   }
 }
 
@@ -219,7 +249,7 @@ export function createClassmateOSAdapter(opts: ClassmateOSAdapterOptions): Platf
   return {
     id: 'classmateos',
     auth: new CosAuth(http),
-    im: new CosIm(http),
+    im: new CosIm(http, opts.eventSource),
     table: new CosTable(http),
     doc: unimplemented<DocService>('doc'),
     drive: unimplemented<DriveService>('drive'),

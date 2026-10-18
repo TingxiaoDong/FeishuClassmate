@@ -35,10 +35,12 @@
     "classmateos": "tsx classmateos/server/main.ts"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.3.4",
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "@sinclair/typebox": "0.34.48",
     "fastify": "^5.12.7",
     "node-cron": "^4.2.1",
+    "ws": "^8.22.0",
     "yaml": "^2.9.1",
     "zod": "^4.3.6"
   },
@@ -57,6 +59,7 @@
   "devDependencies": {
     "@types/node": "^25.2.3",
     "@types/node-cron": "^3.0.11",
+    "@types/ws": "^8.18.2",
     "openclaw": "^2026.4.10",
     "prettier": "^3.8.1",
     "tsdown": "^0.21.4",

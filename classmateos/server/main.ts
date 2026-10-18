@@ -17,7 +17,7 @@ const users: PlatformUser[] = process.env.CLASSMATE_OS_USERS
       { user_id: 'ou_demo', name: 'demo', password: 'demo', role: 'member' },
   ];
 
-const app = buildApp({ users, secret, botToken });
+const app = await buildApp({ users, secret, botToken });
 app
   .listen({ port, host: '0.0.0.0' })
   .then(() => console.log(`ClassmateOS listening on :${port} (memory store, ${users.length} users)`))

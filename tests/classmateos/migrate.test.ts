@@ -31,7 +31,7 @@ function fakeReader(): BitableReader {
 }
 
 async function setup() {
-  const app = buildApp({
+  const app = await buildApp({
     users: [{ user_id: 'ou_admin', name: 'admin', password: 'pw', role: 'admin' }],
     secret: 's',
     botToken: 'b',

@@ -10,11 +10,13 @@
  */
 
 import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import fastifyWebsocket from '@fastify/websocket';
 import { randomUUID } from 'node:crypto';
 import { ALL_TABLES, type TableDef } from '../../src/bitable/schema.js';
 import { signToken, verifyToken } from './auth.js';
 import { MemoryTableStore, type TableStore } from './store.js';
 import { validateRecordFields } from './validation.js';
+import { BotEventBus } from './events.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -32,6 +34,7 @@ export interface AppOptions {
   /** Bot 网关令牌（X-Bot-Token）。 */
   botToken?: string;
   store?: TableStore;
+  eventBus?: BotEventBus;
 }
 
 interface StoredMessage {
@@ -55,9 +58,12 @@ function bearer(req: FastifyRequest): string | undefined {
   return h?.startsWith('Bearer ') ? h.slice(7) : undefined;
 }
 
-export function buildApp(opts: AppOptions): FastifyInstance {
+export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  // websocket 插件必须先就绪，{websocket:true} 路由才能正确注册 upgrade 处理。
+  await app.register(fastifyWebsocket);
   const store = opts.store ?? new MemoryTableStore();
+  const eventBus = opts.eventBus ?? new BotEventBus();
   const chats = new Map<string, StoredChat>();
   const messages = new Map<string, StoredMessage[]>(); // chat_id → messages
   const tableDefs = new Map<string, TableDef>(ALL_TABLES.map((t) => [t.key, t]));
@@ -152,6 +158,8 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     if (!msg_type || !content) return reply.code(400).send({ message: 'msg_type and content required' });
     const msg = insertMessage(chat_id, p.sub, msg_type, content);
     if (!msg) return reply.code(404).send({ message: 'chat not found' });
+    // 用户消息 → 推送给大脑（bot 自己发的消息不回推，避免自循环）
+    eventBus.publish({ event_type: 'message.receive', message: msg as unknown as Record<string, unknown> });
     return reply.code(201).send(msg);
   });
 
@@ -291,6 +299,46 @@ export function buildApp(opts: AppOptions): FastifyInstance {
     }
     return reply.code(204).send();
   });
+
+  // ---------------- 卡片交互（ask_user_question 回流） ----------------
+
+  app.post('/api/v1/cards/:card_id/actions', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { card_id } = req.params as { card_id: string };
+    const { action, form_values } = (req.body ?? {}) as {
+      action?: string;
+      form_values?: Record<string, unknown>;
+    };
+    if (!action) return reply.code(400).send({ message: 'action required' });
+    eventBus.publish({
+      event_type: 'card.action',
+      card_action: { card_id, user_id: p.sub, action, form_values },
+    });
+    return reply.code(202).send({ accepted: true });
+  });
+
+  // ---------------- bot 事件 WS（大脑订阅入口） ----------------
+
+  app.get(
+    '/api/v1/bot/events/ws',
+    {
+      websocket: true,
+      // 握手前校验 bot 令牌：错误令牌直接 401，而不是升级后再 close。
+      preValidation: async (req, reply) => {
+        if ((req.headers as Record<string, unknown>)['x-bot-token'] !== opts.botToken) {
+          await reply.code(401).send({ message: 'invalid bot token' });
+        }
+      },
+    },
+    (socket, req) => {
+      // 可选断点续传：?since=<event_id>
+      const { since } = req.query as { since?: string };
+      eventBus.replay(since, (e) => socket.send(JSON.stringify(e)));
+      const unsubscribe = eventBus.subscribe((e) => socket.send(JSON.stringify(e)));
+      socket.on('close', unsubscribe);
+    },
+  );
 
   return app;
 }

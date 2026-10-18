@@ -13,8 +13,8 @@ const USERS = [
   { user_id: 'ou_bob', name: 'bob', password: 'pw2', role: 'member' as const },
 ];
 
-function makeApp(): FastifyInstance {
-  return buildApp({ users: USERS, secret: 'test-secret', botToken: 'btok' });
+async function makeApp(): Promise<FastifyInstance> {
+  return buildApp({ users: USERS, secret: "test-secret", botToken: "btok" });
 }
 
 async function login(app: FastifyInstance, name = 'alice', password = 'pw1'): Promise<string> {
@@ -29,7 +29,7 @@ async function login(app: FastifyInstance, name = 'alice', password = 'pw1'): Pr
 
 describe('ClassmateOS server (P1 MVP)', () => {
   it('auth: login → users/me → users list', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const token = await login(app);
 
     const me = await app.inject({
@@ -56,7 +56,7 @@ describe('ClassmateOS server (P1 MVP)', () => {
   });
 
   it('tables: meta exposes 23 张表；records CRUD + 单选校验 + 过滤', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const token = await login(app);
     const auth = { authorization: `Bearer ${token}` };
 
@@ -128,7 +128,7 @@ describe('ClassmateOS server (P1 MVP)', () => {
   });
 
   it('IM: 建群 → 发消息 → bot 代发 → 拉历史', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const token = await login(app);
     const auth = { authorization: `Bearer ${token}` };
 
@@ -173,7 +173,7 @@ describe('ClassmateOS server (P1 MVP)', () => {
   });
 
   it('端到端: PAL ClassmateOSAdapter ↔ 真 server', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     await app.listen({ port: 0, host: '127.0.0.1' });
     const addr = app.server.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
