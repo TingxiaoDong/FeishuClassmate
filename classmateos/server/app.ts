@@ -21,6 +21,7 @@ import { validateRecordFields } from './validation.js';
 import { BotEventBus } from './events.js';
 import { LocalFileStore } from './files.js';
 import { buildDashboardSummary } from './dashboard.js';
+import { canAccessRecord, filterAccessible } from './row-access.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -246,16 +247,19 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   };
 
   app.get('/api/v1/tables/:table_key/records', async (req, reply) => {
-    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
     const { table_key } = req.params as { table_key: string };
-    if (!resolveTable(table_key, reply)) return;
+    const def = resolveTable(table_key, reply);
+    if (!def) return;
     const q = req.query as { filter?: string; sort?: string; page_size?: string; page_token?: string };
-    return store.list(table_key, {
+    const page = await store.list(table_key, {
       filter: q.filter,
       sort: q.sort,
       pageSize: Math.min(Number(q.page_size) || 100, 500),
       pageToken: q.page_token,
     });
+    return { ...page, items: filterAccessible(p, def, page.items) };
   });
 
   app.post('/api/v1/tables/:table_key/records', async (req, reply) => {
@@ -273,19 +277,28 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   app.get('/api/v1/tables/:table_key/records/:record_id', async (req, reply) => {
-    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
     const { table_key, record_id } = req.params as { table_key: string; record_id: string };
-    if (!resolveTable(table_key, reply)) return;
+    const def = resolveTable(table_key, reply);
+    if (!def) return;
     const rec = await store.get(table_key, record_id);
-    if (!rec) return reply.code(404).send({ message: 'record not found' });
+    if (!rec || !canAccessRecord(p, def, rec)) {
+      return reply.code(404).send({ message: 'record not found' });
+    }
     return rec;
   });
 
   app.patch('/api/v1/tables/:table_key/records/:record_id', async (req, reply) => {
-    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
     const { table_key, record_id } = req.params as { table_key: string; record_id: string };
     const def = resolveTable(table_key, reply);
     if (!def) return;
+    const existing = await store.get(table_key, record_id);
+    if (!existing || !canAccessRecord(p, def, existing)) {
+      return reply.code(404).send({ message: 'record not found' });
+    }
     const { fields } = (req.body ?? {}) as { fields?: Record<string, unknown> };
     if (!fields || typeof fields !== 'object') {
       return reply.code(400).send({ message: 'fields object required' });
@@ -298,9 +311,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
 
   app.delete('/api/v1/tables/:table_key/records/:record_id', async (req, reply) => {
-    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
     const { table_key, record_id } = req.params as { table_key: string; record_id: string };
-    if (!resolveTable(table_key, reply)) return;
+    const def = resolveTable(table_key, reply);
+    if (!def) return;
+    const existing = await store.get(table_key, record_id);
+    if (!existing || !canAccessRecord(p, def, existing)) {
+      return reply.code(404).send({ message: 'record not found' });
+    }
     if (!(await store.delete(table_key, record_id))) {
       return reply.code(404).send({ message: 'record not found' });
     }
