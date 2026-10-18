@@ -1,0 +1,546 @@
+# ClassmateOS OpenAPI 草案（PLAN §3-P0 交付物④）
+#
+# 覆盖平台后端 MVP（P1）所需的最小面：
+#   - 账号/组织（替代飞书 OAuth+通讯录，user_id 对齐 open_id）
+#   - IM（单聊/群聊/bot 消息/卡片交互/ask_user_question 等价物）
+#   - 表格引擎（替代 Bitable：表/字段/记录 CRUD，DDL 由 schema-to-sql.mjs 生成）
+#   - 文件（MinIO S3 预签名上传/下载）
+#   - Bot 网关（平台事件 WS push → 大脑 runtime；大脑 → 平台消息 REST）
+#
+# 文档/云盘/日历/任务为 P1+，此草案不覆盖。
+
+openapi: 3.0.3
+info:
+  title: ClassmateOS API
+  version: 0.1.0-draft
+  description: 飞书同学自研四端协作平台后端（替代飞书 OpenAPI 的最小面）。
+servers:
+  - url: http://localhost:8080/api/v1
+tags:
+  - name: auth
+  - name: users
+  - name: im
+  - name: tables
+  - name: files
+  - name: bot
+
+paths:
+  # ---------------------------------------------------------------------------
+  # 账号 / 组织
+  # ---------------------------------------------------------------------------
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: 账号密码登录，返回访问令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, refresh_token, user]
+                properties:
+                  access_token: { type: string, description: JWT，默认 2h }
+                  refresh_token: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: 刷新访问令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: 新令牌对
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  refresh_token: { type: string }
+
+  /users/me:
+    get:
+      tags: [users]
+      summary: 当前用户信息
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+  /users:
+    get:
+      tags: [users]
+      summary: 组织成员列表（通讯录）
+      parameters:
+        - { name: keyword, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 50 } }
+      responses:
+        '200':
+          description: 成员分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/User' } }
+                  has_more: { type: boolean }
+                  total: { type: integer }
+
+  # ---------------------------------------------------------------------------
+  # IM
+  # ---------------------------------------------------------------------------
+  /chats:
+    get:
+      tags: [im]
+      summary: 我的会话列表（单聊+群聊）
+      responses:
+        '200':
+          description: 会话分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Chat' } }
+                  has_more: { type: boolean }
+    post:
+      tags: [im]
+      summary: 创建会话（单聊或群聊）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [member_ids]
+              properties:
+                name: { type: string, description: 群名；单聊可空 }
+                member_ids: { type: array, items: { type: string } }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Chat' }
+
+  /chats/{chat_id}/messages:
+    get:
+      tags: [im]
+      summary: 拉取消息历史（倒序分页）
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+        - { name: before_message_id, in: query, schema: { type: string } }
+        - { name: page_size, in: query, schema: { type: integer, default: 30 } }
+      responses:
+        '200':
+          description: 消息分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Message' } }
+                  has_more: { type: boolean }
+    post:
+      tags: [im]
+      summary: 发送消息（文本/富文本/卡片）
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [msg_type, content]
+              properties:
+                msg_type:
+                  type: string
+                  enum: [text, post, image, file, interactive_card]
+                content:
+                  type: object
+                  description: 按 msg_type 而定；interactive_card 时为卡片 JSON
+      responses:
+        '201':
+          description: 已发送
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+
+  /chats/{chat_id}/messages/{message_id}/read:
+    post:
+      tags: [im]
+      summary: 已读回执（标记本人已读至该消息）
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已记录 }
+
+  /cards/{card_id}/actions:
+    post:
+      tags: [im]
+      summary: 卡片交互回调（ask_user_question 等价物）
+      description: >-
+        大脑发出的交互卡片上按钮/表单被点击后，客户端调用此接口；
+        平台把回答通过 Bot 事件 WS 推送给大脑 runtime，恢复被挂起的会话。
+      parameters:
+        - { name: card_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, description: 按钮 value / 表单 action id }
+                form_values: { type: object, additionalProperties: true }
+      responses:
+        '202': { description: 已受理，将异步推送给 bot }
+
+  # ---------------------------------------------------------------------------
+  # 表格引擎（替代 Bitable；底层表结构见 classmateos/schema.sql）
+  # ---------------------------------------------------------------------------
+  /tables:
+    get:
+      tags: [tables]
+      summary: 表清单（23 张核心表 + 元信息）
+      responses:
+        '200':
+          description: 表定义列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TableMeta' }
+
+  /tables/{table_key}/records:
+    get:
+      tags: [tables]
+      summary: 查询记录（过滤/排序/分页）
+      parameters:
+        - { $ref: '#/components/parameters/tableKey' }
+        - name: filter
+          in: query
+          schema: { type: string }
+          description: 简化过滤表达式，如 status="进行中" AND progress<50
+        - { name: sort, in: query, schema: { type: string }, description: 如 due_date asc }
+        - { name: page_token, in: query, schema: { type: string } }
+        - { name: page_size, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        '200':
+          description: 记录分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Record' } }
+                  has_more: { type: boolean }
+                  page_token: { type: string }
+    post:
+      tags: [tables]
+      summary: 新建记录
+      parameters:
+        - { $ref: '#/components/parameters/tableKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fields]
+              properties:
+                fields: { $ref: '#/components/schemas/RecordFields' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+        '422': { description: 字段校验失败（类型/单选值越界） }
+
+  /tables/{table_key}/records/{record_id}:
+    get:
+      tags: [tables]
+      summary: 读取单条记录
+      parameters:
+        - { $ref: '#/components/parameters/tableKey' }
+        - { $ref: '#/components/parameters/recordId' }
+      responses:
+        '200':
+          description: 记录
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [tables]
+      summary: 更新记录（部分字段）
+      parameters:
+        - { $ref: '#/components/parameters/tableKey' }
+        - { $ref: '#/components/parameters/recordId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fields]
+              properties:
+                fields: { $ref: '#/components/schemas/RecordFields' }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Record' }
+    delete:
+      tags: [tables]
+      summary: 删除记录
+      parameters:
+        - { $ref: '#/components/parameters/tableKey' }
+        - { $ref: '#/components/parameters/recordId' }
+      responses:
+        '204': { description: 已删除 }
+
+  # ---------------------------------------------------------------------------
+  # 文件（MinIO 预签名）
+  # ---------------------------------------------------------------------------
+  /files/upload-url:
+    post:
+      tags: [files]
+      summary: 申请上传预签名 URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_name, size]
+              properties:
+                file_name: { type: string }
+                size: { type: integer, format: int64 }
+                content_type: { type: string }
+      responses:
+        '200':
+          description: 预签名 URL 与 file_key
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  file_key: { type: string }
+                  upload_url: { type: string }
+                  expires_in: { type: integer }
+
+  /files/{file_key}/download-url:
+    get:
+      tags: [files]
+      summary: 获取下载预签名 URL
+      parameters:
+        - { name: file_key, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 下载 URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  download_url: { type: string }
+                  expires_in: { type: integer }
+
+  # ---------------------------------------------------------------------------
+  # Bot 网关（大脑 ↔ 平台）
+  # ---------------------------------------------------------------------------
+  /bot/messages:
+    post:
+      tags: [bot]
+      summary: 大脑代 bot 发送消息/卡片
+      security:
+        - botToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receive_id, msg_type, content]
+              properties:
+                receive_id: { type: string, description: chat_id 或 user_id }
+                receive_id_type: { type: string, enum: [chat_id, user_id], default: chat_id }
+                msg_type: { type: string, enum: [text, post, interactive_card] }
+                content: { type: object }
+                reply_to: { type: string, description: 被回复的 message_id }
+      responses:
+        '201':
+          description: 已发送
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+
+  /bot/events/ws:
+    get:
+      tags: [bot]
+      summary: Bot 事件长连接（WebSocket upgrade）
+      description: >-
+        大脑 runtime 连接此端点接收平台事件：message.receive（用户消息）、
+        card.action（ask_user_question 回答）、message.read 等。
+        事件帧格式见 components.schemas.BotEvent。
+      security:
+        - botToken: []
+      responses:
+        '101': { description: Switching Protocols }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    botToken:
+      type: apiKey
+      in: header
+      name: X-Bot-Token
+
+  parameters:
+    chatId:
+      name: chat_id
+      in: path
+      required: true
+      schema: { type: string }
+    tableKey:
+      name: table_key
+      in: path
+      required: true
+      schema:
+        type: string
+        description: 内部表 key（projects/gantt/equipment/...，见 schema.sql）
+    recordId:
+      name: record_id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Unauthorized:
+      description: 未认证或令牌过期
+    NotFound:
+      description: 资源不存在
+
+  schemas:
+    User:
+      type: object
+      required: [user_id, name]
+      properties:
+        user_id: { type: string, description: 对齐飞书 open_id 的稳定 ID }
+        name: { type: string }
+        email: { type: string }
+        avatar_file_key: { type: string }
+        role: { type: string, enum: [admin, member, bot] }
+
+    Chat:
+      type: object
+      required: [chat_id, chat_type]
+      properties:
+        chat_id: { type: string }
+        chat_type: { type: string, enum: [p2p, group] }
+        name: { type: string }
+        member_ids: { type: array, items: { type: string } }
+        last_message: { $ref: '#/components/schemas/Message' }
+        unread_count: { type: integer }
+
+    Message:
+      type: object
+      required: [message_id, chat_id, sender_id, msg_type, created_at]
+      properties:
+        message_id: { type: string }
+        chat_id: { type: string }
+        sender_id: { type: string, description: user_id；bot 消息为 bot 的 user_id }
+        msg_type: { type: string, enum: [text, post, image, file, interactive_card, system] }
+        content: { type: object, additionalProperties: true }
+        reply_to: { type: string }
+        created_at: { type: string, format: date-time }
+        read_by: { type: array, items: { type: string } }
+
+    TableMeta:
+      type: object
+      required: [key, name, fields]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        fields:
+          type: array
+          items:
+            type: object
+            properties:
+              field_name: { type: string }
+              type: { type: integer, description: 沿用 Bitable 字段类型编号 }
+              options: { type: array, items: { type: string } }
+
+    RecordFields:
+      type: object
+      additionalProperties: true
+      description: 字段名 → 值；类型规则与 Bitable 相同（人员=[{"id"}], 日期=ms 时间戳, 单选=字符串）
+
+    Record:
+      type: object
+      required: [record_id, fields]
+      properties:
+        record_id: { type: string }
+        fields: { $ref: '#/components/schemas/RecordFields' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BotEvent:
+      type: object
+      required: [event_id, event_type, created_at]
+      properties:
+        event_id: { type: string }
+        event_type:
+          type: string
+          enum: [message.receive, card.action, message.read, chat.member_added]
+        created_at: { type: string, format: date-time }
+        message: { $ref: '#/components/schemas/Message' }
+        card_action:
+          type: object
+          properties:
+            card_id: { type: string }
+            user_id: { type: string }
+            action: { type: string }
+            form_values: { type: object, additionalProperties: true }
+
+security:
+  - bearerAuth: []
