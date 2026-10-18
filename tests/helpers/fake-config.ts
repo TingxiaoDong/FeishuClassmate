@@ -37,10 +37,16 @@ export function createFakeConfig(overrides?: Partial<ClassmateConfig>): Classmat
       sidecarUrl: 'http://127.0.0.1:8091',
       mockMode: true,
     },
+    arc: {
+      sidecarUrl: 'http://127.0.0.1:8092',
+      mockMode: true,
+    },
     schedules: {
       ganttCheckCron: '0 9 * * *',
       equipmentPatrolCron: '30 8 * * *',
       idleLoopCron: '0 22 * * 1-5',
+      projectProgressCheckCron: '0 14 * * *',
+      weeklyReportCron: '0 18 * * 0',
     },
     supervision: {
       defaultIntervalMinutes: 10,

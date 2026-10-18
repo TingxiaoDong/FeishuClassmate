@@ -1,0 +1,47 @@
+# 飞书同学本地配置模板（PLAN §1.2-A5）
+# 复制为 classmate.config.yaml 并填写真实值；所有字段均可被同名环境变量覆盖。
+
+feishu:
+  appId: ""            # 或 env FEISHU_APP_ID
+  appSecret: ""        # 或 env FEISHU_APP_SECRET
+  domain: feishu       # feishu | lark
+
+bitable:
+  appToken: ""         # 或 env FEISHU_BITABLE_APP_TOKEN
+  tableIds:
+    projects: ""
+    gantt: ""
+    equipment: ""
+    research: ""
+    tool_trace: ""
+
+docs:
+  tourTemplate: ""     # 导览母版 Doc token/url；或 env FEISHU_DOC_TOUR_TEMPLATE
+
+labInfo:
+  name: Our Lab
+  supervisorName: ""
+  memberCount: 6
+  broadcastChatId: ""
+  specialAreas: []
+
+temi:
+  sidecarUrl: http://127.0.0.1:8091   # 或 env TEMI_SIDECAR_URL
+  mockMode: true                       # 或 env TEMI_MOCK
+
+arc:
+  sidecarUrl: http://127.0.0.1:8092   # 或 env ARC_SIDECAR_URL
+  mockMode: true                       # 或 env ARC_MOCK
+
+schedules:
+  ganttCheckCron: "0 9 * * *"
+  equipmentPatrolCron: "30 8 * * *"
+  idleLoopCron: "0 22 * * 1-5"
+  projectProgressCheckCron: "0 14 * * *"
+  weeklyReportCron: "0 18 * * 0"
+
+supervision:
+  defaultIntervalMinutes: 10
+  maxDurationHours: 8
+
+# 大脑（MetaClaw proxy）走环境变量：METACLAW_URL / CLASSMATE_MODEL / METACLAW_API_KEY

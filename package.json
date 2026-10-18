@@ -29,7 +29,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "asr-openclaw-bridge": "node scripts/asr-openclaw-bridge.mjs",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "classmate": "tsx src/runtime/cli-main.ts",
+    "classmate:scheduler": "tsx src/runtime/cli-main.ts scheduler"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.60.0",
@@ -56,6 +58,7 @@
     "openclaw": "^2026.4.10",
     "prettier": "^3.8.1",
     "tsdown": "^0.21.4",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^4.1.1"
   },
