@@ -1,0 +1,13 @@
+name: classmateos_client
+description: ClassmateOS 四端共用 API 层（模型 + REST 客户端），对齐 classmateos/openapi.yaml。
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  http: ^1.2.0
+
+# Flutter 应用（移动/桌面四端 UI）在 P1 后半初始化，
+# 届时本包作为纯 Dart 依赖引入（path dependency）。

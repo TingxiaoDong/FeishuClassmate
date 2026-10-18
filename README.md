@@ -298,6 +298,65 @@ feishu-classmate/
 
 ---
 
+## 🧪 ClassmateOS 新栈（迁移中，分支 `feat/classmateos-runtime`）
+
+按 [PLAN](Temi/PLAN.md) 进行的两件事：① 大脑从 OpenClaw 切到自研轻量 Runtime（`src/runtime/`）；② 飞书替换为自研四端平台 ClassmateOS（`classmateos/`）。旧栈（OpenClaw 插件）不受影响，双跑可回切。
+
+### 架构映射
+
+```
+skills/ (8 个 SKILL.md，不动)
+   │ 调用
+Platform Tools ──► src/pal/（PAL：Auth/IM/Table/Doc/Drive/Calendar 六组抽象）
+   ├── FeishuAdapter        保底线（现有 FeishuClient，灰度可回切）
+   └── ClassmateOSAdapter   目标线（REST + WS 事件）
+        │
+classmateos/server/         Fastify + PostgreSQL（schema.sql 由 schema.ts 机械翻译）
+        │ WS message.receive
+src/runtime/bot-gateway.ts  Bot 网关：事件 → 大脑 runSession → 回复
+        │
+src/runtime/brain.ts        自研大脑：ClassmateRuntime（30+ tool 零改动经 compat-api 接入）
+        │ OpenAI 兼容 + X-Session-Id / X-Turn-Type / flush_session
+MetaClaw proxy :30000/v1    skills 注入 + 蒸馏闭环（不变）
+```
+
+### 新栈 Quick Start
+
+```bash
+pnpm install
+
+# 1. 起平台后端（内存存储；DATABASE_URL=postgres://... 即切 PG，先执行 classmateos/schema.sql 建库）
+pnpm classmateos                                   # :8080
+
+# 2. 起大脑网关（需 MetaClaw proxy；mock 开发可先不起，LLM 调用会失败但链路其余部分可用）
+export CLASSMATE_OS_BOT_TOKEN=dev-bot-token
+export CLASSMATE_OS_TOKEN=<登录 /api/v1/auth/login 拿到的 access_token>
+pnpm classmate gateway
+
+# 3. 其他子命令
+pnpm classmate status                              # 配置/连通性
+pnpm classmate scheduler                           # 五个定时任务独立进程（脱离 gateway）
+node scripts/schema-to-sql.mjs                     # 重新生成 PostgreSQL DDL
+
+# 4. 数据迁移（飞书 → 平台，先 --dry-run）
+pnpm tsx classmateos/server/migrate-main.ts --dry-run
+pnpm tsx classmateos/server/migrate-main.ts --tables projects,gantt,equipment,research,tool_trace
+```
+
+### 新栈目录
+
+```
+src/runtime/       AgentRuntime 接口、会话循环、MetaClaw client、zod→JSON Schema 适配、
+                   config/skills 加载器、scheduler、CLI、compat-api、tool-trace、bot-gateway
+src/pal/           六组平台抽象 + Feishu/ClassmateOS 双 Adapter + WS 事件源
+classmateos/
+├── openapi.yaml   平台 API 草案（15 端点）
+├── schema.sql     23 表 PostgreSQL DDL（生成物，勿手改）
+└── server/        Fastify MVP：auth/IM/tables/bot + 事件总线 + Pg/Memory 双存储 + 迁移脚本
+```
+
+---
+
 ## 🙏 Related Projects
 
 - [aiming-lab/MetaClaw](https://github.com/aiming-lab/MetaClaw) — 透明 LLM 代理 · skills 模式 · memory layer
