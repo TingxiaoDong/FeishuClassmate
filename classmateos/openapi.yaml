@@ -418,9 +418,23 @@ paths:
       description: >-
         大脑 runtime 连接此端点接收平台事件：message.receive（用户消息）、
         card.action（ask_user_question 回答）、message.read 等。
-        事件帧格式见 components.schemas.BotEvent。
+        事件帧格式见 components.schemas.BotEvent。支持 ?since=<event_id> 断点续传。
       security:
         - botToken: []
+      responses:
+        '101': { description: Switching Protocols }
+
+  /events/ws:
+    get:
+      tags: [im]
+      summary: 用户态事件长连接（四端实时收消息）
+      description: >-
+        客户端（Flutter 四端）连接此端点接收本人所在会话的新消息事件
+        （message.receive，含 bot 回复）。浏览器/移动端不便设自定义头，
+        JWT 走 ?token=<access_token>；非本会话成员收不到消息。
+      security: []
+      parameters:
+        - { name: token, in: query, required: true, schema: { type: string } }
       responses:
         '101': { description: Switching Protocols }
 

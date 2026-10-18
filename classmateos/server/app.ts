@@ -147,6 +147,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     const list = messages.get(chatId) ?? [];
     list.push(msg);
     messages.set(chatId, list);
+    // 所有消息都进事件总线：bot 网关按 sender_id === 'bot' 自行过滤防回环，
+    // 用户态 WS 按会话成员过滤推送给四端。
+    eventBus.publish({ event_type: 'message.receive', message: msg as unknown as Record<string, unknown> });
     return msg;
   };
 
@@ -158,8 +161,6 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!msg_type || !content) return reply.code(400).send({ message: 'msg_type and content required' });
     const msg = insertMessage(chat_id, p.sub, msg_type, content);
     if (!msg) return reply.code(404).send({ message: 'chat not found' });
-    // 用户消息 → 推送给大脑（bot 自己发的消息不回推，避免自循环）
-    eventBus.publish({ event_type: 'message.receive', message: msg as unknown as Record<string, unknown> });
     return reply.code(201).send(msg);
   });
 
@@ -339,6 +340,27 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       socket.on('close', unsubscribe);
     },
   );
+
+  // ---------------- 用户态 WS（四端实时收消息） ----------------
+  //
+  // 浏览器/移动端不便设自定义头，令牌走 ?token=<jwt>。
+  // 只推送本人所在会话的消息（按 chats 成员关系过滤）。
+
+  app.get('/api/v1/events/ws', { websocket: true }, (socket, req) => {
+    const { token } = req.query as { token?: string };
+    const payload = token ? verifyToken(token, opts.secret) : undefined;
+    if (!payload) {
+      socket.close(4401, 'invalid token');
+      return;
+    }
+    const unsubscribe = eventBus.subscribe((e) => {
+      if (e.event_type !== 'message.receive' || !e.message) return;
+      const chat = chats.get(String(e.message.chat_id ?? ''));
+      if (!chat?.member_ids.includes(payload.sub)) return;
+      socket.send(JSON.stringify(e));
+    });
+    socket.on('close', unsubscribe);
+  });
 
   return app;
 }
