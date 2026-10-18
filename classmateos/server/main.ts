@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
  * ClassmateOS backend entry: `pnpm classmateos` (tsx).
- * P1 内存存储 + 环境变量注入用户；P2 切 PostgreSQL。
+ * 默认内存存储；设置 DATABASE_URL 即切 PostgreSQL（需 pnpm add pg，
+ * 库表由 classmateos/schema.sql 初始化）。
  */
 import { buildApp, type PlatformUser } from './app.js';
+import type { TableStore } from './store.js';
 
 const port = Number(process.env.CLASSMATE_OS_PORT ?? 8080);
 const secret = process.env.CLASSMATE_OS_SECRET ?? 'dev-only-secret-change-me';
@@ -17,10 +19,20 @@ const users: PlatformUser[] = process.env.CLASSMATE_OS_USERS
       { user_id: 'ou_demo', name: 'demo', password: 'demo', role: 'member' },
   ];
 
-const app = await buildApp({ users, secret, botToken });
+let store: TableStore | undefined;
+let storeDesc = 'memory store';
+if (process.env.DATABASE_URL) {
+  const { default: pg } = await import('pg');
+  const { PgTableStore } = await import('./pg-store.js');
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  store = new PgTableStore(pool);
+  storeDesc = `postgres (${process.env.DATABASE_URL.replace(/\/\/.*@/, '//***@')})`;
+}
+
+const app = await buildApp({ users, secret, botToken, store });
 app
   .listen({ port, host: '0.0.0.0' })
-  .then(() => console.log(`ClassmateOS listening on :${port} (memory store, ${users.length} users)`))
+  .then(() => console.log(`ClassmateOS listening on :${port} (${storeDesc}, ${users.length} users)`))
   .catch((err) => {
     console.error(err);
     process.exit(1);
