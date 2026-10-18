@@ -640,6 +640,21 @@ paths:
         '200': { description: 已更新 }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /docs/{doc_id}/collab:
+    get:
+      tags: [docs]
+      summary: 协同编辑 WebSocket（Yjs 同步协议；升级请求）
+      description: |
+        浏览器/移动端经 `?token=<jwt>` 鉴权。连接后走 y-protocols 消息：
+        type 0 = sync（step1/step2/update），type 1 = awareness（转发）。
+        最后一个连接断开时服务端把 Yjs 全量 update 持久化并回填 markdown。
+        鉴权失败以 4401 关闭，文档不存在以 4404 关闭。
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+        - { name: token, in: query, required: true, schema: { type: string } }
+      responses:
+        '101': { description: 协议升级，进入 Yjs 同步 }
+
   /dashboard/summary:
     get:
       tags: [dashboard]

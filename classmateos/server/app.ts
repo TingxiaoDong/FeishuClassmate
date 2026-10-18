@@ -22,6 +22,7 @@ import { BotEventBus } from './events.js';
 import { LocalFileStore } from './files.js';
 import { buildDashboardSummary } from './dashboard.js';
 import { canAccessRecord, filterAccessible } from './row-access.js';
+import { CollabHub, collabTextFromUpdate } from './collab.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -598,8 +599,40 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     markdown: string;
     created_by: string;
     updated_at: string;
+    /** 协同编辑持久化态（Yjs encodeStateAsUpdate 的 base64）；存在时优先于 markdown。 */
+    yjs_update?: string;
   }
   const docs = new Map<string, StoredDoc>();
+
+  // 协同编辑枢纽：房间首建播种 / 末连接断开持久化
+  const collabHub = new CollabHub({
+    loadSeed: (docId) => {
+      const d = docs.get(docId);
+      return d ? { markdown: d.markdown, yjs_update: d.yjs_update } : undefined;
+    },
+    onPersist: (docId, yjsUpdate) => {
+      const d = docs.get(docId);
+      if (!d) return;
+      d.yjs_update = yjsUpdate;
+      d.markdown = collabTextFromUpdate(yjsUpdate);
+      d.updated_at = new Date().toISOString();
+    },
+  });
+
+  // 协同编辑 WS：/api/v1/docs/:doc_id/collab?token=<jwt>
+  app.get('/api/v1/docs/:doc_id/collab', { websocket: true }, (socket, req) => {
+    const { doc_id } = req.params as { doc_id: string };
+    const { token } = req.query as { token?: string };
+    if (!token || !verifyToken(token, opts.secret)) {
+      socket.close(4401, 'invalid token');
+      return;
+    }
+    if (!docs.has(doc_id)) {
+      socket.close(4404, 'doc not found');
+      return;
+    }
+    collabHub.handleConnection(doc_id, socket);
+  });
 
   app.post('/api/v1/docs', async (req, reply) => {
     const p = authUser(req);
@@ -642,7 +675,11 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (doc.created_by !== p.sub) return reply.code(403).send({ message: 'only creator can update' });
     const { title, markdown } = (req.body ?? {}) as { title?: string; markdown?: string };
     if (title !== undefined) doc.title = title;
-    if (markdown !== undefined) doc.markdown = markdown;
+    if (markdown !== undefined) {
+      doc.markdown = markdown;
+      // REST 直改 markdown 后，旧的协同态作废（下次协同会话从新 markdown 播种）
+      delete doc.yjs_update;
+    }
     doc.updated_at = new Date().toISOString();
     return doc;
   });
