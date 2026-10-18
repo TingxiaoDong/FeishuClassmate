@@ -20,6 +20,7 @@ import { MemoryTableStore, type TableStore } from './store.js';
 import { validateRecordFields } from './validation.js';
 import { BotEventBus } from './events.js';
 import { LocalFileStore } from './files.js';
+import { buildDashboardSummary } from './dashboard.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -625,6 +626,13 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (markdown !== undefined) doc.markdown = markdown;
     doc.updated_at = new Date().toISOString();
     return doc;
+  });
+
+  // ---------------- 报表视图（吸收 dashboard/ 六卡） ----------------
+
+  app.get('/api/v1/dashboard/summary', async (req, reply) => {
+    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    return buildDashboardSummary(store);
   });
 
   return app;

@@ -26,6 +26,7 @@ tags:
   - name: calendar
   - name: tasks
   - name: docs
+  - name: dashboard
 
 paths:
   # ---------------------------------------------------------------------------
@@ -638,6 +639,17 @@ paths:
       responses:
         '200': { description: 已更新 }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /dashboard/summary:
+    get:
+      tags: [dashboard]
+      summary: 报表聚合（六张卡片：Tool 用量/成功率、项目甘特 KPI、器材、投稿、失败归档）
+      responses:
+        '200':
+          description: 聚合结果
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
 
 components:
   securitySchemes:
