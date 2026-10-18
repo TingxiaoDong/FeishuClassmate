@@ -244,6 +244,26 @@ function unimplemented<T extends object>(capability: string): T {
   return new Proxy({} as Record<string, unknown>, { get: () => thrower }) as T;
 }
 
+class CosDoc implements DocService {
+  constructor(private readonly http: Http) {}
+  async createDocument(title: string, markdown: string) {
+    const res = await this.http.call<{ doc_id: string; url: string }>('POST', '/docs', {
+      title,
+      markdown,
+    });
+    if (!res.ok) return { ok: false as const, error: res.error, code: res.code };
+    return { ok: true as const, value: { docId: res.value.doc_id, url: res.value.url } };
+  }
+  async getDocumentMarkdown(docId: string) {
+    const res = await this.http.call<{ markdown: string }>(
+      'GET',
+      `/docs/${encodeURIComponent(docId)}`,
+    );
+    if (!res.ok) return { ok: false as const, error: res.error, code: res.code };
+    return { ok: true as const, value: res.value.markdown };
+  }
+}
+
 export function createClassmateOSAdapter(opts: ClassmateOSAdapterOptions): PlatformAdapter {
   const http = new Http(opts);
   return {
@@ -251,7 +271,7 @@ export function createClassmateOSAdapter(opts: ClassmateOSAdapterOptions): Platf
     auth: new CosAuth(http),
     im: new CosIm(http, opts.eventSource),
     table: new CosTable(http),
-    doc: unimplemented<DocService>('doc'),
+    doc: new CosDoc(http),
     drive: unimplemented<DriveService>('drive'),
     calendar: unimplemented<CalendarService>('calendar'),
   };

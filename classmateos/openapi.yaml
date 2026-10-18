@@ -25,6 +25,7 @@ tags:
   - name: bot
   - name: calendar
   - name: tasks
+  - name: docs
 
 paths:
   # ---------------------------------------------------------------------------
@@ -554,6 +555,88 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TaskItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /docs:
+    get:
+      tags: [docs]
+      summary: 文档列表
+      responses:
+        '200':
+          description: 文档元信息列表（不含正文）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        doc_id: { type: string }
+                        title: { type: string }
+                        created_by: { type: string }
+                        updated_at: { type: string, format: date-time }
+    post:
+      tags: [docs]
+      summary: 创建文档（markdown 正文；块编辑器协同为 P3 深化项）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, markdown]
+              properties:
+                title: { type: string }
+                markdown: { type: string }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doc_id: { type: string }
+                  url: { type: string }
+
+  /docs/{doc_id}:
+    get:
+      tags: [docs]
+      summary: 读取文档 markdown
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 文档
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  doc_id: { type: string }
+                  title: { type: string }
+                  markdown: { type: string }
+                  updated_at: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [docs]
+      summary: 更新文档（整体替换正文）
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                markdown: { type: string }
+      responses:
+        '200': { description: 已更新 }
         '404': { $ref: '#/components/responses/NotFound' }
 
 components:

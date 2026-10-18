@@ -570,5 +570,62 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     return task;
   });
 
+  // ---------------- 文档（P1：markdown 正文；协同编辑为 P3 深化项） ----------------
+
+  interface StoredDoc {
+    doc_id: string;
+    title: string;
+    markdown: string;
+    created_by: string;
+    updated_at: string;
+  }
+  const docs = new Map<string, StoredDoc>();
+
+  app.post('/api/v1/docs', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { title, markdown } = (req.body ?? {}) as { title?: string; markdown?: string };
+    if (!title || typeof markdown !== 'string') {
+      return reply.code(400).send({ message: 'title and markdown required' });
+    }
+    const doc: StoredDoc = {
+      doc_id: `doc_${randomUUID()}`,
+      title,
+      markdown,
+      created_by: p.sub,
+      updated_at: new Date().toISOString(),
+    };
+    docs.set(doc.doc_id, doc);
+    return reply.code(201).send({ doc_id: doc.doc_id, url: `/api/v1/docs/${doc.doc_id}` });
+  });
+
+  app.get('/api/v1/docs', async (req, reply) => {
+    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const items = [...docs.values()].map(({ markdown: _m, ...meta }) => meta);
+    return { items };
+  });
+
+  app.get('/api/v1/docs/:doc_id', async (req, reply) => {
+    if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
+    const { doc_id } = req.params as { doc_id: string };
+    const doc = docs.get(doc_id);
+    if (!doc) return reply.code(404).send({ message: 'doc not found' });
+    return doc;
+  });
+
+  app.patch('/api/v1/docs/:doc_id', async (req, reply) => {
+    const p = authUser(req);
+    if (!p) return reply.code(401).send({ message: 'unauthorized' });
+    const { doc_id } = req.params as { doc_id: string };
+    const doc = docs.get(doc_id);
+    if (!doc) return reply.code(404).send({ message: 'doc not found' });
+    if (doc.created_by !== p.sub) return reply.code(403).send({ message: 'only creator can update' });
+    const { title, markdown } = (req.body ?? {}) as { title?: string; markdown?: string };
+    if (title !== undefined) doc.title = title;
+    if (markdown !== undefined) doc.markdown = markdown;
+    doc.updated_at = new Date().toISOString();
+    return doc;
+  });
+
   return app;
 }
