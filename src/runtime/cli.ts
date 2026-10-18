@@ -14,6 +14,10 @@
 import { loadConfig } from './config-loader.js';
 import { createRuntime } from './index.js';
 import { startScheduler } from './scheduler.js';
+import { createBrain } from './brain.js';
+import { createBotGateway } from './bot-gateway.js';
+import { WsBotEventSource } from '../pal/bot-events.js';
+import { createClassmateOSAdapter } from '../pal/classmateos-adapter.js';
 import type { ClassmateConfig } from '../config.js';
 
 const USAGE = `classmate <command>
@@ -22,11 +26,15 @@ Commands:
   status      打印配置与连通性状态
   schema      输出 ClassmateOS PostgreSQL DDL（同 scripts/schema-to-sql.mjs）
   scheduler   前台运行全部定时任务（Ctrl-C 退出）
+  gateway     前台运行 Bot 网关：ClassmateOS 事件 → 大脑 → 回复（Ctrl-C 退出）
 
 Env:
   CLASSMATE_CONFIG   配置文件路径（yaml/json），缺省查找 ./classmate.config.*
   METACLAW_URL       MetaClaw proxy 地址，缺省 http://127.0.0.1:30000/v1
   CLASSMATE_MODEL    模型名
+  CLASSMATE_OS_URL   平台 API，缺省 http://localhost:8080/api/v1
+  CLASSMATE_OS_TOKEN 平台用户态 token（gateway 需要）
+  CLASSMATE_OS_BOT_TOKEN  Bot 令牌
 `;
 
 export async function runCli(argv: string[]): Promise<number> {
@@ -36,6 +44,8 @@ export async function runCli(argv: string[]): Promise<number> {
       return cmdStatus();
     case 'scheduler':
       return cmdScheduler();
+    case 'gateway':
+      return cmdGateway();
     case undefined:
     case 'help':
     case '--help':
@@ -109,5 +119,39 @@ async function cmdScheduler(): Promise<number> {
   ac.abort();
   handle.stop();
   console.log('scheduler stopped.');
+  return 0;
+}
+
+async function cmdGateway(): Promise<number> {
+  const baseUrl = process.env.CLASSMATE_OS_URL ?? 'http://localhost:8080/api/v1';
+  const botToken = process.env.CLASSMATE_OS_BOT_TOKEN ?? '';
+  if (!botToken) {
+    console.error('CLASSMATE_OS_BOT_TOKEN is required for gateway');
+    return 2;
+  }
+  const config = loadConfig();
+  const { runtime } = createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills' });
+  const pal = createClassmateOSAdapter({
+    baseUrl,
+    accessToken: process.env.CLASSMATE_OS_TOKEN,
+    botToken,
+  });
+  const eventSource = new WsBotEventSource({ baseUrl, botToken });
+  const gateway = createBotGateway({
+    runtime,
+    eventSource,
+    im: pal.im,
+    onLog: (m) => console.log(m),
+    onError: (e) => console.error('[gateway]', e instanceof Error ? e.message : e),
+  });
+  await gateway.start();
+  console.log(`bot gateway running against ${baseUrl}`);
+
+  await new Promise<void>((resolve) => {
+    process.on('SIGINT', () => resolve());
+    process.on('SIGTERM', () => resolve());
+  });
+  gateway.stop();
+  console.log('bot gateway stopped.');
   return 0;
 }
