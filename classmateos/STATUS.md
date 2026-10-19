@@ -44,7 +44,7 @@
 
 | 项 | 状态 | 接入方式 |
 |---|---|---|
-| Flutter SDK | Dart 代码已写未编译 | 装 Flutter 后 `cd classmateos/app && flutter pub get && flutter test` |
+| Flutter SDK | ✅ 已装（3.47.7），四端工程已初始化，P1 界面（登录/聊天/多维表/文档）`flutter analyze` 通过；Chrome/Web 目标已实跑验证 | macOS 原生：App Store 装完整 Xcode 后 `flutter run -d macos` |
 | MetaClaw proxy 真机 | `scripts/check-metaclaw.mts` 探活脚本就绪；LLM 客户端接口级兼容 | 起 proxy 后跑该脚本 |
 | PostgreSQL 真库 | PgTableStore 用 fake pool 测试通过 | 设 `DATABASE_URL` 即切换（main.ts 已接） |
 | Temi 硬件 | 回归测试 mock 通过 | 真机联调 |
