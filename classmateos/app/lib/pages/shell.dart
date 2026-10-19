@@ -10,9 +10,11 @@ import 'bitable_page.dart';
 import 'calendar_page.dart';
 import 'contacts_page.dart';
 import 'docs_page.dart';
+import 'wiki_page.dart';
 import 'drive_page.dart';
 import 'login_page.dart';
 import 'messages_page.dart';
+import 'notification_center.dart';
 import 'tasks_page.dart';
 import 'workbench_page.dart';
 
@@ -26,6 +28,7 @@ class ModuleMeta {
         AppModule.messages => const ModuleMeta(Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded, Fs.primary),
         AppModule.calendar => const ModuleMeta(Icons.calendar_today_outlined, Icons.calendar_month_rounded, Fs.orange),
         AppModule.docs => const ModuleMeta(Icons.description_outlined, Icons.description_rounded, Color(0xFF3370FF)),
+        AppModule.wiki => const ModuleMeta(Icons.menu_book_outlined, Icons.menu_book_rounded, Color(0xFF00B6C1)),
         AppModule.bitable => const ModuleMeta(Icons.grid_view_outlined, Icons.grid_view_rounded, Fs.purple),
         AppModule.tasks => const ModuleMeta(Icons.task_alt_outlined, Icons.task_alt_rounded, Color(0xFF2EA121)),
         AppModule.drive => const ModuleMeta(Icons.cloud_outlined, Icons.cloud_rounded, Fs.cyan),
@@ -38,6 +41,7 @@ Widget buildModulePage(AppModule m) => switch (m) {
       AppModule.messages => const MessagesPage(),
       AppModule.calendar => const CalendarPage(),
       AppModule.docs => const DocsPage(),
+      AppModule.wiki => const WikiPage(),
       AppModule.bitable => const BitablePage(),
       AppModule.tasks => const TasksPage(),
       AppModule.drive => const DrivePage(),
@@ -144,11 +148,14 @@ class _NavRail extends StatelessWidget {
         children: [
           const SizedBox(height: 14),
           _AvatarMenu(state: s),
-          const SizedBox(height: 14),
+          const SizedBox(height: 6),
+          const NotificationBell(),
+          const SizedBox(height: 8),
           Expanded(
             child: SingleChildScrollView(
               child: Column(children: [
-                for (final m in AppModule.values) _item(context, s, m),
+                for (final m in AppModule.values)
+                  if (s.moduleVisible(m)) _item(context, s, m),
               ]),
             ),
           ),
@@ -230,6 +237,8 @@ class _AvatarMenu extends StatelessWidget {
         if (v == 'logout') {
           final ok = await confirmDialog(context, title: '退出登录', content: '确定要退出当前账号吗？', ok: '退出');
           if (ok) state.logout();
+        } else if (v == 'notify_settings') {
+          showNotificationSettings(context);
         } else if (v == 'profile') {
           state.go(AppModule.contacts);
         }
@@ -270,6 +279,11 @@ class _AvatarMenu extends StatelessWidget {
           value: 'profile',
           child: Row(children: [Icon(Icons.badge_outlined, size: 18), SizedBox(width: 10), Text('通讯录')]),
         ),
+        if (state.feature('notifications'))
+          const PopupMenuItem(
+            value: 'notify_settings',
+            child: Row(children: [Icon(Icons.notifications_active_outlined, size: 18), SizedBox(width: 10), Text('通知设置')]),
+          ),
         const PopupMenuItem(
           value: 'logout',
           child: Row(children: [

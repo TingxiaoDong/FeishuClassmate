@@ -5,6 +5,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'notification_center.dart';
 import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
@@ -78,6 +79,8 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           return ListView(
             padding: EdgeInsets.symmetric(horizontal: ((c.maxWidth - 1240) / 2).clamp(0.0, double.infinity) + 24, vertical: 24),
             children: [
+              if (MediaQuery.sizeOf(context).width < 720 && s.feature('notifications'))
+                const Align(alignment: Alignment.centerRight, child: NotificationBell()),
               _banner(s, myTodo.length),
               const SizedBox(height: 20),
               _sectionTitle('常用应用'),
@@ -177,13 +180,14 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       AppModule.messages: '单聊群聊',
       AppModule.calendar: '会议排期',
       AppModule.docs: '文档协作',
+      AppModule.wiki: '知识沉淀',
       AppModule.bitable: '数据管理',
       AppModule.tasks: '待办跟进',
       AppModule.drive: '文件存储',
       AppModule.contacts: '组织成员',
     };
     return Wrap(spacing: 12, runSpacing: 12, children: [
-      for (final m in AppModule.values.where((m) => m != AppModule.workbench))
+      for (final m in AppModule.values.where((m) => m != AppModule.workbench && s.moduleVisible(m)))
         HoverBox(
           onTap: () => s.go(m),
           hoverColor: Colors.white,
