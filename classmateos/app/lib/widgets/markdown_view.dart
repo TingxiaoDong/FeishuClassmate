@@ -1,5 +1,6 @@
 /// 轻量 Markdown 渲染（云文档阅读模式）：标题 / 段落 / 有序无序列表 / 待办 /
 /// 引用 / 代码块 / 分割线 / 表格；行内支持粗体、斜体、删除线、行内代码、链接。
+/// 二期：图片（cos-file:// 签名换取、点击放大）、附件卡片、上传占位、评论高亮、选中文字「评论」。
 library;
 
 import 'package:flutter/gestures.dart';
@@ -7,11 +8,51 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 import 'common.dart';
+import 'cos_file_view.dart';
 
 class MarkdownView extends StatelessWidget {
   final String source;
   final double fontSize;
-  const MarkdownView(this.source, {super.key, this.fontSize = 15});
+
+  /// 需要标浅黄底的原文（有评论的文字）。
+  final List<String> highlights;
+  final ValueChanged<String>? onHighlightTap;
+
+  /// 选中文字后右键 / 长按菜单里的「评论」。
+  final ValueChanged<String>? onComment;
+
+  /// 上传失败占位「点击重试」。
+  final ValueChanged<String>? onRetryUpload;
+
+  const MarkdownView(
+    this.source, {
+    super.key,
+    this.fontSize = 15,
+    this.highlights = const [],
+    this.onHighlightTap,
+    this.onComment,
+    this.onRetryUpload,
+  });
+
+  static final _imageLine = RegExp(r'^!\[([^\]]*)\]\((\S+?)\)$');
+  static final _fileLine = RegExp(r'^\[([^\]]*)\]\((cos-file://\S+?)\)$');
+
+  /// 单独一行的图片 / 附件 / 上传占位。
+  Widget? _mediaLine(String t) {
+    final img = _imageLine.firstMatch(t);
+    if (img != null) {
+      final url = img.group(2)!;
+      if (url.startsWith('uploading://')) return const UploadPlaceholder();
+      if (url.startsWith('upload-failed://')) {
+        final id = url.substring('upload-failed://'.length);
+        return UploadPlaceholder(failed: true, onRetry: onRetryUpload == null ? null : () => onRetryUpload!(id));
+      }
+      return DocImage(url: url, alt: img.group(1)!);
+    }
+    final f = _fileLine.firstMatch(t);
+    if (f != null) return AttachmentCard(url: f.group(2)!, label: f.group(1)!);
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -141,11 +182,19 @@ class MarkdownView extends StatelessWidget {
         }
         if (n > 0) continue;
       }
+      // 图片 / 附件独占一行
+      final media = _mediaLine(t.trim());
+      if (media != null) {
+        blocks.add(media);
+        i++;
+        continue;
+      }
       // 段落：合并连续非空行
       final buf = <String>[line.trim()];
       i++;
       while (i < lines.length &&
           lines[i].trim().isNotEmpty &&
+          _mediaLine(lines[i].trim()) == null &&
           !RegExp(r'^(#{1,6}\s|```|>|[-*+]\s|\d+[.)]\s|\|)').hasMatch(lines[i].trimLeft())) {
         buf.add(lines[i].trim());
         i++;
@@ -155,9 +204,9 @@ class MarkdownView extends StatelessWidget {
         child: Text.rich(_inline(context, buf.join('\n')), style: TextStyle(fontSize: fontSize, height: 1.75)),
       ));
     }
-    return SelectionArea(
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: blocks),
-    );
+    final column = Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: blocks);
+    if (onComment == null) return SelectionArea(child: column);
+    return _CommentableSelection(onComment: onComment!, child: column);
   }
 
   List<String> _cells(String row) {
@@ -222,13 +271,45 @@ class MarkdownView extends StatelessWidget {
       );
 
   static final _inlineRe = RegExp(
-      r'(\*\*(.+?)\*\*)|(~~(.+?)~~)|(`([^`]+)`)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*(.+?)\*)|(_(.+?)_)');
+      r'(\*\*(.+?)\*\*)|(~~(.+?)~~)|(`([^`]+)`)|(\[([^\]]+)\]\(([^)\s]+)\))|(\*(.+?)\*)|(_(.+?)_)|(!\[([^\]]*)\]\(([^)\s]+)\))');
+
+  /// 普通文字：按评论原文切分并加浅黄底。
+  List<InlineSpan> _plain(String text) {
+    final hs = highlights.where((h) => h.trim().isNotEmpty).toList();
+    if (hs.isEmpty) return [TextSpan(text: text)];
+    final out = <InlineSpan>[];
+    var rest = text;
+    while (rest.isNotEmpty) {
+      var best = -1;
+      String? hit;
+      for (final h in hs) {
+        final i = rest.indexOf(h);
+        if (i >= 0 && (best < 0 || i < best)) {
+          best = i;
+          hit = h;
+        }
+      }
+      if (hit == null) {
+        out.add(TextSpan(text: rest));
+        break;
+      }
+      if (best > 0) out.add(TextSpan(text: rest.substring(0, best)));
+      final q = hit;
+      out.add(TextSpan(
+        text: q,
+        style: const TextStyle(backgroundColor: Color(0xFFFFF1B8)),
+        recognizer: onHighlightTap == null ? null : (TapGestureRecognizer()..onTap = () => onHighlightTap!(q)),
+      ));
+      rest = rest.substring(best + q.length);
+    }
+    return out;
+  }
 
   TextSpan _inline(BuildContext context, String text) {
     final spans = <InlineSpan>[];
     var last = 0;
     for (final m in _inlineRe.allMatches(text)) {
-      if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start)));
+      if (m.start > last) spans.addAll(_plain(text.substring(last, m.start)));
       if (m.group(1) != null) {
         spans.add(TextSpan(children: [_inline(context, m.group(2)!)], style: const TextStyle(fontWeight: FontWeight.w700)));
       } else if (m.group(3) != null) {
@@ -245,19 +326,81 @@ class MarkdownView extends StatelessWidget {
         ));
       } else if (m.group(7) != null) {
         final url = m.group(9)!;
-        spans.add(TextSpan(
-          text: m.group(8),
-          style: const TextStyle(color: Fs.primary),
-          recognizer: TapGestureRecognizer()..onTap = () => openExternal(context, url),
-        ));
+        spans.add(url.startsWith(kCosFileScheme)
+            ? WidgetSpan(
+                alignment: PlaceholderAlignment.middle,
+                child: AttachmentChip(url: url, label: m.group(8)!),
+              )
+            : TextSpan(
+                text: m.group(8),
+                style: const TextStyle(color: Fs.primary),
+                recognizer: TapGestureRecognizer()..onTap = () => openExternal(context, url),
+              ));
       } else if (m.group(10) != null) {
         spans.add(TextSpan(text: m.group(11), style: const TextStyle(fontStyle: FontStyle.italic)));
       } else if (m.group(12) != null) {
         spans.add(TextSpan(text: m.group(13), style: const TextStyle(fontStyle: FontStyle.italic)));
+      } else if (m.group(14) != null) {
+        spans.add(WidgetSpan(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 320), child: DocImage(url: m.group(16)!, alt: m.group(15)!))));
       }
       last = m.end;
     }
-    if (last < text.length) spans.add(TextSpan(text: text.substring(last)));
+    if (last < text.length) spans.addAll(_plain(text.substring(last)));
     return TextSpan(children: spans);
   }
+}
+
+/// 行内附件（段落中间的 cos-file 链接）。
+class AttachmentChip extends StatelessWidget {
+  final String url;
+  final String label;
+  const AttachmentChip({super.key, required this.url, required this.label});
+  @override
+  Widget build(BuildContext context) => InkWell(
+        onTap: () => showDialog<void>(
+          context: context,
+          builder: (ctx) => Dialog(child: Padding(padding: const EdgeInsets.all(16), child: AttachmentCard(url: url, label: label))),
+        ),
+        child: Text.rich(TextSpan(children: [
+          const WidgetSpan(alignment: PlaceholderAlignment.middle, child: Icon(Icons.attach_file_rounded, size: 15, color: Fs.primary)),
+          TextSpan(text: label.replaceFirst(RegExp(r'^📎\s*'), ''), style: const TextStyle(color: Fs.primary)),
+        ])),
+      );
+}
+
+/// 可选中文字，并在系统选择菜单里加「评论」。
+class _CommentableSelection extends StatefulWidget {
+  final ValueChanged<String> onComment;
+  final Widget child;
+  const _CommentableSelection({required this.onComment, required this.child});
+  @override
+  State<_CommentableSelection> createState() => _CommentableSelectionState();
+}
+
+class _CommentableSelectionState extends State<_CommentableSelection> {
+  String selected = '';
+
+  @override
+  Widget build(BuildContext context) => SelectionArea(
+        onSelectionChanged: (c) => selected = c?.plainText ?? '',
+        contextMenuBuilder: (ctx, state) {
+          final text = selected.trim();
+          return AdaptiveTextSelectionToolbar.buttonItems(
+            anchors: state.contextMenuAnchors,
+            buttonItems: [
+              ...state.contextMenuButtonItems,
+              if (text.isNotEmpty)
+                ContextMenuButtonItem(
+                  label: '评论',
+                  onPressed: () {
+                    ContextMenuController.removeAny();
+                    state.clearSelection();
+                    widget.onComment(text);
+                  },
+                ),
+            ],
+          );
+        },
+        child: widget.child,
+      );
 }
