@@ -72,6 +72,15 @@ function bearer(req: FastifyRequest): string | undefined {
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+
+  // CORS：Flutter Web / 浏览器跨源调试（P1 内网开发放开，生产收紧为白名单）。
+  app.addHook('onSend', async (_req, reply) => {
+    reply
+      .header('access-control-allow-origin', '*')
+      .header('access-control-allow-headers', 'content-type, authorization, x-bot-token')
+      .header('access-control-allow-methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  });
+  app.options('/*', async (_req, reply) => reply.code(204).send());
   // websocket 插件必须先就绪，{websocket:true} 路由才能正确注册 upgrade 处理。
   await app.register(fastifyWebsocket);
   const store = opts.store ?? new MemoryTableStore();
