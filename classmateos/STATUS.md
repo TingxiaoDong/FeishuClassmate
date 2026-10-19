@@ -36,7 +36,7 @@
 | 用户态 WS | `/api/v1/events/ws?token=` | 四端实时收消息，按会话成员过滤 |
 | 推送通知 | `server/push.ts` | 设备注册 + 消息事件触发；APNs/FCM 占位（见下） |
 | 数据迁移（P4） | `classmateos/server/migrate.ts` | 飞书导出 → 新库，`feishu_record_id` 溯源 |
-| Flutter 端 | `classmateos/app/lib/` | Dart models + api_client（未编译验证，见下） |
+| Flutter 端 | `classmateos/app/lib/` | 飞书风格重制：消息（WS 实时 / 卡片作答 / 图片文件）、多维表格（表格 + 看板拖拽 + 记录表单）、云文档（Markdown 分屏 + 自动保存）、日历（周 / 日视图）、任务、云盘、通讯录、工作台（报表六卡）；桌面左侧导航 / 手机底部标签自适应 |
 
 ### 未做：电子表格 Sheet（§0.3 标注 P2，使用量"少量"，按计划优先级未排期）
 
@@ -44,7 +44,7 @@
 
 | 项 | 状态 | 接入方式 |
 |---|---|---|
-| Flutter SDK | ✅ 已装（3.47.7），四端工程已初始化，P1 界面（登录/聊天/多维表/文档）`flutter analyze` 通过；Chrome/Web 目标已实跑验证 | macOS 原生：✅ Xcode 27.1 已装，`flutter run -d macos` 实跑通过 |
+| Flutter SDK | ✅ 已装（3.47.7），四端工程已初始化，八大模块界面 `flutter analyze` 零问题，4 种窗口尺寸组件冒烟测试通过；Web 目标当前未配置（需要时 `flutter create . --platforms web`） | macOS 原生：✅ Xcode 27.1 已装，`flutter run -d macos` 实跑通过 |
 | MetaClaw proxy 真机 | `scripts/check-metaclaw.mts` 探活脚本就绪；LLM 客户端接口级兼容 | 起 proxy 后跑该脚本 |
 | PostgreSQL 真库 | PgTableStore 用 fake pool 测试通过 | 设 `DATABASE_URL` 即切换（main.ts 已接） |
 | Temi 硬件 | 回归测试 mock 通过 | 真机联调 |
