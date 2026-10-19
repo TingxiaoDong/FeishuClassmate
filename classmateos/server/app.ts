@@ -24,6 +24,7 @@ import { buildDashboardSummary } from './dashboard.js';
 import { canAccessRecord, filterAccessible } from './row-access.js';
 import { CollabHub, collabTextFromUpdate } from './collab.js';
 import { MemoryPushProvider, type Device, type PushProvider } from './push.js';
+import { registerConsole } from './console.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -767,6 +768,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     if (!authUser(req)) return reply.code(401).send({ message: 'unauthorized' });
     return buildDashboardSummary(store);
   });
+
+  registerConsole(app);
 
   return app;
 }
