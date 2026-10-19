@@ -1,6 +1,7 @@
 /// 日历：迷你月历 + 周视图 / 日视图时间轴，点击空白处快速创建日程。
 library;
 
+import '../widgets/recurrence_picker.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -65,7 +66,7 @@ class _CalendarPageState extends State<CalendarPage> {
     final from = weekStart(focus).subtract(const Duration(days: 7));
     final to = from.add(const Duration(days: 21));
     try {
-      final list = await AppScope.read(context).api.listEvents(from, to);
+      final list = await AppScope.read(context).api.listEvents(from, to, expandRecurring: AppScope.read(context).feature('calendar.recurrence'));
       if (mounted) setState(() => events = list);
     } catch (e) {
       if (mounted) showToast(context, describeError(e), error: true);
@@ -522,7 +523,7 @@ class _CalendarPageState extends State<CalendarPage> {
       width: w - 2,
       height: h - 2,
       child: Tooltip(
-        message: '${e.title}\n${fmtHm(e.start)} - ${fmtHm(e.end)}',
+        message: '${e.isRecurring ? '↻ ' : ''}${e.title}\n${fmtHm(e.start)} - ${fmtHm(e.end)}',
         child: HoverBox(
           onTap: () => _detail(e),
           radius: 4,
@@ -536,7 +537,7 @@ class _CalendarPageState extends State<CalendarPage> {
             ),
             child: ClipRect(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(e.title,
+                Text('${e.isRecurring ? '↻ ' : ''}${e.title}',
                     maxLines: h > 44 ? 2 : 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color == Fs.primary ? Fs.primaryPressed : const Color(0xFF237B19))),
@@ -599,7 +600,9 @@ class _EventDetail extends StatelessWidget {
                     final ok = await confirmDialog(context, title: '删除日程', content: '确定删除「${e.title}」吗？', ok: '删除', danger: true);
                     if (!ok || !context.mounted) return;
                     try {
-                      await s.api.deleteEvent(e.eventId);
+                      final scope = e.isRecurring ? await pickRecurrenceScope(context) : null;
+                      if (e.isRecurring && scope == null) return;
+                      await s.api.deleteEvent(e.eventId, scope: scope);
                       if (context.mounted) {
                         showToast(context, '日程已删除');
                         Navigator.pop(context, 'deleted');
@@ -752,6 +755,7 @@ class _EventEditorState extends State<EventEditor> {
   late int startMin;
   late int endMin;
   List<String> attendees = [];
+  String? recurrence;
   bool saving = false;
   String? error;
 
@@ -769,6 +773,7 @@ class _EventEditorState extends State<EventEditor> {
     final e = widget.event;
     if (e != null) {
       final st = e.start.toLocal(), en = e.end.toLocal();
+      recurrence = e.recurrence;
       title.text = e.title;
       desc.text = e.description ?? '';
       location.text = e.location ?? '';
@@ -800,6 +805,9 @@ class _EventEditorState extends State<EventEditor> {
       return;
     }
     final s = AppScope.read(context);
+    final recurringEnabled = s.feature('calendar.recurrence');
+    final scope = editing && widget.event!.isRecurring ? await pickRecurrenceScope(context) : null;
+    if (!mounted || (editing && widget.event!.isRecurring && scope == null)) return;
     setState(() {
       saving = true;
       error = null;
@@ -808,6 +816,9 @@ class _EventEditorState extends State<EventEditor> {
       if (editing) {
         await s.api.updateEvent(
           widget.event!.eventId,
+          scope: scope,
+          recurrence: recurringEnabled ? recurrence : null,
+          clearRecurrence: recurringEnabled && recurrence == null,
           title: title.text.trim(),
           start: date.add(Duration(minutes: startMin)),
           end: endDate.add(Duration(minutes: endMin)),
@@ -818,6 +829,7 @@ class _EventEditorState extends State<EventEditor> {
         );
       } else {
         await s.api.createEvent(
+          recurrence: recurringEnabled ? recurrence : null,
           title: title.text.trim(),
           start: date.add(Duration(minutes: startMin)),
           end: endDate.add(Duration(minutes: endMin)),
@@ -871,6 +883,10 @@ class _EventEditorState extends State<EventEditor> {
               const Spacer(),
               FsIconButton(icon: Icons.close_rounded, tooltip: '关闭', onPressed: () => Navigator.pop(context)),
             ]),
+            if (s.feature('calendar.recurrence')) ...[
+              const SizedBox(height: 12),
+              RecurrencePicker(date: date, value: recurrence, onChanged: (v) => setState(() => recurrence = v)),
+            ],
             const SizedBox(height: 16),
             TextField(
               controller: title,

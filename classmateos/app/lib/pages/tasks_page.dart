@@ -10,6 +10,9 @@ import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'task_extras.dart';
+import 'task_lists.dart';
+import '../api/phase2_tasks.dart';
 
 const kTaskStatus = {
   'in_progress': ('进行中', TagColor.blue, Icons.timelapse_rounded),
@@ -20,6 +23,7 @@ const kTaskStatus = {
 
 enum _TaskFilter {
   assigned('我负责的', Icons.person_pin_outlined),
+  followed('我关注的', Icons.visibility_outlined),
   created('我创建的', Icons.edit_note_rounded),
   all('全部任务', Icons.list_alt_rounded),
   done('已完成', Icons.task_alt_rounded);
@@ -57,11 +61,25 @@ class _TasksPageState extends State<TasksPage> {
   final Set<String> collapsed = {'cancelled'};
   bool inlineDetail = false;
 
+  // 迭代 3：我关注的、任务清单
+  List<CosTask> followed = [];
+  List<CosTaskList> lists = [];
+  CosTaskList? openList;
+  CosTask? listSel;
+  final _listKey = GlobalKey<TaskListViewState>();
+
+  List<_TaskFilter> _filters(AppState s) =>
+      [for (final f in _TaskFilter.values) if (f != _TaskFilter.followed || s.feature('task.followers')) f];
+
   @override
   void initState() {
     super.initState();
     _liveEvents = AppScope.read(context).eventStream.listen((e) {
-      if (mounted && (e.eventType.startsWith('calendar.') || e.eventType.startsWith('task.') || e.eventType == 'resync.required')) _load();
+      if (!mounted) return;
+      if (e.eventType.startsWith('calendar.') || e.eventType.startsWith('task.') || e.eventType.startsWith('tasklist.') || e.eventType == 'resync.required') {
+        _load();
+        _listKey.currentState?.reload();
+      }
     });
     _load();
   }
@@ -74,10 +92,18 @@ class _TasksPageState extends State<TasksPage> {
 
   Future<void> _load() async {
     try {
-      final list = await AppScope.read(context).api.listTasks();
+      final s = AppScope.read(context);
+      final r = await Future.wait([
+        s.api.listTasks(),
+        s.feature('task.followers') ? s.api.listTasks(followerId: 'me') : Future.value(<CosTask>[]),
+      ]);
+      final ls = s.feature('task.lists') ? await s.api.taskLists() : <CosTaskList>[];
       if (!mounted) return;
       setState(() {
-        tasks = list;
+        tasks = r[0];
+        followed = r[1];
+        lists = ls;
+        if (openList != null) openList = ls.where((x) => x.id == openList!.id).firstOrNull;
         loading = false;
         error = null;
       });
@@ -93,6 +119,7 @@ class _TasksPageState extends State<TasksPage> {
 
   List<CosTask> _apply(_TaskFilter f, String me) => switch (f) {
         _TaskFilter.assigned => tasks.where((t) => t.assigneeId == me).toList(),
+        _TaskFilter.followed => followed,
         _TaskFilter.created => tasks.where((t) => t.createdBy == me).toList(),
         _TaskFilter.all => tasks,
         _TaskFilter.done => tasks.where((t) => t.isDone).toList(),
@@ -101,13 +128,22 @@ class _TasksPageState extends State<TasksPage> {
   void _remove(String id) {
     setState(() {
       tasks.removeWhere((x) => x.taskId == id);
+      followed.removeWhere((x) => x.taskId == id);
       if (selectedId == id) selectedId = null;
+      if (listSel?.taskId == id) listSel = null;
     });
+    _listKey.currentState?.reload();
   }
 
   void _replace(CosTask t) {
     final i = tasks.indexWhere((x) => x.taskId == t.taskId);
-    setState(() => i >= 0 ? tasks[i] = t : tasks.insert(0, t));
+    final j = followed.indexWhere((x) => x.taskId == t.taskId);
+    setState(() {
+      if (t.parentId == null) i >= 0 ? tasks[i] = t : tasks.insert(0, t);
+      if (j >= 0) followed[j] = t;
+      if (listSel?.taskId == t.taskId) listSel = t;
+    });
+    _listKey.currentState?.reload();
   }
 
   Future<void> _toggle(CosTask t) async {
@@ -146,11 +182,23 @@ class _TasksPageState extends State<TasksPage> {
       final wide = c.maxWidth >= 860;
       final detailW = c.maxWidth >= 1180;
       inlineDetail = detailW;
-      final sel = tasks.where((t) => t.taskId == selectedId).firstOrNull;
+      final sel = openList != null
+          ? listSel
+          : [...tasks, ...followed].where((t) => t.taskId == selectedId).firstOrNull;
       return Row(children: [
         if (wide) SizedBox(width: 220, child: _sidebar(s)),
         if (wide) const VerticalDivider(width: 1),
-        Expanded(child: _list(context, s, wide)),
+        Expanded(
+          child: openList != null
+              ? TaskListView(
+                  key: _listKey,
+                  list: openList!,
+                  onOpen: (t) => _openTask(t),
+                  onListsChanged: _load,
+                  onBack: wide ? null : () => setState(() => openList = null),
+                )
+              : _list(context, s, wide),
+        ),
         if (sel != null && detailW) ...[
           const VerticalDivider(width: 1),
           SizedBox(
@@ -160,7 +208,10 @@ class _TasksPageState extends State<TasksPage> {
               task: sel,
               onChanged: _replace,
               onDeleted: () => _remove(sel.taskId),
-              onClose: () => setState(() => selectedId = null),
+              onClose: () => setState(() {
+                selectedId = null;
+                listSel = null;
+              }),
             ),
           ),
         ],
@@ -185,11 +236,15 @@ class _TasksPageState extends State<TasksPage> {
             ),
           ),
           const SizedBox(height: 14),
-          for (final f in _TaskFilter.values)
+          for (final f in _filters(s))
             HoverBox(
-              selected: filter == f,
+              selected: openList == null && filter == f,
               hoverColor: const Color(0xFFE8E9EB),
-              onTap: () => setState(() => filter = f),
+              onTap: () => setState(() {
+                filter = f;
+                openList = null;
+                listSel = null;
+              }),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
               margin: const EdgeInsets.only(bottom: 2),
               child: Row(children: [
@@ -203,8 +258,83 @@ class _TasksPageState extends State<TasksPage> {
                     style: const TextStyle(fontSize: 12, color: Fs.text3)),
               ]),
             ),
+          if (s.feature('task.lists')) ...[
+            const SizedBox(height: 18),
+            Row(children: [
+              const Padding(
+                padding: EdgeInsets.only(left: 6),
+                child: Text('任务清单', style: TextStyle(fontSize: 12, color: Fs.text3)),
+              ),
+              const Spacer(),
+              FsIconButton(icon: Icons.add_rounded, tooltip: '新建清单', size: 16, onPressed: _newList),
+            ]),
+            Expanded(
+              child: lists.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: Text('按项目建一个清单，把相关任务放在一起', style: TextStyle(fontSize: 12, color: Fs.text3)),
+                    )
+                  : ListView(children: [
+                      for (final l in lists)
+                        HoverBox(
+                          selected: openList?.id == l.id,
+                          hoverColor: const Color(0xFFE8E9EB),
+                          onTap: () => setState(() {
+                            openList = l;
+                            listSel = null;
+                          }),
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                          margin: const EdgeInsets.only(bottom: 2),
+                          child: Row(children: [
+                            Icon(Icons.checklist_rounded, size: 18, color: openList?.id == l.id ? Fs.primary : Fs.text2),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(l.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(fontSize: 14, color: openList?.id == l.id ? Fs.primary : Fs.text1)),
+                            ),
+                          ]),
+                        ),
+                    ]),
+            ),
+          ],
         ]),
       );
+
+  Future<void> _newList() async {
+    final l = await createTaskListDialog(context);
+    if (l == null || !mounted) return;
+    await _load();
+    setState(() {
+      openList = lists.where((x) => x.id == l.id).firstOrNull ?? l;
+      listSel = null;
+    });
+  }
+
+  /// 清单里点任务：宽屏右侧打开详情，窄屏进入详情页。
+  void _openTask(CosTask t) {
+    if (inlineDetail) {
+      setState(() => listSel = t);
+      return;
+    }
+    pushScoped(
+      context,
+      Scaffold(
+        appBar: AppBar(title: const Text('任务详情')),
+        body: Builder(
+          builder: (ctx) => TaskDetail(
+            task: t,
+            onChanged: _replace,
+            onDeleted: () {
+              _remove(t.taskId);
+              _listKey.currentState?.reload();
+              Navigator.of(ctx).maybePop();
+            },
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _list(BuildContext context, AppState s, bool wide) {
     final list = _apply(filter, s.me.userId);
@@ -230,7 +360,23 @@ class _TasksPageState extends State<TasksPage> {
                 icon: const Icon(Icons.filter_list_rounded, size: 20),
                 onSelected: (f) => setState(() => filter = f),
                 itemBuilder: (_) => [
-                  for (final f in _TaskFilter.values) CheckedPopupMenuItem(value: f, checked: f == filter, child: Text(f.label)),
+                  for (final f in _filters(s)) CheckedPopupMenuItem(value: f, checked: f == filter, child: Text(f.label)),
+                ],
+              ),
+            if (!wide && s.feature('task.lists'))
+              PopupMenuButton<String>(
+                tooltip: '任务清单',
+                icon: const Icon(Icons.checklist_rounded, size: 20),
+                onSelected: (id) => id == '_new'
+                    ? _newList()
+                    : setState(() {
+                        openList = lists.firstWhere((l) => l.id == id);
+                        listSel = null;
+                      }),
+                itemBuilder: (_) => [
+                  for (final l in lists) PopupMenuItem(value: l.id, child: Text(l.name)),
+                  if (lists.isNotEmpty) const PopupMenuDivider(),
+                  const PopupMenuItem(value: '_new', child: Text('新建清单')),
                 ],
               ),
             if (!wide)
@@ -376,6 +522,17 @@ class _TasksPageState extends State<TasksPage> {
                   maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Fs.text3)),
           ]),
         ),
+        if (t.subtaskCount > 0) ...[
+          const SizedBox(width: 10),
+          Tooltip(
+            message: '子任务完成进度',
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              const Icon(Icons.account_tree_outlined, size: 14, color: Fs.text3),
+              const SizedBox(width: 3),
+              Text('${t.subtaskDoneCount}/${t.subtaskCount}', style: const TextStyle(fontSize: 12, color: Fs.text3)),
+            ]),
+          ),
+        ],
         if (t.due != null) ...[
           const SizedBox(width: 10),
           Row(mainAxisSize: MainAxisSize.min, children: [
@@ -443,8 +600,9 @@ class _TaskDetailState extends State<TaskDetail> {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
-    final isCreator = t.createdBy == s.me.userId;
-    final canEdit = isCreator || t.assigneeId == s.me.userId;
+    // 后端给了 permissions 就按后端（R-TK-05），否则沿用一期规则：创建人、负责人可改，创建人可删。
+    final isCreator = t.can('can_delete', t.createdBy == s.me.userId);
+    final canEdit = t.can('can_edit', t.createdBy == s.me.userId || t.assigneeId == s.me.userId);
     return Container(
       color: Colors.white,
       child: Column(children: [
@@ -602,6 +760,7 @@ class _TaskDetailState extends State<TaskDetail> {
             ),
             const SizedBox(height: 12),
             const Divider(),
+            TaskExtras(key: ValueKey('${t.taskId}_${t.updatedAt}'), task: t, onChanged: () async { final r = await AppScope.read(context).api.getTask(t.taskId); if (mounted) { setState(() => t = r); widget.onChanged(r); } }),
             const SizedBox(height: 12),
             Text('${s.userName(t.createdBy)} 创建于 ${t.createdAt != null ? fmtDateTime(t.createdAt!.toLocal()) : '-'}',
                 style: const TextStyle(fontSize: 12, color: Fs.text3)),
@@ -621,9 +780,9 @@ class _TaskDetailState extends State<TaskDetail> {
                 child: Text('完成于 ${fmtDateTime(t.completedAt!.toLocal())}', style: const TextStyle(fontSize: 12, color: Fs.text3)),
               ),
             if (!canEdit)
-              const Padding(
-                padding: EdgeInsets.only(top: 6),
-                child: Text('只有创建人和负责人可以修改', style: TextStyle(fontSize: 12, color: Fs.text3)),
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(t.followerIds.contains(s.me.userId) ? '你是关注人，可以查看和评论，不能修改' : '只有创建人和负责人可以修改', style: const TextStyle(fontSize: 12, color: Fs.text3)),
               ),
           ]),
         ),
