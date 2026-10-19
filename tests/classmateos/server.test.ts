@@ -28,6 +28,36 @@ async function login(app: FastifyInstance, name = 'alice', password = 'pw1'): Pr
 }
 
 describe('ClassmateOS server (P1 MVP)', () => {
+  it('bot 私聊：只复用含 bot 的 p2p，不会把消息塞进用户之间的单聊', async () => {
+    const app = await makeApp();
+    const token = await login(app);
+    const human = await app.inject({
+      method: 'POST',
+      url: '/api/v1/chats',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { member_ids: ['ou_bob'] },
+    });
+    const humanChatId = human.json().chat_id;
+    const send = () =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/bot/messages',
+        headers: { 'x-bot-token': 'btok' },
+        payload: { receive_id: 'ou_alice', receive_id_type: 'user_id', msg_type: 'text', content: { text: 'hi' } },
+      });
+    const first = (await send()).json();
+    const second = (await send()).json();
+    expect(first.chat_id).not.toBe(humanChatId);
+    expect(second.chat_id).toBe(first.chat_id); // 第二次复用同一个 bot 会话
+    const msgs = await app.inject({
+      method: 'GET',
+      url: `/api/v1/chats/${humanChatId}/messages`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(msgs.json().items).toHaveLength(0);
+    await app.close();
+  });
+
   it('auth: login → users/me → users list', async () => {
     const app = await makeApp();
     const token = await login(app);

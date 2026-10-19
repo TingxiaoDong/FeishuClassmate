@@ -31,7 +31,10 @@ describe('Bot 网关全链路（事件 → 大脑 → 回复）', () => {
   it('用户消息触发大脑回复并出现在聊天历史中', async () => {
     // --- 平台 ---
     const app = await buildApp({
-      users: [{ user_id: 'ou_alice', name: 'alice', password: 'pw', role: 'admin' }],
+      users: [
+        { user_id: 'ou_alice', name: 'alice', password: 'pw', role: 'admin' },
+        { user_id: 'ou_admin', name: 'admin', password: 'pw', role: 'admin' },
+      ],
       secret: 's',
       botToken: 'btok',
     });

@@ -65,14 +65,15 @@ describe('docs 协同编辑（Yjs）', () => {
     expect(p1.doc.getText('markdown').toString()).toBe('# 初稿\n');
     expect(p2.doc.getText('markdown').toString()).toBe('# 初稿\n');
 
-    // alice 在开头插入，bob 在结尾追加 → 两端收敛到同一份文本
+    // 创建者 alice 的编辑实时同步给 bob；bob 不是创建者 → 只读，他的修改服务端不接受
     p1.doc.getText('markdown').insert(0, '> alice 批注\n');
+    await sleep(150);
+    expect(p2.doc.getText('markdown').toString()).toBe('> alice 批注\n# 初稿\n');
     p2.doc.getText('markdown').insert(p2.doc.getText('markdown').length, 'bob 的补充\n');
     await sleep(150);
     const merged = p1.doc.getText('markdown').toString();
-    expect(p2.doc.getText('markdown').toString()).toBe(merged);
-    expect(merged).toContain('alice 批注');
-    expect(merged).toContain('bob 的补充');
+    expect(merged).toBe('> alice 批注\n# 初稿\n');
+    expect(merged).not.toContain('bob 的补充');
 
     // 全部断开 → 持久化；REST 读到合并文本
     p1.destroy();

@@ -78,9 +78,11 @@ describe('用户态 WS（/api/v1/events/ws）', () => {
     eveWs.close();
     await app.close();
 
-    // alice 收到 2 条（自己发的 + bot 的）；eve 一条没有
-    expect(aliceEvents).toHaveLength(2);
-    expect(aliceEvents.map((e) => (e.message as { sender_id: string }).sender_id)).toEqual([
+    // alice 收到 2 条消息（自己发的 + bot 的），另有新会话的 chat.created；eve 一条没有
+    expect(aliceEvents.some((e) => e.event_type === 'chat.created')).toBe(true);
+    const aliceMsgs = aliceEvents.filter((e) => e.event_type === 'message.receive');
+    expect(aliceMsgs).toHaveLength(2);
+    expect(aliceMsgs.map((e) => (e.message as { sender_id: string }).sender_id)).toEqual([
       'ou_alice',
       'bot',
     ]);

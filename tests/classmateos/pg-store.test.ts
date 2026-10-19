@@ -76,7 +76,7 @@ describe('PgTableStore', () => {
 
     const q0 = queries[0];
     expect(q0.text).toBe(
-      'SELECT * FROM "gantt" WHERE "status"::text = $1 AND "progress"::text < $2 ORDER BY "due_date" DESC LIMIT $3 OFFSET $4',
+      'SELECT *, count(*) OVER() AS __total FROM "gantt" WHERE "status"::text = $1 AND "progress" < $2::double precision ORDER BY "due_date" DESC LIMIT $3 OFFSET $4',
     );
     expect(q0.params).toEqual(['进行中', '80', 3, 4]);
 

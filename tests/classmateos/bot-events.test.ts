@@ -14,7 +14,10 @@ import { WsBotEventSource, type BotEventPayload } from '../../src/pal/bot-events
 import { createClassmateOSAdapter } from '../../src/pal/classmateos-adapter.js';
 import type { FastifyInstance } from 'fastify';
 
-const USERS = [{ user_id: 'ou_alice', name: 'alice', password: 'pw1', role: 'admin' as const }];
+const USERS = [
+  { user_id: 'ou_alice', name: 'alice', password: 'pw1', role: 'admin' as const },
+  { user_id: 'ou_bob', name: 'bob', password: 'pw2', role: 'member' as const },
+];
 
 async function setup(): Promise<{ app: FastifyInstance; baseUrl: string; token: string }> {
   const app = await buildApp({ users: USERS, secret: "s", botToken: "btok" });
@@ -65,10 +68,10 @@ describe('Bot 事件 WS + askUser 回流', () => {
     });
 
     await new Promise((r) => setTimeout(r, 200));
-    expect(events).toHaveLength(1);
-    expect(events[0].event_type).toBe('message.receive');
-    expect(events[0].message?.content).toMatchObject({ text: '今天进展如何' });
-    expect(events[0].event_id).toMatch(/^evt_/);
+    const msgs = events.filter((e) => e.event_type === 'message.receive');
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].message?.content).toMatchObject({ text: '今天进展如何' });
+    expect(msgs[0].event_id).toMatch(/^evt_/);
     await app.close();
   });
 
