@@ -37,17 +37,37 @@ class Fs {
   static const bubbleMine = Color(0xFFCCE0FF);
   static const bubbleOther = Color(0xFFF2F3F5);
 
-  static const avatarColors = [primary, purple, teal, orange, Color(0xFF2EA121), red, cyan, violet];
+  static const avatarColors = [
+    primary,
+    purple,
+    teal,
+    orange,
+    Color(0xFF2EA121),
+    red,
+    cyan,
+    violet,
+  ];
 
   static const radius = 6.0;
   static const radiusL = 10.0;
 
   static List<BoxShadow> shadow = [
-    BoxShadow(color: const Color(0xFF1F2329).withValues(alpha: 0.06), blurRadius: 8, offset: const Offset(0, 2)),
-    BoxShadow(color: const Color(0xFF1F2329).withValues(alpha: 0.04), blurRadius: 2),
+    BoxShadow(
+      color: const Color(0xFF1F2329).withValues(alpha: 0.06),
+      blurRadius: 8,
+      offset: const Offset(0, 2),
+    ),
+    BoxShadow(
+      color: const Color(0xFF1F2329).withValues(alpha: 0.04),
+      blurRadius: 2,
+    ),
   ];
   static List<BoxShadow> shadowL = [
-    BoxShadow(color: const Color(0xFF1F2329).withValues(alpha: 0.12), blurRadius: 24, offset: const Offset(0, 8)),
+    BoxShadow(
+      color: const Color(0xFF1F2329).withValues(alpha: 0.12),
+      blurRadius: 24,
+      offset: const Offset(0, 8),
+    ),
   ];
 }
 
@@ -68,15 +88,67 @@ class TagColor {
   static const turquoise = TagColor(Color(0xFFD5F6F2), Color(0xFF067A6B));
   static const gray = TagColor(Color(0xFFEFF0F1), Color(0xFF646A73));
 
-  static const _palette = [blue, green, orange, purple, wathet, yellow, carmine, turquoise, red];
+  static const _palette = [
+    blue,
+    green,
+    orange,
+    purple,
+    wathet,
+    yellow,
+    carmine,
+    turquoise,
+    red,
+  ];
 
   static const _semantic = <String, TagColor>{
-    '完成': green, '已完成': green, '可公开': green, '在库': green, '正常': green, '成功': green,
-    '已接收': green, '已发表': green, '通过': green, 'done': green, 'accepted': green,
-    '进行中': blue, '借出': blue, '审稿中': blue, '已投稿': blue, 'in_progress': blue,
-    '逾期': red, '保密': red, '故障': red, '失败': red, '拒稿': red, '损坏': red, '丢失': red,
-    '搁置': gray, '已取消': gray, '未设置': gray, '未知': gray, 'cancelled': gray,
-    '规划中': orange, '未开始': orange, '待处理': orange, '维修中': orange, '撰写中': purple,
+    '完成': green,
+    '已完成': green,
+    '可公开': green,
+    '在库': green,
+    '正常': green,
+    '成功': green,
+    '已接收': green,
+    '已发表': green,
+    '通过': green,
+    'done': green,
+    'accepted': green,
+    '进行中': blue,
+    '借出': blue,
+    '审稿中': blue,
+    '已投稿': blue,
+    'in_progress': blue,
+    '逾期': red,
+    '保密': red,
+    '故障': red,
+    '失败': red,
+    '拒稿': red,
+    '损坏': red,
+    '丢失': red,
+    '搁置': gray,
+    '已取消': gray,
+    '未设置': gray,
+    '未知': gray,
+    'cancelled': gray,
+    '规划中': orange,
+    '未开始': orange,
+    '待处理': orange,
+    '维修中': orange,
+    '撰写中': purple,
+  };
+
+  /// 后端颜色名（option_colors 的值）→ 标签色；不认识返回 null。
+  static TagColor? named(String? name) => switch (name) {
+    'blue' => blue,
+    'green' => green,
+    'orange' => orange,
+    'red' => red,
+    'purple' => purple,
+    'wathet' || 'cyan' => wathet,
+    'yellow' => yellow,
+    'carmine' => carmine,
+    'turquoise' => turquoise,
+    'gray' => gray,
+    _ => null,
   };
 
   static TagColor of(String text) {
@@ -101,8 +173,18 @@ ThemeData buildFsTheme() {
     error: Fs.red,
     surfaceContainerHighest: Fs.hover,
   );
-  const fallback = ['PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'sans-serif'];
-  final base = ThemeData(useMaterial3: true, colorScheme: scheme, fontFamilyFallback: fallback);
+  const fallback = [
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    'Noto Sans SC',
+    'sans-serif',
+  ];
+  final base = ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    fontFamilyFallback: fallback,
+  );
   final border = OutlineInputBorder(
     borderRadius: BorderRadius.circular(Fs.radius),
     borderSide: const BorderSide(color: Color(0xFFD0D3D6)),
@@ -112,8 +194,15 @@ ThemeData buildFsTheme() {
     splashFactory: NoSplash.splashFactory,
     hoverColor: Fs.hover,
     dividerColor: Fs.line,
-    dividerTheme: const DividerThemeData(color: Fs.line, thickness: 1, space: 1),
-    textTheme: base.textTheme.apply(bodyColor: Fs.text1, displayColor: Fs.text1),
+    dividerTheme: const DividerThemeData(
+      color: Fs.line,
+      thickness: 1,
+      space: 1,
+    ),
+    textTheme: base.textTheme.apply(
+      bodyColor: Fs.text1,
+      displayColor: Fs.text1,
+    ),
     iconTheme: const IconThemeData(color: Fs.text2, size: 20),
     appBarTheme: const AppBarTheme(
       backgroundColor: Colors.white,
@@ -121,7 +210,11 @@ ThemeData buildFsTheme() {
       elevation: 0,
       scrolledUnderElevation: 0,
       centerTitle: false,
-      titleTextStyle: TextStyle(color: Fs.text1, fontSize: 16, fontWeight: FontWeight.w600),
+      titleTextStyle: TextStyle(
+        color: Fs.text1,
+        fontSize: 16,
+        fontWeight: FontWeight.w600,
+      ),
       shape: Border(bottom: BorderSide(color: Fs.line)),
     ),
     inputDecorationTheme: InputDecorationTheme(
@@ -133,7 +226,9 @@ ThemeData buildFsTheme() {
       labelStyle: const TextStyle(color: Fs.text2, fontSize: 14),
       border: border,
       enabledBorder: border,
-      focusedBorder: border.copyWith(borderSide: const BorderSide(color: Fs.primary, width: 1.2)),
+      focusedBorder: border.copyWith(
+        borderSide: const BorderSide(color: Fs.primary, width: 1.2),
+      ),
       errorBorder: border.copyWith(borderSide: const BorderSide(color: Fs.red)),
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -141,7 +236,9 @@ ThemeData buildFsTheme() {
         backgroundColor: Fs.primary,
         minimumSize: const Size(64, 36),
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Fs.radius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+        ),
         textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
       ),
     ),
@@ -151,7 +248,9 @@ ThemeData buildFsTheme() {
         minimumSize: const Size(64, 36),
         padding: const EdgeInsets.symmetric(horizontal: 14),
         side: const BorderSide(color: Color(0xFFD0D3D6)),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Fs.radius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+        ),
         textStyle: const TextStyle(fontSize: 14),
       ),
     ),
@@ -159,14 +258,20 @@ ThemeData buildFsTheme() {
       style: TextButton.styleFrom(
         foregroundColor: Fs.primary,
         minimumSize: const Size(48, 34),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Fs.radius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+        ),
       ),
     ),
     dialogTheme: DialogThemeData(
       backgroundColor: Colors.white,
       surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      titleTextStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600, color: Fs.text1),
+      titleTextStyle: const TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        color: Fs.text1,
+      ),
     ),
     popupMenuTheme: PopupMenuThemeData(
       color: Colors.white,
@@ -176,7 +281,10 @@ ThemeData buildFsTheme() {
       textStyle: const TextStyle(fontSize: 14, color: Fs.text1),
     ),
     tooltipTheme: TooltipThemeData(
-      decoration: BoxDecoration(color: const Color(0xE61F2329), borderRadius: BorderRadius.circular(6)),
+      decoration: BoxDecoration(
+        color: const Color(0xE61F2329),
+        borderRadius: BorderRadius.circular(6),
+      ),
       textStyle: const TextStyle(color: Colors.white, fontSize: 12),
       waitDuration: const Duration(milliseconds: 400),
     ),
@@ -207,14 +315,18 @@ ThemeData buildFsTheme() {
       indicatorColor: Colors.transparent,
       surfaceTintColor: Colors.transparent,
       height: 60,
-      labelTextStyle: WidgetStateProperty.resolveWith((s) => TextStyle(
-            fontSize: 11,
-            color: s.contains(WidgetState.selected) ? Fs.primary : Fs.text2,
-          )),
-      iconTheme: WidgetStateProperty.resolveWith((s) => IconThemeData(
-            size: 24,
-            color: s.contains(WidgetState.selected) ? Fs.primary : Fs.text2,
-          )),
+      labelTextStyle: WidgetStateProperty.resolveWith(
+        (s) => TextStyle(
+          fontSize: 11,
+          color: s.contains(WidgetState.selected) ? Fs.primary : Fs.text2,
+        ),
+      ),
+      iconTheme: WidgetStateProperty.resolveWith(
+        (s) => IconThemeData(
+          size: 24,
+          color: s.contains(WidgetState.selected) ? Fs.primary : Fs.text2,
+        ),
+      ),
     ),
   );
 }

@@ -6,8 +6,10 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'api/phase2.dart';
 import 'api_client.dart';
 import 'models.dart';
 
@@ -16,6 +18,7 @@ enum AppModule {
   messages('消息'),
   calendar('日历'),
   docs('云文档'),
+  wiki('知识库'),
   bitable('多维表格'),
   tasks('任务'),
   drive('云盘'),
@@ -29,6 +32,10 @@ enum AppModule {
 const kBotId = 'bot';
 const kBotName = '飞书同学';
 const kDriveChatName = '我的云盘';
+
+/// 系统推送 token 的来源（APNs / FCM）。接入推送 SDK 后在 main() 里赋值；
+/// 为 null 或返回 null 时不注册设备（桌面端、未授权通知时）。
+Future<({String platform, String token})?> Function()? pushTokenProvider;
 
 class AppState extends ChangeNotifier {
   final CosApiClient api;
@@ -62,14 +69,115 @@ class AppState extends ChangeNotifier {
   bool _disposed = false;
   bool _stopped = false;
 
+  /// 二期功能开关（需求文档 2.1）；拉取失败时只开放一期功能 + 新建表。
+  CosCapabilities caps = CosCapabilities.legacyDefaults;
+  bool feature(String key) => caps.has(key);
+
+  /// 导航里显示的模块（二期模块按功能开关显示）。
+  bool moduleVisible(AppModule m) => switch (m) {
+        AppModule.wiki => feature('wiki'),
+        _ => true,
+      };
+
+  /// 通知中心未读数。
+  int notifUnread = 0;
+
+  /// 已订阅的 WS 主题（table:xxx）→ 引用计数；重连后自动重新订阅。
+  final Map<String, int> _topics = {};
+
+  /// 通知点击后要打开的位置（各模块读取后清空）。
+  Map<String, dynamic>? pendingTarget;
+
   Future<void> init({bool realtime = true}) async {
     api.onAuthLost = logout;
     try {
       users = await api.listUsers();
       _userById..clear()..addEntries(users.map((u) => MapEntry(u.userId, u)));
     } catch (_) {}
-    await refreshChats();
+    await Future.wait([refreshChats(), loadCapabilities()]);
+    unawaited(refreshNotifUnread());
+    unawaited(registerPush());
     if (realtime) _connectWs();
+  }
+
+  Future<void> loadCapabilities() async {
+    try {
+      caps = await api.capabilities();
+      _notify();
+    } catch (_) {/* 保留上次的开关 */}
+  }
+
+  /// 本地调整通知未读数（点开一条 / 全部已读），随后以后端为准。
+  void setNotifUnread(int n) {
+    notifUnread = n < 0 ? 0 : n;
+    _notify();
+  }
+
+  Future<void> refreshNotifUnread() async {
+    if (!feature('notifications')) return;
+    try {
+      notifUnread = await api.notificationUnreadCount();
+      _notify();
+    } catch (_) {}
+  }
+
+  // ---------------- 订阅 ----------------
+
+  void subscribe(String topic) {
+    final n = (_topics[topic] ?? 0) + 1;
+    _topics[topic] = n;
+    if (n == 1) _sendWs({'type': 'subscribe', 'topic': topic});
+  }
+
+  void unsubscribe(String topic) {
+    final n = (_topics[topic] ?? 0) - 1;
+    if (n > 0) {
+      _topics[topic] = n;
+      return;
+    }
+    _topics.remove(topic);
+    _sendWs({'type': 'unsubscribe', 'topic': topic});
+  }
+
+  Set<String> get subscribedTopics => _topics.keys.toSet();
+
+  void _sendWs(Map<String, dynamic> frame) {
+    if (!wsConnected) return; // 连上后统一补发
+    try {
+      _ws?.sink.add(jsonEncode(frame));
+    } catch (_) {}
+  }
+
+  /// 测试数据模式 / 单测：直接注入一条实时事件。
+  void injectEvent(CosEvent e) => _handleEvent(e);
+
+  // ---------------- 推送设备 ----------------
+
+  static const _deviceKey = 'cos_push_device_id';
+
+  Future<void> registerPush() async {
+    final provider = pushTokenProvider;
+    if (provider == null) return;
+    try {
+      final t = await provider();
+      if (t == null) return;
+      final d = await api.registerDevice(t.platform, t.token);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_deviceKey, d.deviceId);
+    } catch (_) {/* 下次启动再试 */}
+  }
+
+  /// 系统推送 token 变化时调用（重新注册，后端按 token 幂等）。
+  Future<void> onPushTokenChanged() => registerPush();
+
+  Future<void> _unregisterPush() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final id = prefs.getString(_deviceKey);
+      if (id == null) return;
+      await api.unregisterDevice(id).timeout(const Duration(seconds: 5));
+      await prefs.remove(_deviceKey);
+    } catch (_) {/* 注销失败不阻止退出 */}
   }
 
   Future<void> _connectWs() async {
@@ -84,6 +192,11 @@ class AppState extends ChangeNotifier {
       ch.ready.then((_) {
         if (_disposed || _stopped || _ws != ch) return;
         wsConnected = true;
+        for (final t in _topics.keys) {
+          ch.sink.add(jsonEncode({'type': 'subscribe', 'topic': t}));
+        }
+        unawaited(loadCapabilities());
+        unawaited(refreshNotifUnread());
         _notify();
         _heartbeat?.cancel();
         _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
@@ -126,6 +239,13 @@ class AppState extends ChangeNotifier {
       if (lastMessage[m.chatId]?.messageId == m.messageId) lastMessage[m.chatId] = m;
       _messages.add(m);
       _notify();
+    } else if (e.eventType == 'notification.new') {
+      notifUnread++;
+      _notify();
+    } else if (e.eventType == 'notification.read') {
+      unawaited(refreshNotifUnread());
+    } else if (e.eventType == 'capabilities.changed') {
+      unawaited(loadCapabilities());
     } else if (e.eventType == 'message.read' || e.eventType.startsWith('chat.')) {
       if (e.eventType == 'chat.member_removed' && e.userId == me.userId && e.chat?['chat_id'] == currentChatId) currentChatId = null;
       refreshChats();
@@ -220,6 +340,27 @@ class AppState extends ChangeNotifier {
 
   // ---------------- 导航 ----------------
 
+  /// 打开通知指向的位置：doc / record / task / calendar / approval …
+  void openTarget(Map<String, dynamic> target) {
+    final type = target['type']?.toString() ?? '';
+    final m = switch (type) {
+      'doc' => AppModule.docs,
+      'wiki' || 'wiki_node' => feature('wiki') ? AppModule.wiki : AppModule.docs,
+      'record' || 'table' => AppModule.bitable,
+      'task' => AppModule.tasks,
+      'calendar' || 'event' => AppModule.calendar,
+      'chat' || 'message' => AppModule.messages,
+      _ => null,
+    };
+    if (m == null) return;
+    pendingTarget = target;
+    if (m == AppModule.messages && target['id'] != null) {
+      openChat(target['id'].toString());
+      return;
+    }
+    go(m);
+  }
+
   void go(AppModule m) {
     module = m;
     if (m == AppModule.messages && currentChatId != null) markRead(currentChatId!);
@@ -301,7 +442,11 @@ class AppState extends ChangeNotifier {
     if (_stopped || _disposed) return;
     _stopped = true;
     api.onAuthLost = null;
-    unawaited(api.logout());
+    // 先注销推送设备（需要有效令牌），再让服务器上的令牌失效
+    unawaited(() async {
+      await _unregisterPush();
+      await api.logout();
+    }());
     _heartbeat?.cancel();
     _reconnectTimer?.cancel();
     _wsSub?.cancel();
@@ -340,6 +485,9 @@ class AppScope extends InheritedNotifier<AppState> {
   /// 只读取不订阅（回调里用）。
   static AppState read(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
+
+  /// 可能不在 AppScope 里（如单独渲染 Markdown）时用。
+  static AppState? maybeOf(BuildContext context) => context.getInheritedWidgetOfExactType<AppScope>()?.notifier;
 }
 
 /// 推入新页面并把 AppState 带过去（路由不在 AppScope 子树里）。

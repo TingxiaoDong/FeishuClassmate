@@ -93,6 +93,9 @@ class CosSession {
   const CosSession(this.accessToken, this.refreshToken, this.expiresAt, this.user);
 }
 
+/// 创建默认 HTTP 客户端；模拟模式（COS_MOCK）在 main() 里替换成 MockBackendClient。
+http.Client Function() cosHttpClientFactory = http.Client.new;
+
 class CosApiClient {
   final String baseUrl; // e.g. http://localhost:8080/api/v1
   String? accessToken;
@@ -110,7 +113,7 @@ class CosApiClient {
 
   /// [client] 可注入（测试用 MockClient）；缺省用默认 http.Client。
   CosApiClient(this.baseUrl, {this.accessToken, this.refreshToken, http.Client? client})
-      : _http = client ?? http.Client();
+      : _http = client ?? cosHttpClientFactory();
 
   /// 服务端源（scheme://host:port），用于拼接预签名的相对地址。
   String get origin => Uri.parse(baseUrl).origin;
@@ -163,6 +166,18 @@ class CosApiClient {
       rethrow;
     }
   }
+
+  /// 二期接口（lib/api/phase2_api.dart）共用的请求入口：自动带令牌、401 刷新重放。
+  Future<Map<String, dynamic>> request(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+    Map<String, String>? query,
+  }) =>
+      _call(method, path, body: body, query: query);
+
+  /// 二期分页列表的解析。
+  CosPage<T> parsePage<T>(Map<String, dynamic> data, T Function(Map<String, dynamic>) f) => _page(data, f);
 
   Future<Map<String, dynamic>> _send(
     String method,
@@ -434,11 +449,13 @@ class CosApiClient {
   // ---------------- 文件（预签名直传） ----------------
 
   /// 上传字节，返回文件引用（可直接作为 file / image 消息 content）。
-  Future<CosFileRef> uploadBytes(String fileName, Uint8List bytes, {String? contentType}) async {
+  /// [ref] 二期：把文件绑定到对象（如 {type: doc, id: doc_xxx}），能看这个对象的人就能看文件。
+  Future<CosFileRef> uploadBytes(String fileName, Uint8List bytes, {String? contentType, Map<String, String>? ref}) async {
     final grant = await _call('POST', '/files/upload-url', body: {
       'file_name': fileName,
       'size': bytes.length,
       if (contentType != null) 'content_type': contentType,
+      if (ref != null) 'ref': ref,
     });
     final uploadUrl = grant['upload_url'] as String;
     final http.Response res;
@@ -508,6 +525,24 @@ class CosApiClient {
 
   Future<List<CosTableMeta>> listTables() async => _items(await _call('GET', '/tables'), CosTableMeta.fromJson);
 
+  /// 新建数据表；201 为新建成功，200 为幂等重试命中。
+  Future<CosTableMeta> createTable({
+    required String name,
+    String? description,
+    required String primaryField,
+    required List<Map<String, dynamic>> fields,
+    String? clientRequestId,
+  }) async {
+    final data = await _call('POST', '/tables', body: {
+      'name': name,
+      if (description != null && description.isNotEmpty) 'description': description,
+      'primary_field': primaryField,
+      'fields': fields,
+      if (clientRequestId != null) 'client_request_id': clientRequestId,
+    });
+    return CosTableMeta.fromJson(data);
+  }
+
   Future<CosPage<CosRecord>> listRecords(
     String tableKey, {
     String? filter,
@@ -553,10 +588,10 @@ class CosApiClient {
 
   // ---------------- 日历 ----------------
 
-  Future<List<CosCalendarEvent>> listEvents(DateTime from, DateTime to, {String? userId}) async {
+  Future<List<CosCalendarEvent>> listEvents(DateTime from, DateTime to, {String? userId, bool expandRecurring = false}) async {
     final data = await _call('GET', '/calendar/events', query: {
-      'from': '${from.millisecondsSinceEpoch}',
-      'to': '${to.millisecondsSinceEpoch}',
+      (expandRecurring ? 'start_ms' : 'from'): '${from.millisecondsSinceEpoch}',
+      (expandRecurring ? 'end_ms' : 'to'): '${to.millisecondsSinceEpoch}',
       if (userId != null) 'user_id': userId,
     });
     return _items(data, CosCalendarEvent.fromJson);
@@ -572,8 +607,11 @@ class CosApiClient {
     bool? allDay,
     String? color,
     List<int>? reminders,
+    String? recurrence,
+    bool clearRecurrence = false,
   }) =>
       {
+        if (recurrence != null || clearRecurrence) 'recurrence': recurrence,
         if (title != null) 'title': title,
         if (start != null) 'start_ms': start.millisecondsSinceEpoch,
         if (end != null) 'end_ms': end.millisecondsSinceEpoch,
@@ -595,6 +633,9 @@ class CosApiClient {
     bool allDay = false,
     String? color,
     List<int>? reminders,
+    String? recurrence,
+    bool clearRecurrence = false,
+    String? scope,
   }) async =>
       CosCalendarEvent.fromJson(await _call('POST', '/calendar/events',
           body: _eventBody(
@@ -607,6 +648,7 @@ class CosApiClient {
             allDay: allDay,
             color: color,
             reminders: reminders,
+            recurrence: recurrence, clearRecurrence: clearRecurrence,
           )));
 
   /// 修改日程（仅创建者）。传入的字段才会修改；空字符串表示清空。
@@ -621,8 +663,12 @@ class CosApiClient {
     bool? allDay,
     String? color,
     List<int>? reminders,
+    String? recurrence,
+    bool clearRecurrence = false,
+    String? scope,
   }) async =>
       CosCalendarEvent.fromJson(await _call('PATCH', '/calendar/events/$eventId',
+          query: {if (scope != null) 'scope': scope},
           body: _eventBody(
             title: title,
             start: start,
@@ -633,21 +679,24 @@ class CosApiClient {
             allDay: allDay,
             color: color,
             reminders: reminders,
+            recurrence: recurrence, clearRecurrence: clearRecurrence,
           )));
 
   /// 回复邀请：accepted | declined | tentative。
   Future<CosCalendarEvent> rsvpEvent(String eventId, String rsvp) async =>
       CosCalendarEvent.fromJson(await _call('POST', '/calendar/events/$eventId/rsvp', body: {'rsvp': rsvp}));
 
-  Future<void> deleteEvent(String eventId) async => _call('DELETE', '/calendar/events/$eventId');
+  Future<void> deleteEvent(String eventId, {String? scope}) async => _call('DELETE', '/calendar/events/$eventId', query: {if (scope != null) 'scope': scope});
 
   // ---------------- 任务 ----------------
 
   /// [assigneeId] / [createdBy] 可传 `me`。
-  Future<List<CosTask>> listTasks({String? assigneeId, String? createdBy, String? status}) async {
+  Future<List<CosTask>> listTasks({String? assigneeId, String? createdBy, String? status, String? followerId, bool includeSubtasks = false}) async {
     final data = await _call('GET', '/tasks', query: {
       if (assigneeId != null) 'assignee_id': assigneeId,
       if (createdBy != null) 'created_by': createdBy,
+      if (followerId != null) 'follower_id': followerId,
+      if (includeSubtasks) 'include_subtasks': 'true',
       if (status != null) 'status': status,
     });
     return _items(data, CosTask.fromJson);
@@ -655,6 +704,7 @@ class CosApiClient {
 
   Future<CosTask> createTask({
     required String title,
+    String? parentId,
     String? assigneeId,
     DateTime? due,
     String? description,
@@ -662,6 +712,7 @@ class CosApiClient {
   }) async =>
       CosTask.fromJson(await _call('POST', '/tasks', body: {
         'title': title,
+        if (parentId != null) 'parent_id': parentId,
         if (assigneeId != null) 'assignee_id': assigneeId,
         if (due != null) 'due_ms': due.millisecondsSinceEpoch,
         if (description != null && description.isNotEmpty) 'description': description,

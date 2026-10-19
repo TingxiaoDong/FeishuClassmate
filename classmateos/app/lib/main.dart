@@ -9,6 +9,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'api_client.dart';
 import 'app_state.dart';
 import 'dev_env.dart';
+import 'mock/mock_backend.dart';
 import 'models.dart';
 import 'pages/login_page.dart';
 import 'pages/shell.dart';
@@ -39,7 +40,23 @@ class _ClassmateAppState extends State<ClassmateApp> {
     _restore();
   }
 
+  /// 测试数据模式（COS_MOCK=1）：不连真实后端，数据在内存里，不保存登录状态。
+  MockBackend? _mock;
+
   Future<void> _restore() async {
+    if (devEnv('COS_MOCK') == '1' || const bool.fromEnvironment('COS_MOCK')) {
+      final mock = _mock = MockBackend();
+      final api = CosApiClient(kMockBaseUrl, client: mock.client);
+      try {
+        final me = await api.login(devEnv('COS_DEV_USER') ?? 'admin', 'mock');
+        if (mounted) _onLoggedIn(api, me);
+        final m = AppModule.values.where((e) => e.name == devEnv('COS_DEV_MODULE')).firstOrNull;
+        if (m != null) session?.go(m);
+      } finally {
+        if (mounted) setState(() => restoring = false);
+      }
+      return;
+    }
     try {
       final prefs = await SharedPreferences.getInstance();
       lastBaseUrl = devEnv('COS_BASE_URL') ?? prefs.getString('cos_server') ?? kBaseUrl;
@@ -80,13 +97,17 @@ class _ClassmateAppState extends State<ClassmateApp> {
   }
 
   void _onLoggedIn(CosApiClient api, CosUser me) {
-    api.onSession = (s) => _persist(api, s);
-    _persist(api, CosSession(api.accessToken ?? '', api.refreshToken ?? '', api.expiresAt ?? DateTime.now(), me));
+    if (_mock == null) {
+      api.onSession = (s) => _persist(api, s);
+      _persist(api, CosSession(api.accessToken ?? '', api.refreshToken ?? '', api.expiresAt ?? DateTime.now(), me));
+    }
     final s = AppState(api: api, me: me, onLogout: () {
       SharedPreferences.getInstance().then((p) => p.remove('cos_refresh'));
       if (mounted) setState(() => session = null);
     });
-    s.init();
+    final mock = _mock;
+    if (mock != null) mock.onEvent = (e) => s.injectEvent(CosEvent.fromJson(e));
+    s.init(realtime: mock == null);
     setState(() {
       session = s;
       lastBaseUrl = api.baseUrl;
