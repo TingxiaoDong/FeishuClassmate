@@ -72,4 +72,45 @@ void main() {
     expect(body.containsKey('assignee_id'), isTrue);
     expect(body['assignee_id'], isNull);
   });
+
+  test('新建数据表按约定提交 POST /tables', () async {
+    late http.Request request;
+    final client = MockClient((req) async {
+      request = req;
+      return http.Response(jsonEncode({'key': 'tbl_equipment', 'name': '设备借用', 'primary_field': 'name', 'fields': [
+        {'field_name': 'name', 'title': '名称', 'type': 1, 'required': true},
+      ]}), 201, headers: {'content-type': 'application/json'});
+    });
+    final api = CosApiClient('http://example.test/api/v1', accessToken: 'token', client: client)
+      ..expiresAt = DateTime.now().add(const Duration(hours: 1));
+    final table = await api.createTable(name: '设备借用', primaryField: 'name', clientRequestId: 'req_1', fields: [
+      {'field_name': 'name', 'title': '名称', 'type': 1, 'required': true},
+    ]);
+    final body = jsonDecode(request.body) as Map<String, dynamic>;
+    expect(request.method, 'POST');
+    expect(request.url.path, '/api/v1/tables');
+    expect(body['client_request_id'], 'req_1');
+    expect(table.key, 'tbl_equipment');
+  });
+
+  test('新建数据表 422 错误保留字段路径', () async {
+    final client = MockClient((_) async => http.Response(jsonEncode({
+          'message': '字段校验失败',
+          'code': 'VALIDATION_FAILED',
+          'errors': [{'field': 'fields[1].options[0]', 'message': '选项不能为空'}],
+        }), 422, headers: {'content-type': 'application/json'}));
+    final api = CosApiClient('http://example.test/api/v1', accessToken: 'token', client: client)
+      ..expiresAt = DateTime.now().add(const Duration(hours: 1));
+    await expectLater(
+      api.createTable(name: '表', primaryField: 'name', fields: const []),
+      throwsA(isA<CosApiException>().having((e) => e.errors.single['field'], 'field', 'fields[1].options[0]')),
+    );
+  });
+
+  test('解析自定义数据表标记', () {
+    final t = CosTableMeta.fromJson({'key': 'tbl_x', 'name': '设备', 'builtin': false, 'created_by': 'ou_admin'});
+    expect(t.builtin, isFalse);
+    expect(t.createdBy, 'ou_admin');
+    expect(CosTableMeta.fromJson({'key': 'projects', 'name': '项目'}).builtin, isTrue);
+  });
 }
