@@ -165,4 +165,7 @@ class CosApiClient {
   Future<void> deleteRecord(String tableKey, String recordId) async {
     await _call('DELETE', '/tables/$tableKey/records/$recordId');
   }
+
+  /// 通用 GET（P1 期间文档/日历等端点的轻量入口，后续补类型化方法）。
+  Future<Map<String, dynamic>> rawGet(String path) => _call('GET', path);
 }
