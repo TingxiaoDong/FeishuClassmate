@@ -10,23 +10,60 @@ export interface StoredRecord {
   fields: Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  created_by?: string | null;
+  updated_by?: string | null;
 }
 
 export interface ListResult {
   items: StoredRecord[];
   has_more: boolean;
   page_token?: string;
+  /** 符合筛选条件（含保密过滤）的总数。 */
+  total?: number;
+}
+
+export interface ListOptions {
+  filter?: string;
+  sort?: string;
+  pageSize: number;
+  pageToken?: string;
+  /** 在所有文本类字段里模糊搜索。 */
+  keyword?: string;
+  /**
+   * 保密记录过滤：给出 user_id 时，`visibility = 保密` 且负责人（owner_open_id）不含该用户的记录不返回。
+   * 只对启用了行级保密规则的表、非管理员传入（见 row-access.ts）。
+   */
+  confidentialFor?: string;
 }
 
 export interface TableStore {
-  list(
-    tableKey: string,
-    opts: { filter?: string; sort?: string; pageSize: number; pageToken?: string },
-  ): Promise<ListResult>;
+  list(tableKey: string, opts: ListOptions): Promise<ListResult>;
   get(tableKey: string, recordId: string): Promise<StoredRecord | undefined>;
-  create(tableKey: string, fields: Record<string, unknown>): Promise<StoredRecord>;
-  update(tableKey: string, recordId: string, fields: Record<string, unknown>): Promise<StoredRecord | undefined>;
+  create(tableKey: string, fields: Record<string, unknown>, actor?: string): Promise<StoredRecord>;
+  update(
+    tableKey: string,
+    recordId: string,
+    fields: Record<string, unknown>,
+    actor?: string,
+  ): Promise<StoredRecord | undefined>;
   delete(tableKey: string, recordId: string): Promise<boolean>;
+}
+
+/** 内存实现用的保密判断（与 row-access.ts 规则一致）。 */
+export function visibleToUser(fields: Record<string, unknown>, userId: string): boolean {
+  if (fields.visibility !== '保密') return true;
+  const owners = Array.isArray(fields.owner_open_id) ? fields.owner_open_id : [];
+  return owners.some((o) => o && typeof o === 'object' && (o as { id?: unknown }).id === userId);
+}
+
+function matchesKeyword(fields: Record<string, unknown>, keyword?: string): boolean {
+  const kw = keyword?.trim().toLowerCase();
+  if (!kw) return true;
+  return Object.values(fields).some((v) => {
+    if (typeof v === 'string') return v.toLowerCase().includes(kw);
+    if (Array.isArray(v)) return v.some((x) => typeof x === 'string' && x.toLowerCase().includes(kw));
+    return false;
+  });
 }
 
 /**
@@ -91,11 +128,13 @@ export class MemoryTableStore implements TableStore {
     return t;
   }
 
-  async list(
-    tableKey: string,
-    opts: { filter?: string; sort?: string; pageSize: number; pageToken?: string },
-  ): Promise<ListResult> {
-    let rows = [...this.table(tableKey).values()].filter((r) => matchesFilter(r.fields, opts.filter));
+  async list(tableKey: string, opts: ListOptions): Promise<ListResult> {
+    let rows = [...this.table(tableKey).values()].filter(
+      (r) =>
+        matchesFilter(r.fields, opts.filter) &&
+        matchesKeyword(r.fields, opts.keyword) &&
+        (!opts.confidentialFor || visibleToUser(r.fields, opts.confidentialFor)),
+    );
 
     if (opts.sort) {
       const m = opts.sort.match(/^([\p{L}\p{N}_]+)\s*(asc|desc)?$/iu);
@@ -113,6 +152,7 @@ export class MemoryTableStore implements TableStore {
       items: page,
       has_more: next < rows.length,
       page_token: next < rows.length ? String(next) : undefined,
+      total: rows.length,
     };
   }
 
@@ -120,13 +160,15 @@ export class MemoryTableStore implements TableStore {
     return this.table(tableKey).get(recordId);
   }
 
-  async create(tableKey: string, fields: Record<string, unknown>): Promise<StoredRecord> {
+  async create(tableKey: string, fields: Record<string, unknown>, actor?: string): Promise<StoredRecord> {
     const now = new Date().toISOString();
     const rec: StoredRecord = {
       record_id: `rec_${randomUUID()}`,
-      fields,
+      fields: Object.fromEntries(Object.entries(fields).filter(([, v]) => v != null)),
       created_at: now,
       updated_at: now,
+      created_by: actor ?? null,
+      updated_by: actor ?? null,
     };
     this.table(tableKey).set(rec.record_id, rec);
     return rec;
@@ -136,12 +178,17 @@ export class MemoryTableStore implements TableStore {
     tableKey: string,
     recordId: string,
     fields: Record<string, unknown>,
+    actor?: string,
   ): Promise<StoredRecord | undefined> {
     const t = this.table(tableKey);
     const rec = t.get(recordId);
     if (!rec) return undefined;
-    rec.fields = { ...rec.fields, ...fields };
+    // null 表示清空字段：从 fields 里去掉（与 PG 实现回读时省略 null 列一致）
+    const merged = { ...rec.fields, ...fields };
+    for (const [k, v] of Object.entries(merged)) if (v == null) delete merged[k];
+    rec.fields = merged;
     rec.updated_at = new Date().toISOString();
+    if (actor) rec.updated_by = actor;
     return rec;
   }
 

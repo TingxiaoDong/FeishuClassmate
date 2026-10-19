@@ -8,8 +8,8 @@
  */
 
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, statSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream, existsSync, mkdirSync, statSync, type ReadStream } from 'node:fs';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export interface UploadGrant {
@@ -72,12 +72,14 @@ export class LocalFileStore implements FileStore {
     };
   }
 
-  getDownload(fileKey: string): DownloadGrant | undefined {
+  getDownload(fileKey: string, opts: { disposition?: 'inline' | 'attachment' } = {}): DownloadGrant | undefined {
     if (!existsSync(this.pathOf(fileKey))) return undefined;
-    const ttl = this.opts.ttlMs ?? 3600_000;
+    // 前端会缓存下载地址 4 分钟，有效期至少 5 分钟
+    const ttl = Math.max(this.opts.ttlMs ?? 3600_000, 300_000);
     const exp = Date.now() + ttl;
+    const disp = opts.disposition === 'attachment' ? '&disposition=attachment' : '';
     return {
-      downloadUrl: `${this.opts.urlPrefix}/${encodeURIComponent(fileKey)}/content?exp=${exp}&sig=${this.sign(fileKey, 'get', exp)}`,
+      downloadUrl: `${this.opts.urlPrefix}/${encodeURIComponent(fileKey)}/content?exp=${exp}&sig=${this.sign(fileKey, 'get', exp)}${disp}`,
       expiresIn: Math.floor(ttl / 1000),
     };
   }
@@ -103,6 +105,23 @@ export class LocalFileStore implements FileStore {
 
   sizeOf(fileKey: string): number {
     return statSync(this.pathOf(fileKey)).size;
+  }
+
+  exists(fileKey: string): boolean {
+    try {
+      return existsSync(this.pathOf(fileKey));
+    } catch {
+      return false;
+    }
+  }
+
+  /** 流式读取（支持 Range：start/end 为闭区间字节下标）。 */
+  stream(fileKey: string, range?: { start: number; end: number }): ReadStream {
+    return createReadStream(this.pathOf(fileKey), range);
+  }
+
+  async remove(fileKey: string): Promise<void> {
+    await rm(this.pathOf(fileKey), { force: true });
   }
 }
 
