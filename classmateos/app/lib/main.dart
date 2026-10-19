@@ -361,11 +361,13 @@ class _TablesPageState extends State<TablesPage> {
           ),
         ),
         Expanded(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SingleChildScrollView(
-              child: DataTable(
-                columns: [for (final c in cols) DataColumn(label: Text(c))],
+          child: cols.isEmpty
+              ? const Center(child: Text('（空表，还没有记录）'))
+              : SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: SingleChildScrollView(
+                    child: DataTable(
+                      columns: [for (final c in cols) DataColumn(label: Text(c))],
                 rows: [
                   for (final r in records)
                     DataRow(cells: [
