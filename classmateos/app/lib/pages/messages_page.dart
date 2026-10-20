@@ -247,7 +247,8 @@ class _ChatTile extends StatelessWidget {
     final isGroup = chat.chatType == 'group';
     var preview = last == null ? '' : messagePreview(s, last);
     if (last != null && isGroup && last.senderId != s.me.userId) {
-      preview = '${s.userName(last.senderId)}：$preview';
+      final obo = last.onBehalfOf;
+      preview = obo == null ? '${s.userName(last.senderId)}：$preview' : '${s.userName(last.senderId)}（代${obo.userId == s.me.userId ? '你' : (obo.name.isEmpty ? s.userName(obo.userId) : obo.name)}）：$preview';
     }
     final otherId = chat.memberIds.firstWhere((id) => id != s.me.userId, orElse: () => s.me.userId);
     final urgent = s.chatUrgent(chat.chatId);
@@ -567,31 +568,77 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
+  /// 多选收藏：后端没有批量接口，逐条调用（重复收藏不报错）；已撤回和系统消息跳过。
+  Future<void> _favoriteSelected() async {
+    final list = messages.where((m) => selected.contains(m.messageId)).toList();
+    final ok = [for (final m in list) if (!m.recalled && m.msgType != 'system') m];
+    final skipped = list.length - ok.length;
+    var failed = 0;
+    String? err;
+    for (final m in ok) {
+      try {
+        await _s.api.favoriteMessage(m.messageId, true);
+      } catch (e) {
+        failed++;
+        err ??= describeError(e);
+      }
+    }
+    if (!mounted) return;
+    final done = ok.length - failed;
+    if (failed == 0) {
+      setState(() {
+        selecting = false;
+        selected.clear();
+      });
+    }
+    final extra = [if (skipped > 0) '$skipped 条已撤回或是系统消息，不能收藏', if (failed > 0) '$failed 条失败：$err'].join('；');
+    showToast(context, done > 0 ? '已收藏 $done 条${extra.isEmpty ? '' : '（$extra）'}' : (extra.isEmpty ? '没有可收藏的消息' : extra),
+        error: done == 0 || failed > 0);
+  }
+
   Widget _selectBar() => Container(
         margin: const EdgeInsets.fromLTRB(16, 4, 16, 16),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Fs.line), borderRadius: BorderRadius.circular(10)),
         child: Row(children: [
           Text('已选 ${selected.length} 条', style: const TextStyle(fontSize: 14)),
-          const Spacer(),
-          OutlinedButton.icon(
-            onPressed: selected.isEmpty ? null : () => _forwardSelected('single'),
-            icon: const Icon(Icons.shortcut_rounded, size: 16),
-            label: const Text('逐条转发'),
-          ),
-          const SizedBox(width: 8),
-          FilledButton.icon(
-            onPressed: selected.isEmpty ? null : () => _forwardSelected('merge'),
-            icon: const Icon(Icons.library_books_outlined, size: 16),
-            label: const Text('合并转发'),
-          ),
-          const SizedBox(width: 8),
-          TextButton(
-            onPressed: () => setState(() {
-              selecting = false;
-              selected.clear();
-            }),
-            child: const Text('取消'),
+          const SizedBox(width: 12),
+          // 手机上按钮放不下时可以横向滑动
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                if (_s.feature('message.favorite')) ...[
+                  OutlinedButton.icon(
+                    key: const ValueKey('select-favorite'),
+                    onPressed: selected.isEmpty ? null : _favoriteSelected,
+                    icon: const Icon(Icons.star_outline_rounded, size: 16),
+                    label: const Text('收藏'),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                OutlinedButton.icon(
+                  onPressed: selected.isEmpty ? null : () => _forwardSelected('single'),
+                  icon: const Icon(Icons.shortcut_rounded, size: 16),
+                  label: const Text('逐条转发'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: selected.isEmpty ? null : () => _forwardSelected('merge'),
+                  icon: const Icon(Icons.library_books_outlined, size: 16),
+                  label: const Text('合并转发'),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => setState(() {
+                    selecting = false;
+                    selected.clear();
+                  }),
+                  child: const Text('取消'),
+                ),
+              ]),
+            ),
           ),
         ]),
       );
@@ -759,6 +806,8 @@ class _ChatViewState extends State<ChatView> {
                   !showTime &&
                   prev != null &&
                   prev.senderId == m.senderId &&
+                  // AI 代不同的同学发的消息不合并，否则后一条看不到「谁让发的」
+                  prev.onBehalfOf?.userId == m.onBehalfOf?.userId &&
                   prev.msgType != 'system' &&
                   t != null &&
                   pt != null &&
@@ -970,6 +1019,17 @@ class MessageItem extends StatelessWidget {
                           if (isBot) ...[
                             const SizedBox(width: 4),
                             const FsTag('机器人', color: TagColor.blue, fontSize: 10),
+                          ],
+                          if (m.onBehalfOf != null) ...[
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                onBehalfLabel(s, m.onBehalfOf!),
+                                key: ValueKey('obo-${m.messageId}'),
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11, color: Fs.text3),
+                              ),
+                            ),
                           ],
                           if (m.createdAt != null) ...[
                             const SizedBox(width: 6),

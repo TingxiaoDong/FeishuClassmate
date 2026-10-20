@@ -170,6 +170,12 @@ Future<CosMessage?> runMessageAction(BuildContext context, MsgAction a, CosMessa
 }
 
 /// 消息的一行摘要（引用、搜索结果、会话列表共用）。
+/// AI 代发标记的文字：「李华 通过 AI 助手发送」；自己让发的显示「你 通过 AI 助手发送」。
+String onBehalfLabel(AppState s, CosOnBehalf o) {
+  final who = o.userId == s.me.userId ? '你' : (o.name.isEmpty ? s.userName(o.userId) : o.name);
+  return '$who 通过 AI 助手发送';
+}
+
 String messagePreview(AppState s, CosMessage m) {
   final c = m.content;
   if (m.recalled) return '${m.senderId == s.me.userId ? '你' : s.userName(m.senderId)}撤回了一条消息';

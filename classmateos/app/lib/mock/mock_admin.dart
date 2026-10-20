@@ -407,7 +407,13 @@ class MockAdmin {
     if (seg[0] == 'departments') {
       if (seg.length == 1 && m == 'GET') {
         final parent = q['parent_id'] == null || q['parent_id'] == 'root' ? null : q['parent_id'];
-        return (200, {'items': [for (final d in departments.values) if (d['parent_id'] == parent) _dept(d)], 'has_more': false});
+        // 和后端一致：按 order 升序，相同时按部门 ID
+        final l = [for (final d in departments.values) if (d['parent_id'] == parent) d]
+          ..sort((a, b) {
+            final c = ((a['order'] as num?) ?? 0).compareTo((b['order'] as num?) ?? 0);
+            return c != 0 ? c : a['department_id'].toString().compareTo(b['department_id'].toString());
+          });
+        return (200, {'items': [for (final d in l) _dept(d)], 'has_more': false});
       }
       if (seg.length == 1 && m == 'POST') {
         _need('admin.departments');
@@ -446,15 +452,7 @@ class MockAdmin {
         for (final k in ['name', 'leader_id', 'order']) {
           if (body.containsKey(k)) d[k] = body[k];
         }
-        if (body.containsKey('order')) {
-          // 同级重新编号
-          final sib = departments.values.where((x) => x['parent_id'] == d['parent_id'] && x != d).toList()
-            ..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
-          sib.insert((body['order'] as int).clamp(0, sib.length), d);
-          for (var i = 0; i < sib.length; i++) {
-            sib[i]['order'] = i;
-          }
-        }
+        // 和后端一致：order 只是排序值，不会自动给同级重新编号（前端负责重排）
         for (final u in users) {
           _syncDeptText(u);
         }

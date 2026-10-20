@@ -127,6 +127,10 @@ class CosApiClient {
   /// 刷新失败（refresh_token 过期或被吊销）后回调，应回到登录页。
   void Function()? onAuthLost;
 
+  /// 没有 refresh_token 的客户端（桌面端的子窗口）遇到 401 时，向主窗口要当前的 access_token 再重试一次。
+  /// 子窗口不自己刷新，避免和主窗口同时轮换 refresh_token 互相挤掉。
+  Future<String?> Function()? borrowAccessToken;
+
   Future<bool>? _refreshing;
 
   /// [client] 可注入（测试用 MockClient）；缺省用默认 http.Client。
@@ -179,6 +183,16 @@ class CosApiClient {
       // 令牌失效：先刷新一次再重放；刷新失败才回登录页
       if (auth && e.statusCode == 401 && refreshToken != null) {
         if (await refresh()) return _send(method, path, body: body, query: query);
+        onAuthLost?.call();
+      } else if (auth && e.statusCode == 401 && borrowAccessToken != null) {
+        String? t;
+        try {
+          t = await borrowAccessToken!();
+        } catch (_) {}
+        if (t != null && t.isNotEmpty && t != accessToken) {
+          accessToken = t;
+          return _send(method, path, body: body, query: query);
+        }
         onAuthLost?.call();
       }
       if (auth && e.statusCode == 403 && e.code == 'PASSWORD_CHANGE_REQUIRED') onPasswordChangeRequired?.call();

@@ -134,42 +134,86 @@ class InternalLinkCard extends StatefulWidget {
   State<InternalLinkCard> createState() => _InternalLinkCardState();
 }
 
-/// 卡片标题缓存（同一个链接在会话里出现多次时不重复请求）。
-final Map<String, Future<String>> _titleCache = {};
+/// 把 Markdown 正文压成一行纯文字摘要（去掉标题符号、列表符号、链接和图片、表格竖线等），最多 [max] 个字。
+String plainSummary(String? md, {int max = 80}) {
+  if (md == null || md.trim().isEmpty) return '';
+  var t = md
+      .replaceAll(RegExp(r'```[\s\S]*?```'), ' ')
+      .replaceAll(RegExp(r'!\[[^\]]*\]\([^)]*\)'), ' ')
+      .replaceAllMapped(RegExp(r'\[([^\]]*)\]\([^)]*\)'), (m) => m[1]!)
+      .replaceAll(RegExp(r'^\s{0,3}(#{1,6}|>|[-*+]\s+\[[ xX]\]|[-*+]|\d+\.)\s*', multiLine: true), '')
+      .replaceAll(RegExp(r'^\s*\|?\s*:?-{3,}.*$', multiLine: true), ' ')
+      .replaceAll(RegExp(r'[*_`~|]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (t.length > max) t = '${t.substring(0, max)}…';
+  return t;
+}
+
+/// 记录摘要：除标题外的前几个字段值（文字、数字、选项、人员名）。
+String _recordSummary(Map f, Object? titleValue) {
+  String one(Object? v) => switch (v) {
+        null || bool() => '',
+        String() => v,
+        num() => '$v',
+        List() => v.map((e) => e is Map ? (e['name'] ?? e['text'] ?? '').toString() : one(e)).where((x) => x.isNotEmpty).join('、'),
+        Map() => (v['name'] ?? v['text'] ?? '').toString(),
+        _ => '',
+      };
+  final parts = [for (final v in f.values) if (!identical(v, titleValue)) one(v)].where((x) => x.trim().isNotEmpty).take(3);
+  return plainSummary(parts.join(' · '));
+}
+
+/// 卡片内容缓存（同一个链接在会话里出现多次时不重复请求）：(标题, 摘要)。
+final Map<String, Future<(String, String)>> _titleCache = {};
 
 class _InternalLinkCardState extends State<InternalLinkCard> {
-  late final Future<String> title = _titleCache.putIfAbsent('${AppScope.read(context).api.origin}:${AppScope.read(context).me.userId}:${widget.link.url}', _load);
+  late final Future<(String, String)> title =
+      _titleCache.putIfAbsent('${AppScope.read(context).api.origin}:${AppScope.read(context).me.userId}:${widget.link.url}', _load);
 
-  Future<String> _load() async {
+  Future<(String, String)> _load() async {
     final api = AppScope.read(context).api;
     final l = widget.link;
     switch (l.type) {
       case 'doc':
-        return (await api.getDoc(l.id)).title;
+        final d = await api.getDoc(l.id);
+        return (d.title, plainSummary(d.markdown ?? d.summary));
       case 'wiki':
-        return (await api.getNode(l.id)).title;
+        final n = await api.getNode(l.id);
+        var sum = '';
+        if (n.objType == 'doc' && n.objId.isNotEmpty) {
+          // 正文取不到（比如节点能看、文档单独限制）时只显示标题，不算失败
+          try {
+            final d = await api.getDoc(n.objId);
+            sum = plainSummary(d.markdown ?? d.summary);
+          } catch (_) {}
+        }
+        return (n.title, sum);
       case 'task':
-        return (await api.getTask(l.id)).title;
+        final t = await api.getTask(l.id);
+        return (t.title, plainSummary(t.description));
       default:
         final j = await api.request('GET', '/tables/${Uri.encodeComponent(l.tableKey ?? '')}/records/${Uri.encodeComponent(l.id)}');
         final f = (j['fields'] as Map?) ?? const {};
-        return (f['name'] ?? f['title'] ?? f.values.whereType<String>().firstOrNull ?? '记录').toString();
+        final tv = f['name'] ?? f['title'] ?? f.values.whereType<String>().firstOrNull;
+        return ((tv ?? '记录').toString(), _recordSummary(f, tv));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final l = widget.link;
-    return FutureBuilder<String>(
+    return FutureBuilder<(String, String)>(
       future: title,
       builder: (context, snap) {
         final err = snap.error;
         final denied = err is CosApiException && (err.statusCode == 403 || err.statusCode == 404);
-        final t = snap.data ?? (snap.hasError ? (denied ? '没有权限查看，或已被删除' : '加载失败') : '加载中…');
+        final t = snap.data?.$1 ?? (snap.hasError ? (denied ? '没有权限查看，或已被删除' : '加载失败') : '加载中…');
         return _LinkCardFrame(
           key: ValueKey('link-card-${l.type}-${l.id}'),
           icon: l.icon,
           title: t,
+          summary: snap.data?.$2 ?? '',
           subtitle: l.typeLabel,
           dim: snap.hasError,
           onTap: denied ? null : () => AppScope.read(context).openTarget(l.target),
@@ -201,9 +245,13 @@ class _LinkCardFrame extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
+
+  /// 正文摘要（内部链接），最多两行。
+  final String summary;
   final bool dim;
   final VoidCallback? onTap;
-  const _LinkCardFrame({super.key, required this.icon, required this.title, required this.subtitle, this.dim = false, this.onTap});
+  const _LinkCardFrame(
+      {super.key, required this.icon, required this.title, required this.subtitle, this.summary = '', this.dim = false, this.onTap});
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(top: 6),
@@ -231,6 +279,15 @@ class _LinkCardFrame extends StatelessWidget {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: dim ? Fs.text3 : Fs.text1)),
+                      if (summary.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2, bottom: 2),
+                          child: Text(summary,
+                              key: const ValueKey('link-card-summary'),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12, color: Fs.text2, height: 1.4)),
+                        ),
                       if (subtitle.isNotEmpty)
                         Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Fs.text3)),
                     ]),

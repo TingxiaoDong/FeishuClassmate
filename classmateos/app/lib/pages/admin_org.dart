@@ -1,4 +1,4 @@
-/// 组织架构（R-AD-02）：左侧部门树（多层，拖拽移动、上移下移），右侧部门信息和成员。
+/// 组织架构（R-AD-02）：左侧部门树（多层，拖到部门上改上下级、拖到两行之间调整顺序，也可上移下移），右侧部门信息和成员。
 /// [loadDepartmentTree] 也给成员管理、通讯录用。
 library;
 
@@ -46,6 +46,9 @@ class _AdminOrgPaneState extends State<AdminOrgPane> {
   String? selected;
   String? error;
   String? dropTarget;
+
+  /// 正在悬停的插入线（`父部门/位置`）。
+  String? dropGap;
 
   @override
   void initState() {
@@ -151,11 +154,11 @@ class _AdminOrgPaneState extends State<AdminOrgPane> {
         final name = await _askName('重命名部门', d.name);
         if (name != null && name != d.name) await _run(() => api.updateDepartment(d.departmentId, name: name));
       case 'up':
-        if (idx > 0) await _run(() => api.updateDepartment(d.departmentId, order: idx - 1));
+        if (idx > 0) await _reorder(d.departmentId, d.parentId, idx - 1);
       case 'down':
-        if (idx < siblings.length - 1) await _run(() => api.updateDepartment(d.departmentId, order: idx + 1));
+        if (idx < siblings.length - 1) await _reorder(d.departmentId, d.parentId, idx + 2);
       case 'top':
-        await _run(() => api.updateDepartment(d.departmentId, parentId: null), '已移到最上层');
+        await _reorder(d.departmentId, null, _siblings(null).length);
       case 'delete':
         if (!mounted) return;
         final ok = await confirmDialog(context, title: '删除部门', content: '确定删除「${d.name}」吗？部门里不能有成员和下级部门。', ok: '删除', danger: true);
@@ -163,13 +166,92 @@ class _AdminOrgPaneState extends State<AdminOrgPane> {
     }
   }
 
+  /// 同级部门（按当前显示顺序，即后端的排序）。
+  List<CosDepartment> _siblings(String? parentId) => [for (final n in nodes ?? const <DeptNode>[]) if (n.dept.parentId == parentId) n.dept];
+
+  /// 能不能把 [id] 放到 [parentId] 下面（不能放到自己或自己的下级里）。
+  bool _canPlace(String id, String? parentId) => parentId == null || (parentId != id && !_isDescendant(parentId, id));
+
+  /// 把部门 [id] 放到 [parentId] 下、原同级列表的第 [index] 个位置之前（index 按移动前的列表算）。
+  /// 后端的 `order` 只是排序值、不会自动重排，所以按新顺序给这一层所有部门重写 `order`（没变的不发）。
+  Future<void> _reorder(String id, String? parentId, int index) async {
+    final moving = _dept(id);
+    if (moving == null || !_canPlace(id, parentId)) return;
+    final before = _siblings(parentId);
+    final from = before.indexWhere((x) => x.departmentId == id);
+    if (from >= 0 && (index == from || index == from + 1)) return; // 位置没变
+    final list = [for (final x in before) if (x.departmentId != id) x];
+    final at = (from >= 0 && from < index ? index - 1 : index).clamp(0, list.length);
+    list.insert(at, moving);
+    final api = AppScope.read(context).api;
+    final changedParent = moving.parentId != parentId;
+    await _run(() async {
+      for (var i = 0; i < list.length; i++) {
+        final x = list[i];
+        if (x.departmentId == id) {
+          if (changedParent) {
+            await api.updateDepartment(id, order: i, parentId: parentId);
+          } else {
+            await api.updateDepartment(id, order: i);
+          }
+        } else if (x.order != i) {
+          await api.updateDepartment(x.departmentId, order: i);
+        }
+      }
+      if (parentId != null) collapsed.remove(parentId);
+    }, changedParent ? '已移动到「${_dept(parentId)?.name ?? '最上层'}」' : '已调整顺序');
+  }
+
+  /// 两行之间的插入线：拖到这里 = 放到 [parentId] 下的第 [index] 个位置。
+  Widget _gap(String? parentId, int index, int depth) {
+    final key = '${parentId ?? 'root'}/$index';
+    final on = dropGap == key;
+    return DragTarget<String>(
+      key: ValueKey('dept-gap-$key'),
+      onWillAcceptWithDetails: (x) {
+        final ok = _canPlace(x.data, parentId);
+        if (ok) setState(() => dropGap = key);
+        return ok;
+      },
+      onLeave: (_) => setState(() => dropGap = null),
+      onAcceptWithDetails: (x) {
+        setState(() => dropGap = null);
+        _reorder(x.data, parentId, index);
+      },
+      builder: (_, _, _) => Container(
+        height: on ? 10 : 6,
+        alignment: Alignment.center,
+        padding: EdgeInsets.only(left: 6.0 + depth * 18 + 20),
+        child: on ? Container(height: 2, color: Fs.primary) : null,
+      ),
+    );
+  }
+
+  /// 部门行 + 插入线：每行前一条（插到它前面）；每组最后一个部门（连同展开的下级）之后再补一条（插到这一层最后）。
+  List<Widget> _treeRows() {
+    final vis = _visible;
+    if (widget.readOnly) return [for (final n in vis) _row(n)];
+    final out = <Widget>[];
+    final stack = <DeptNode>[]; // stack[k] = 当前路径上第 k 层的部门
+    for (var i = 0; i < vis.length; i++) {
+      final n = vis[i];
+      stack.length = n.depth;
+      stack.add(n);
+      final parent = n.dept.parentId;
+      out.add(_gap(parent, _siblings(parent).indexWhere((x) => x.departmentId == n.dept.departmentId), n.depth));
+      out.add(_row(n));
+      final nextDepth = i + 1 < vis.length ? vis[i + 1].depth : -1;
+      for (var k = n.depth; k > nextDepth; k--) {
+        final p = k == 0 ? null : stack[k - 1].dept.departmentId;
+        out.add(_gap(p, _siblings(p).length, k));
+      }
+    }
+    return out;
+  }
+
   Future<void> _move(String id, String newParent) async {
     if (id == newParent || _isDescendant(newParent, id) || _dept(id)?.parentId == newParent) return;
-    final api = AppScope.read(context).api;
-    await _run(() async {
-      await api.updateDepartment(id, parentId: newParent);
-      collapsed.remove(newParent);
-    }, '已移动到「${_dept(newParent)?.name}」');
+    await _reorder(id, newParent, _siblings(newParent).length);
   }
 
   Widget _row(DeptNode n) {
@@ -260,14 +342,14 @@ class _AdminOrgPaneState extends State<AdminOrgPane> {
       if (!ro)
         const Padding(
           padding: EdgeInsets.fromLTRB(14, 10, 14, 4),
-          child: Text('长按拖动部门到另一个部门上，即可调整上下级', style: TextStyle(fontSize: 11, color: Fs.text3)),
+          child: Text('长按拖动：放到部门上成为它的下级，放到两行之间的横线上调整顺序', style: TextStyle(fontSize: 11, color: Fs.text3)),
         ),
       Expanded(
         child: nodes == null
             ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
             : nodes!.isEmpty
                 ? const EmptyState(icon: Icons.account_tree_outlined, title: '还没有部门')
-                : ListView(padding: const EdgeInsets.all(8), children: [for (final n in _visible) _row(n)]),
+                : ListView(padding: const EdgeInsets.all(8), children: _treeRows()),
       ),
     ]);
     final detail = selected == null

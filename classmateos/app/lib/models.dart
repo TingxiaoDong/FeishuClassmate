@@ -271,6 +271,15 @@ class CosMessage {
           if (r is Map) CosReaction.fromJson(r.cast<String, dynamic>()),
       ]..removeWhere((r) => r.count <= 0);
 
+  /// AI 助手代某位同学发的消息（后端待改问题 C2）：`content.sent_on_behalf_of = {user_id, name}`。
+  /// 由服务端写入，客户端不能伪造；回同学本人的单聊里没有这个字段。
+  CosOnBehalf? get onBehalfOf {
+    final o = _map(content['sent_on_behalf_of']);
+    final id = o == null ? null : _str(o['user_id']);
+    if (id == null || id.isEmpty) return null;
+    return CosOnBehalf(userId: id, name: _str(o!['name']) ?? '');
+  }
+
   /// 单条转发来的消息：`{chat_name, sender_id}`。
   Map<String, dynamic>? get forwardedFrom => _map(raw['forwarded_from']);
 
@@ -942,6 +951,13 @@ class CosMessageHit {
 
 
 // ---------------- 迭代 4：消息增强 ----------------
+
+/// 代发人：AI 助手代哪位同学发的消息。
+class CosOnBehalf {
+  final String userId;
+  final String name;
+  const CosOnBehalf({required this.userId, required this.name});
+}
 
 class CosThreadInfo {
   final int replyCount;
