@@ -34,9 +34,69 @@ export interface DashboardSummary {
   equipment: { by_state: Record<string, number>; total: number };
   submissions: { by_status: Record<string, number>; total: number };
   failures: Array<{ record_id: string; fields: Record<string, unknown> }>;
+  /** 带 range 参数时返回实际统计区间（start_at 闭、end_at 开）。 */
+  range?: { range: string; start_at: string; end_at: string };
 }
 
-export async function buildDashboardSummary(store: TableStore, now = Date.now()): Promise<DashboardSummary> {
+export interface DashboardRange { range: string; start: number; end: number }
+
+export class DashboardRangeError extends Error {}
+
+/**
+ * 解析报表时间范围（按本地时区 tzOffsetMinutes 切日）：
+ *   week     本周一 0 点 ～ 下周一 0 点
+ *   month    本月 1 日 0 点 ～ 下月 1 日 0 点
+ *   semester 本学期：秋季学期 9/1 ～ 次年 2/1，春季学期 2/1 ～ 9/1；
+ *            可用环境变量 COS_SEMESTER_START / COS_SEMESTER_END（YYYY-MM-DD，本地日期）固定
+ *   custom   start_at ～ end_at（ISO，end_at 开区间），最长 400 天
+ */
+export function parseDashboardRange(
+  q: { range?: string; start_at?: string; end_at?: string },
+  now: number,
+  tzOffsetMinutes = 480,
+  env: Record<string, string | undefined> = process.env,
+): DashboardRange | undefined {
+  if (q.range === undefined || q.range === '') return undefined;
+  const off = tzOffsetMinutes * 60_000;
+  const localMidnight = (y: number, m: number, d: number) => Date.UTC(y, m, d) - off;
+  const t = new Date(now + off);
+  const y = t.getUTCFullYear(), m = t.getUTCMonth(), d = t.getUTCDate();
+  switch (q.range) {
+    case 'week': {
+      const back = (t.getUTCDay() + 6) % 7; // 周一 = 0
+      const start = localMidnight(y, m, d - back);
+      return { range: 'week', start, end: start + 7 * DAY_MS };
+    }
+    case 'month':
+      return { range: 'month', start: localMidnight(y, m, 1), end: localMidnight(y, m + 1, 1) };
+    case 'semester': {
+      const parseDay = (v?: string) => {
+        const mm = v?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        return mm ? localMidnight(Number(mm[1]), Number(mm[2]) - 1, Number(mm[3])) : undefined;
+      };
+      const fs = parseDay(env.COS_SEMESTER_START), fe = parseDay(env.COS_SEMESTER_END);
+      if (fs !== undefined && fe !== undefined && fs < fe) return { range: 'semester', start: fs, end: fe + DAY_MS };
+      if (m >= 8) return { range: 'semester', start: localMidnight(y, 8, 1), end: localMidnight(y + 1, 1, 1) };
+      if (m === 0) return { range: 'semester', start: localMidnight(y - 1, 8, 1), end: localMidnight(y, 1, 1) };
+      return { range: 'semester', start: localMidnight(y, 1, 1), end: localMidnight(y, 8, 1) };
+    }
+    case 'custom': {
+      const start = Date.parse(q.start_at ?? ''), end = Date.parse(q.end_at ?? '');
+      if (!Number.isFinite(start) || !Number.isFinite(end)) throw new DashboardRangeError('自定义范围需要 start_at 和 end_at（ISO 时间）');
+      if (start >= end) throw new DashboardRangeError('start_at 必须早于 end_at');
+      if (end - start > 400 * DAY_MS) throw new DashboardRangeError('自定义范围最长 400 天');
+      return { range: 'custom', start, end };
+    }
+    default:
+      throw new DashboardRangeError('range 只能是 week、month、semester、custom');
+  }
+}
+
+/**
+ * 不传 range：保持一期行为（调用量看近 7 天，成功率、失败归档看全部）。
+ * 传 range：调用量、成功率、失败归档都只统计区间内的；项目、甘特、器材、投稿是当前状态快照，不按区间过滤。
+ */
+export async function buildDashboardSummary(store: TableStore, now = Date.now(), range?: DashboardRange): Promise<DashboardSummary> {
   const safeList = async (key: string, filter?: string) => {
     try {
       const res = await store.list(key, { filter, pageSize: 500 });
@@ -47,9 +107,11 @@ export async function buildDashboardSummary(store: TableStore, now = Date.now())
   };
 
   // tool_trace：started_at 为 ms 时间戳
-  const traces = await safeList('tool_trace');
+  const inRange = (ms: number) => !!range && ms >= range.start && ms < range.end;
+  const allTraces = await safeList('tool_trace');
+  const traces = range ? allTraces.filter((r) => inRange(Number(r.fields.started_at ?? 0))) : allTraces;
   const weekAgo = now - 7 * DAY_MS;
-  const recent = traces.filter((r) => Number(r.fields.started_at ?? 0) >= weekAgo);
+  const recent = range ? traces : traces.filter((r) => Number(r.fields.started_at ?? 0) >= weekAgo);
   const toolNames = recent.map((r) => String(r.fields.tool_name ?? 'unknown'));
 
   const successByTool: Record<string, { ok: number; total: number; rate: number }> = {};
@@ -74,6 +136,7 @@ export async function buildDashboardSummary(store: TableStore, now = Date.now())
   const equipment = await safeList('equipment');
   const submissions = await safeList('submissions');
   const failures = (await safeList('failure_archive'))
+    .filter((r) => !range || inRange(Date.parse(String(r.created_at))))
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .slice(0, 5)
     .map((r) => ({ record_id: r.record_id, fields: r.fields }));
@@ -97,5 +160,6 @@ export async function buildDashboardSummary(store: TableStore, now = Date.now())
       total: submissions.length,
     },
     failures,
+    ...(range ? { range: { range: range.range, start_at: new Date(range.start).toISOString(), end_at: new Date(range.end).toISOString() } } : {}),
   };
 }
