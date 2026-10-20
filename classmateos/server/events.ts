@@ -25,7 +25,61 @@ export type BotEventType =
   | 'chat.member_added'
   | 'chat.member_removed'
   | 'task.assigned'
-  | 'calendar.invited';
+  | 'calendar.invited'
+  // 二期迭代 1（只推用户 WS，不推大脑 WS）
+  | 'record.changed'
+  | 'table.schema_changed'
+  | 'table.view_changed'
+  | 'table.created'
+  | 'table.deleted'
+  | 'notification.new'
+  | 'notification.read'
+  | 'capabilities.changed'
+  | 'doc.permission_changed'
+  | 'doc.comment_changed'
+  // 二期迭代 3
+  | 'task.created'
+  | 'task.updated'
+  | 'task.deleted'
+  | 'task.comment_changed'
+  | 'tasklist.updated'
+  | 'tasklist.deleted'
+  // 二期迭代 4
+  | 'message.urgent'
+  | 'message.urgent_acked'
+  // AGENT_PLAN M3：后台任务进度（只推用户）、触发器变更（只推大脑）
+  | 'job.updated'
+  | 'trigger.changed'
+  | 'department.changed'
+  // AGENT_PLAN M4：App 一键急停（只推大脑）
+  | 'robot.estop';
+
+/**
+ * 只推用户端的事件里，大脑也要收到的（AGENT_PLAN M3 触发器）。
+ * 大脑是可信的服务端进程；触发器以建它的同学身份重新读取数据，不直接把事件内容给模型。
+ */
+export const AGENT_SUBSCRIBED_EVENTS: ReadonlySet<BotEventType> = new Set<BotEventType>([
+  'record.changed',
+  'task.updated',
+  'doc.comment_changed',
+]);
+
+/**
+ * 推送范围（服务端内部，不下发）：
+ *   - topic：需要客户端订阅了这个主题（如 table:projects）才收；
+ *   - all：所有已登录用户（仍受 topic 限制）；
+ *   - audience：只给这些用户；admins：管理员也能收；
+ *   - deny / deny_admins：排除这些用户 / 管理员（优先级最高）；
+ *   - user_only：不发给大脑 WS。
+ */
+export interface EventScope {
+  topic?: string;
+  all?: boolean;
+  admins?: boolean;
+  deny?: string[];
+  deny_admins?: boolean;
+  user_only?: boolean;
+}
 
 export interface BotEvent {
   event_id: string;
@@ -45,6 +99,26 @@ export interface BotEvent {
   };
   /** 内部：可接收该事件的用户；不下发给客户端。 */
   audience?: string[];
+  /** 内部：推送范围（见 EventScope）；不下发给客户端。 */
+  scope?: EventScope;
+  /** 其他事件字段（table_key、notification 等）。 */
+  [extra: string]: unknown;
+}
+
+/** 用户 WS 是否该收到这条事件。 */
+export function eventVisibleTo(
+  e: BotEvent,
+  user: { id: string; role: string },
+  topics: ReadonlySet<string>,
+): boolean {
+  if (e.event_type === 'card.action' || e.event_type === 'robot.estop') return false;
+  const s = e.scope;
+  if (s?.topic && !topics.has(s.topic)) return false;
+  if (s?.deny?.includes(user.id)) return false;
+  if (s?.deny_admins && user.role === 'admin') return false;
+  if (s?.all) return true;
+  if (s?.admins && user.role === 'admin') return true;
+  return Array.isArray(e.audience) && e.audience.includes(user.id);
 }
 
 type Listener = (event: BotEvent) => void;
@@ -53,14 +127,14 @@ export class BotEventBus {
   private readonly listeners = new Set<Listener>();
   private readonly recent: BotEvent[] = [];
 
-  constructor(private readonly capacity = 2000) {}
+  constructor(private readonly capacity = 5000) {}
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
   }
 
-  publish(event: Omit<BotEvent, 'event_id' | 'created_at'>): BotEvent {
+  publish(event: Omit<BotEvent, 'event_id' | 'created_at'> & { event_type: BotEventType }): BotEvent {
     const full: BotEvent = {
       ...event,
       event_id: `evt_${randomUUID()}`,
@@ -93,6 +167,16 @@ export class BotEventBus {
 
 /** 去掉内部字段后序列化，给客户端。 */
 export function serializeEvent(e: BotEvent): string {
-  const { audience: _a, ...rest } = e;
+  const { audience: _a, scope: _s, ...rest } = e;
+  return JSON.stringify(rest);
+}
+
+/**
+ * 发给大脑 WS 的界面事件（AGENT_SUBSCRIBED_EVENTS）只留 id 和动作：
+ * 内容由触发器以「建规则的同学」身份重新读取，避免保密记录经事件流到大脑。
+ */
+export function serializeEventForBot(e: BotEvent): string {
+  if (!e.scope?.user_only) return serializeEvent(e);
+  const { audience: _a, scope: _s, record: _r, ...rest } = e as BotEvent & { record?: unknown };
   return JSON.stringify(rest);
 }

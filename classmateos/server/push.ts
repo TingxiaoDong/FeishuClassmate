@@ -19,22 +19,22 @@ export interface PushMessage {
 export interface Device {
   device_id: string;
   user_id: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'macos';
   device_token: string;
   created_at: string;
 }
 
 export interface PushProvider {
   readonly name: string;
-  send(deviceToken: string, platform: 'ios' | 'android', msg: PushMessage): Promise<void>;
+  send(deviceToken: string, platform: 'ios' | 'android' | 'macos', msg: PushMessage): Promise<void>;
 }
 
 /** 记录型 provider：测试断言与本地开发联调用。 */
 export class MemoryPushProvider implements PushProvider {
   readonly name = 'memory';
-  readonly sent: Array<{ device_token: string; platform: 'ios' | 'android'; msg: PushMessage }> = [];
+  readonly sent: Array<{ device_token: string; platform: 'ios' | 'android' | 'macos'; msg: PushMessage }> = [];
 
-  async send(deviceToken: string, platform: 'ios' | 'android', msg: PushMessage): Promise<void> {
+  async send(deviceToken: string, platform: 'ios' | 'android' | 'macos', msg: PushMessage): Promise<void> {
     this.sent.push({ device_token: deviceToken, platform, msg });
   }
 }
