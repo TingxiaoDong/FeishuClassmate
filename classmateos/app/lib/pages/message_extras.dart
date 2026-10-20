@@ -329,8 +329,12 @@ class ThreadSummary extends StatelessWidget {
               t == null ? '回复话题' : '${t.replyCount} 条回复',
               style: const TextStyle(fontSize: 12, color: Fs.primary, fontWeight: FontWeight.w500),
             ),
+            // 手机上气泡窄，「最后回复」放不下时省略，不能撑出去
             if (t?.lastReplyAt != null)
-              Text(' · 最后回复 ${fmtMessageTime(t!.lastReplyAt!.toLocal())}', style: const TextStyle(fontSize: 12, color: Fs.text3)),
+              Flexible(
+                child: Text(' · 最后回复 ${fmtMessageTime(t!.lastReplyAt!.toLocal())}',
+                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Fs.text3)),
+              ),
             const Icon(Icons.chevron_right_rounded, size: 16, color: Fs.text3),
           ]),
         ),
@@ -617,6 +621,22 @@ Future<CosMessage?> showUrgentDialog(BuildContext context, CosMessage m, {List<S
   }
 }
 
+/// 推入的页面顶部也显示加急横幅；有横幅时去掉页面自己的顶部安全区（横幅已经让开了刘海）。
+class WithUrgentBanner extends StatelessWidget {
+  final Widget child;
+  const WithUrgentBanner({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScope.of(context);
+    // 结构固定不变：横幅出现 / 消失时下面的页面不重建（输入框里的字不会丢）
+    return Column(children: [
+      const UrgentBanner(),
+      Expanded(child: MediaQuery.removePadding(context: context, removeTop: s.urgents.isNotEmpty, child: child)),
+    ]);
+  }
+}
+
 /// 被加急时屏幕顶部的红色横幅：「张三 加急了一条消息」，查看 / 知道了。
 class UrgentBanner extends StatelessWidget {
   const UrgentBanner({super.key});
@@ -647,6 +667,8 @@ class UrgentBanner extends StatelessWidget {
             TextButton(
               style: TextButton.styleFrom(foregroundColor: Colors.white),
               onPressed: () {
+                // 在推入的页面（手机上的会话页、文档页等）里点「查看」：先回到主框架，再由消息页打开会话
+                Navigator.of(context).popUntil((r) => r.isFirst);
                 s.pendingTarget = {'type': 'message', 'id': u.chatId, 'message_id': u.messageId};
                 s.openChat(u.chatId);
               },

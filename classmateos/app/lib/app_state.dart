@@ -16,6 +16,7 @@ import 'api_client.dart';
 import 'models.dart';
 import 'services/app_links.dart';
 import 'widgets/share_panel.dart' show webOriginFor;
+import 'pages/message_extras.dart' show WithUrgentBanner;
 
 /// 导航模块（顺序即左侧导航栏顺序）。
 enum AppModule {
@@ -562,6 +563,21 @@ class AppState extends ChangeNotifier {
   /// 最近一次 openTarget 的目标，用于地址栏显示具体对象（只在 Web 端用）。
   Map<String, dynamic>? lastTarget;
 
+  /// 页面里直接打开了某个对象（如在文档列表里点开一篇）：地址栏跟着变，刷新后还在这篇、复制地址能分享。
+  /// 可能在 build / dispose 里调用，所以推迟到这一帧之后再通知。
+  void noteOpened(Map<String, dynamic> target) {
+    if (lastTarget?['type'] == target['type'] && lastTarget?['id'] == target['id']) return;
+    lastTarget = target;
+    scheduleMicrotask(_notify);
+  }
+
+  /// 关掉了 [noteOpened] 记下的对象：地址栏回到模块。
+  void noteClosed(Map<String, dynamic> target) {
+    if (lastTarget?['type'] != target['type'] || lastTarget?['id'] != target['id']) return;
+    lastTarget = null;
+    scheduleMicrotask(_notify);
+  }
+
   /// 当前页面对应的路径（Web 端写进地址栏）。
   String get currentPath {
     final t = lastTarget;
@@ -726,10 +742,11 @@ class AppScope extends InheritedNotifier<AppState> {
 }
 
 /// 推入新页面并把 AppState 带过去（路由不在 AppScope 子树里）。
+/// 推入的页面会盖住主框架顶部的加急横幅，所以这里再放一个（手机上进了会话也能看到加急）。
 Future<T?> pushScoped<T>(BuildContext context, Widget page) {
   final s = AppScope.read(context);
   return Navigator.of(context).push<T>(
-    MaterialPageRoute(builder: (_) => AppScope(state: s, child: page)),
+    MaterialPageRoute(builder: (_) => AppScope(state: s, child: WithUrgentBanner(child: page))),
   );
 }
 

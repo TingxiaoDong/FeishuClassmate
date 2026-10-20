@@ -22,8 +22,30 @@ import '../api/phase2_im.dart';
 import '../widgets/markdown_view.dart';
 import 'shell.dart';
 
-class MessagesPage extends StatelessWidget {
+class MessagesPage extends StatefulWidget {
   const MessagesPage({super.key});
+
+  @override
+  State<MessagesPage> createState() => _MessagesPageState();
+}
+
+class _MessagesPageState extends State<MessagesPage> {
+  /// 窄屏下已经推入的会话页。
+  String? _pushed;
+
+  /// 窄屏：会话页是推入的新页面。点列表、点加急横幅「查看」、点通知、搜索跳转都只调 openChat，
+  /// 这里看到 currentChatId 有值、又还没推入，就推入会话页；返回时清掉「正在看」。
+  void _open(String id) {
+    if (_pushed != null) return;
+    _pushed = id;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final s = AppScope.read(context);
+      await pushScoped(context, Scaffold(body: SafeArea(child: ChatView(chatId: id, showBack: true))));
+      if (s.currentChatId == id) s.leaveChat();
+      if (mounted) setState(() => _pushed = null);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -32,18 +54,9 @@ class MessagesPage extends StatelessWidget {
       builder: (context, c) {
         final wide = c.maxWidth >= 760;
         if (!wide) {
-          return ChatListPane(
-            onOpen: (id) async {
-              s.openChat(id);
-              await pushScoped(
-                context,
-                Scaffold(
-                  body: SafeArea(child: ChatView(chatId: id, showBack: true)),
-                ),
-              );
-              s.leaveChat();
-            },
-          );
+          final want = s.currentChatId;
+          if (want != null && _pushed == null && s.module == AppModule.messages) _open(want);
+          return ChatListPane(onOpen: s.openChat);
         }
         final cur = s.currentChatId != null ? s.chat(s.currentChatId!) : null;
         return Row(
@@ -663,6 +676,7 @@ class _ChatViewState extends State<ChatView> {
               children: [
                 if (widget.showBack)
                   IconButton(
+                    tooltip: '返回',
                     icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
                     onPressed: () => Navigator.of(context).maybePop(),
                   ),
@@ -1733,7 +1747,7 @@ class _ComposerState extends State<_Composer> {
                       disabledBackgroundColor: Fs.primary.withValues(alpha: 0.35),
                       disabledForegroundColor: Colors.white,
                     ),
-                    child: const Icon(Icons.send_rounded, size: 16),
+                    child: const Icon(Icons.send_rounded, size: 16, semanticLabel: '发送'),
                   ),
                 ),
               ],
@@ -1850,7 +1864,7 @@ class _ThreadViewState extends State<ThreadView> {
           title: '话题',
           subtitle: Text(chat == null ? '' : s.chatTitle(chat)),
           leading: widget.showBack
-              ? IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop())
+              ? IconButton(tooltip: '返回', icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop())
               : null,
           actions: [
             TextButton.icon(

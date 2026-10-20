@@ -134,7 +134,12 @@ class _DocEditorState extends State<DocEditor> {
     body.addListener(_cursorMoved);
     _eventSub = app.eventStream.listen(_onEvent);
     _load(first: true);
+    // 云文档里打开：地址栏变成这篇文档（知识库页面有自己的地址，不改）
+    _trackLocation = app.module == AppModule.docs;
+    if (_trackLocation) app.noteOpened({'type': 'doc', 'id': widget.docId});
   }
+
+  bool _trackLocation = false;
 
   @override
   void dispose() {
@@ -143,6 +148,7 @@ class _DocEditorState extends State<DocEditor> {
     _eventSub?.cancel();
     if (_subscribed) app.unsubscribe('doc:${widget.docId}');
     _presence?.dispose();
+    if (_trackLocation) app.noteClosed({'type': 'doc', 'id': widget.docId});
     comments.dispose();
     title.dispose();
     body.dispose();
@@ -653,7 +659,7 @@ class _DocEditorState extends State<DocEditor> {
             alignment: Alignment.centerLeft,
             child: Row(children: [
               if (widget.showBack)
-                IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop()),
+                IconButton(tooltip: '返回', icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop()),
               if (widget.header != null) Expanded(child: widget.header!),
             ]),
           ),
@@ -851,7 +857,7 @@ class _DocEditorState extends State<DocEditor> {
       decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Fs.lineLight))),
       child: Row(children: [
         if (widget.showBack)
-          IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop()),
+          IconButton(tooltip: '返回', icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop()),
         if (widget.header != null)
           Flexible(child: widget.header!)
         else ...[
@@ -893,9 +899,9 @@ class _DocEditorState extends State<DocEditor> {
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Fs.radius)),
             ),
             segments: [
-              ButtonSegment(value: DocMode.edit, icon: const Icon(Icons.edit_outlined, size: 15), label: wide ? const Text('编辑') : null),
+              ButtonSegment(value: DocMode.edit, icon: const Icon(Icons.edit_outlined, size: 15), label: wide ? const Text('编辑') : null, tooltip: wide ? null : '编辑'),
               if (wide) const ButtonSegment(value: DocMode.split, icon: Icon(Icons.vertical_split_outlined, size: 15), label: Text('分屏')),
-              ButtonSegment(value: DocMode.read, icon: const Icon(Icons.chrome_reader_mode_outlined, size: 15), label: wide ? const Text('阅读') : null),
+              ButtonSegment(value: DocMode.read, icon: const Icon(Icons.chrome_reader_mode_outlined, size: 15), label: wide ? const Text('阅读') : null, tooltip: wide ? null : '阅读'),
             ],
             selected: {m},
             onSelectionChanged: (v) => setState(() => mode = v.first),
@@ -941,15 +947,30 @@ class _DocEditorState extends State<DocEditor> {
           final picked = sel.isValid && !sel.isCollapsed ? sel.textInside(body.text) : null;
           return AgentContext(kind: widget.wikiPage ? 'wiki' : 'doc', id: d.docId, title: title.text.trim().isEmpty ? d.title : title.text.trim(), selection: picked);
         }),
-        if (_permsOn && sharing != null) ...[
+        // 手机上这一行放不下：不显示可见范围标签（分享面板里能看到），「分享」只留图标
+        if (_permsOn && sharing != null && wide) ...[
           const SizedBox(width: 6),
           DocVisibilityTag(sharing: sharing!, meId: app.me.userId),
         ],
         if (_permsOn) ...[
           const SizedBox(width: 6),
+          if (!wide)
+            FsIconButton(icon: Icons.lock_open_rounded, tooltip: '分享', onPressed: () => _share(d, perms))
+          else
           FilledButton.icon(
             style: FilledButton.styleFrom(minimumSize: const Size(0, 32), padding: const EdgeInsets.symmetric(horizontal: 12)),
-            onPressed: () => (widget.wikiPage
+            onPressed: () => _share(d, perms),
+            icon: const Icon(Icons.lock_open_rounded, size: 16),
+            label: const Text('分享'),
+          ),
+        ],
+        const SizedBox(width: 2),
+        _moreMenu(context, s, d, perms),
+      ]),
+    );
+  }
+
+  Future<void> _share(CosDoc d, CosPermissions perms) => (widget.wikiPage
                 ? showSharePanel(
                     context,
                     ShareConfig(
@@ -963,16 +984,7 @@ class _DocEditorState extends State<DocEditor> {
                     ),
                   )
                 : showDocShare(context, d, canManage: perms.canManage))
-                .then((_) => _loadSharing()),
-            icon: const Icon(Icons.lock_open_rounded, size: 16),
-            label: const Text('分享'),
-          ),
-        ],
-        const SizedBox(width: 2),
-        _moreMenu(context, s, d, perms),
-      ]),
-    );
-  }
+                .then((_) => _loadSharing());
 
   Widget _moreMenu(BuildContext context, AppState s, CosDoc d, CosPermissions perms) {
     PopupMenuItem<String> item(String v, IconData i, String t, {bool danger = false}) => PopupMenuItem(

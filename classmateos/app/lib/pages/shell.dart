@@ -125,6 +125,7 @@ class _HomeShellState extends State<HomeShell> {
           ? null
           : AppBar(
               leading: IconButton(
+                tooltip: '返回工作台',
                 icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
                 onPressed: () => s.go(AppModule.workbench),
               ),

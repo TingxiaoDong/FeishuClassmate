@@ -161,9 +161,16 @@ class _WorkbenchAppsState extends State<WorkbenchApps> {
     await _save([...shortcuts, x], ok: '已添加到工作台');
   }
 
+  // 读屏 / 键盘：整块报成一个按钮「云文档，文档协作」（原来只是可点击的区域，读屏读不出是按钮）
   Widget _tile({required Key key, required Widget icon, required String title, required String sub, VoidCallback? onTap, void Function(Offset)? onMenu}) =>
-      GestureDetector(
+      Semantics(
         key: key,
+        button: onTap != null,
+        enabled: onTap != null,
+        label: '$title，$sub',
+        onTap: onTap,
+        excludeSemantics: true,
+        child: GestureDetector(
         onSecondaryTapUp: onMenu == null ? null : (d) => onMenu(d.globalPosition),
         onLongPressStart: onMenu == null ? null : (d) => onMenu(d.globalPosition),
         child: HoverBox(
@@ -186,6 +193,7 @@ class _WorkbenchAppsState extends State<WorkbenchApps> {
             ]),
           ),
         ),
+      ),
       );
 
   Widget _icon(IconData i, Color c) => Container(

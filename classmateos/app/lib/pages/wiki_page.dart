@@ -583,6 +583,27 @@ class _SpaceViewState extends State<SpaceView> {
     } catch (_) {}
   }
 
+  /// 新建页面。手机上目录在抽屉里，抽屉没打开时目录树不存在：直接建好再打开（目录打开时会重新加载）。
+  bool _creatingPage = false;
+
+  Future<void> _createPage({String? parentId}) async {
+    if (_creatingPage || !sp.canEdit) return;
+    _creatingPage = true;
+    try {
+      final tree = _tree.currentState;
+      if (tree != null) {
+        await tree.createPage(parentId: parentId);
+      } else {
+        final n = await _s.api.createNode(sp.spaceId, parentId: parentId, title: '未命名页面');
+        if (mounted) await _open(n.nodeId);
+      }
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    } finally {
+      _creatingPage = false;
+    }
+  }
+
   void _openNode(CosWikiNode n, {bool closeDrawer = false}) {
     if (closeDrawer) Navigator.of(context).maybePop();
     if (n.nodeId == node?.nodeId) return;
@@ -725,7 +746,7 @@ class _SpaceViewState extends State<SpaceView> {
                   icon: Icons.add_rounded,
                   size: 18,
                   tooltip: '新建页面',
-                  onPressed: () => _tree.currentState?.createPage(),
+                  onPressed: _createPage,
                 ),
             ]),
           ),
@@ -826,7 +847,7 @@ class _SpaceViewState extends State<SpaceView> {
           setState(() => node = n.copyWith(starred: !n.starred));
         }),
         if (sp.canEdit) ...[
-          DocMenuItem('新建子页面', Icons.note_add_outlined, () => _tree.currentState?.createPage(parentId: n.nodeId)),
+          DocMenuItem('新建子页面', Icons.note_add_outlined, () => _createPage(parentId: n.nodeId)),
           DocMenuItem('移动到', Icons.drive_file_move_outline, () => _tree.currentState?.nodeAction(n, 'move')),
           DocMenuItem('创建副本', Icons.copy_all_rounded, () => _tree.currentState?.nodeAction(n, 'copy')),
           DocMenuItem('删除页面', Icons.delete_outline_rounded, () => _tree.currentState?.nodeAction(n, 'delete'), danger: true),
@@ -859,7 +880,7 @@ class _SpaceViewState extends State<SpaceView> {
             Wrap(spacing: 12, runSpacing: 12, children: [
               if (sp.canEdit)
                 FilledButton.icon(
-                  onPressed: () => _tree.currentState?.createPage(),
+                  onPressed: _createPage,
                   icon: const Icon(Icons.add_rounded, size: 18),
                   label: const Text('新建页面'),
                 ),
