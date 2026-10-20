@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { TableDef } from '../../src/bitable/schema.js';
 
 export interface StoredRecord {
   record_id: string;
@@ -37,6 +38,27 @@ export interface ListOptions {
 }
 
 export interface TableStore {
+  /**
+   * 注册一张运行时新建的数据表（自定义表）。幂等：PG 实现会 CREATE TABLE IF NOT EXISTS；
+   * 内存实现无需处理。
+   */
+  registerTable?(def: TableDef): Promise<void>;
+  /** 删除自定义表的物理表（只在建表登记失败回滚时用）。 */
+  dropTable?(tableKey: string): Promise<void>;
+
+  // ---- 字段管理（二期 R-BT-02）：def 是改动后的完整表定义 ----
+  /** 只更新存储层持有的表定义（列类型转换用）。 */
+  updateDef?(def: TableDef): Promise<void>;
+  /** 新增字段对应的列（幂等）。 */
+  addColumn?(def: TableDef, fieldName: string): Promise<void>;
+  /** 删除字段：删列 / 清掉所有记录里的值。 */
+  dropColumn?(def: TableDef, fieldName: string): Promise<void>;
+  /** 改字段类型：列换成新类型，所有记录的该字段清空（之后由调用方用 writeValues 写回转换后的值）。 */
+  retypeColumn?(def: TableDef, fieldName: string): Promise<void>;
+  /** 去掉列上的选项约束（内置表改选项时）。 */
+  relaxColumn?(def: TableDef, fieldName: string): Promise<void>;
+  /** 直接写某个字段的值（null = 清空），不改 updated_at。 */
+  writeValues?(tableKey: string, fieldName: string, entries: Array<{ record_id: string; value: unknown }>): Promise<void>;
   list(tableKey: string, opts: ListOptions): Promise<ListResult>;
   get(tableKey: string, recordId: string): Promise<StoredRecord | undefined>;
   create(tableKey: string, fields: Record<string, unknown>, actor?: string): Promise<StoredRecord>;
@@ -74,7 +96,7 @@ export function matchesFilter(fields: Record<string, unknown>, filter?: string):
   if (!filter?.trim()) return true;
   const clauses = filter.split(/\s+AND\s+/i);
   for (const clause of clauses) {
-    const m = clause.trim().match(/^([\p{L}\p{N}_]+)\s*(=|!=|<|<=|>|>=)\s*(.+)$/u);
+    const m = clause.trim().match(/^([\p{L}\p{N}_]+)\s*(!=|<=|>=|=|<|>)\s*(.+)$/u);
     if (!m) return false; // 无法解析的子句视为不匹配（宁可少报不可错报）
     const [, field, op, rawVal] = m;
     const expected = rawVal.replace(/^"(.*)"$/, '$1');
@@ -119,6 +141,37 @@ function compareValues(a: unknown, b: unknown): number {
 export class MemoryTableStore implements TableStore {
   private readonly tables = new Map<string, Map<string, StoredRecord>>();
 
+  /** 内存实现按需建表，注册无需处理。 */
+  async registerTable(_def: TableDef): Promise<void> {}
+
+  async dropTable(tableKey: string): Promise<void> {
+    this.tables.delete(tableKey);
+  }
+
+  async updateDef(_def: TableDef): Promise<void> {}
+
+  async addColumn(_def: TableDef, _fieldName: string): Promise<void> {}
+
+  async relaxColumn(_def: TableDef, _fieldName: string): Promise<void> {}
+
+  async dropColumn(def: TableDef, fieldName: string): Promise<void> {
+    for (const r of this.table(def.key).values()) delete r.fields[fieldName];
+  }
+
+  async retypeColumn(def: TableDef, fieldName: string): Promise<void> {
+    for (const r of this.table(def.key).values()) delete r.fields[fieldName];
+  }
+
+  async writeValues(tableKey: string, fieldName: string, entries: Array<{ record_id: string; value: unknown }>): Promise<void> {
+    const t = this.table(tableKey);
+    for (const e of entries) {
+      const r = t.get(e.record_id);
+      if (!r) continue;
+      if (e.value == null) delete r.fields[fieldName];
+      else r.fields[fieldName] = structuredClone(e.value);
+    }
+  }
+
   private table(key: string): Map<string, StoredRecord> {
     let t = this.tables.get(key);
     if (!t) {
@@ -157,7 +210,9 @@ export class MemoryTableStore implements TableStore {
   }
 
   async get(tableKey: string, recordId: string): Promise<StoredRecord | undefined> {
-    return this.table(tableKey).get(recordId);
+    // 返回副本：调用方拿着「修改前」的记录做比较（如实时事件判断公开→保密）时不会被后续 update 改掉
+    const rec = this.table(tableKey).get(recordId);
+    return rec ? { ...rec, fields: { ...rec.fields } } : undefined;
   }
 
   async create(tableKey: string, fields: Record<string, unknown>, actor?: string): Promise<StoredRecord> {

@@ -240,7 +240,7 @@ export const FIELD_TITLES: Record<string, string> = {
 };
 
 /** Bitable 选项颜色序号 → 前端调色板名。 */
-const COLOR_NAMES = ['gray', 'red', 'blue', 'purple', 'green', 'turquoise', 'carmine', 'orange', 'yellow', 'wathet'];
+export const COLOR_NAMES = ['gray', 'red', 'blue', 'purple', 'green', 'turquoise', 'carmine', 'orange', 'yellow', 'wathet'];
 
 export function fieldTitle(table: TableDef, field: FieldDef): string {
   return TABLE_META[table.key]?.titles?.[field.field_name] ?? FIELD_TITLES[field.field_name] ?? field.field_name;

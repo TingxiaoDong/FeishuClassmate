@@ -32,7 +32,7 @@ function parseFilter(filter?: string): FilterClause[] {
   if (!filter?.trim()) return [];
   const out: FilterClause[] = [];
   for (const clause of filter.split(/\s+AND\s+/i)) {
-    const m = clause.trim().match(/^([\p{L}\p{N}_]+)\s*(=|!=|<|<=|>|>=)\s*(.+)$/u);
+    const m = clause.trim().match(/^([\p{L}\p{N}_]+)\s*(!=|<=|>=|=|<|>)\s*(.+)$/u);
     if (!m) throw new Error(`unparseable filter clause: ${clause}`);
     out.push({
       field: m[1],
@@ -41,6 +41,27 @@ function parseFilter(filter?: string): FilterClause[] {
     });
   }
   return out;
+}
+
+/** 字段类型 → 列类型（与 scripts/schema-to-sql.mjs 一致）。 */
+function pgColumnType(type: number): string {
+  switch (type) {
+    case 1:
+    case 3:
+    case 15:
+    case 18:
+      return 'text';
+    case 2:
+      return 'double precision';
+    case 4:
+      return 'text[]';
+    case 5:
+      return 'timestamptz';
+    case 7:
+      return 'boolean';
+    default:
+      return 'jsonb';
+  }
 }
 
 /** 记录创建人 / 修改人（平台元数据列，ensureMetaColumns 时追加到每张业务表）。 */
@@ -72,6 +93,92 @@ export class PgTableStore implements TableStore {
       );
     }
     this.metaColumns = true;
+  }
+
+  /**
+   * 运行时新建的数据表（POST /tables）：建物理表（列类型规则与 schema-to-sql.mjs 一致，
+   * 但不加选项 CHECK 约束，选项校验在接口层做，便于以后改选项），并补元数据列。幂等。
+   */
+  async registerTable(def: TableDef): Promise<void> {
+    if (!/^tbl_[a-z0-9]+$/.test(def.key)) throw new Error(`invalid custom table key: ${def.key}`);
+    const cols = [
+      'record_id text PRIMARY KEY',
+      'feishu_record_id text',
+      ...def.fields.map((f) => `${q(f.field_name)} ${pgColumnType(f.type)}`),
+      'created_at timestamptz NOT NULL DEFAULT now()',
+      'updated_at timestamptz NOT NULL DEFAULT now()',
+      `${META_CREATED_BY} text`,
+      `${META_UPDATED_BY} text`,
+    ];
+    await this.pool.query(`CREATE TABLE IF NOT EXISTS ${q(def.key)} (\n  ${cols.join(',\n  ')}\n)`);
+    await this.pool.query(
+      `ALTER TABLE ${q(def.key)} ADD COLUMN IF NOT EXISTS ${META_CREATED_BY} text, ADD COLUMN IF NOT EXISTS ${META_UPDATED_BY} text`,
+    );
+    this.tableDefs.set(def.key, def);
+    this.fieldDefs.set(def.key, new Map(def.fields.map((f) => [f.field_name, f])));
+  }
+
+  async updateDef(def: TableDef): Promise<void> {
+    this.tableDefs.set(def.key, def);
+    this.fieldDefs.set(def.key, new Map(def.fields.map((f) => [f.field_name, f])));
+  }
+
+  private fieldOf(def: TableDef, fieldName: string): FieldDef {
+    const f = def.fields.find((x) => x.field_name === fieldName);
+    if (!f) throw new Error(`unknown field: ${def.key}.${fieldName}`);
+    return f;
+  }
+
+  async addColumn(def: TableDef, fieldName: string): Promise<void> {
+    const f = this.fieldOf(def, fieldName);
+    await this.pool.query(`ALTER TABLE ${q(def.key)} ADD COLUMN IF NOT EXISTS ${q(f.field_name)} ${pgColumnType(f.type)}`);
+    await this.updateDef(def);
+  }
+
+  async dropColumn(def: TableDef, fieldName: string): Promise<void> {
+    await this.pool.query(`ALTER TABLE ${q(def.key)} DROP COLUMN IF EXISTS ${q(fieldName)}`);
+    await this.updateDef(def);
+  }
+
+  async retypeColumn(def: TableDef, fieldName: string): Promise<void> {
+    const f = this.fieldOf(def, fieldName);
+    await this.relaxColumn(def, fieldName);
+    await this.pool.query(
+      `ALTER TABLE ${q(def.key)} ALTER COLUMN ${q(f.field_name)} TYPE ${pgColumnType(f.type)} USING NULL`,
+    );
+    await this.updateDef(def);
+  }
+
+  /** 删掉这一列上的 CHECK 约束（schema.sql 给内置表的单选 / 多选列加了选项约束）。 */
+  async relaxColumn(def: TableDef, fieldName: string): Promise<void> {
+    const { rows } = await this.pool.query(
+      `SELECT c.conname FROM pg_constraint c
+         JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+       WHERE c.conrelid = to_regclass($1) AND c.contype = 'c' AND a.attname = $2`,
+      [q(def.key), fieldName],
+    );
+    for (const r of rows) {
+      await this.pool.query(`ALTER TABLE ${q(def.key)} DROP CONSTRAINT IF EXISTS ${q(String(r.conname))}`);
+    }
+    await this.updateDef(def);
+  }
+
+  async writeValues(tableKey: string, fieldName: string, entries: Array<{ record_id: string; value: unknown }>): Promise<void> {
+    this.def(tableKey);
+    for (const e of entries) {
+      await this.pool.query(`UPDATE ${q(tableKey)} SET ${q(fieldName)} = $1 WHERE record_id = $2`, [
+        this.toColumn(tableKey, fieldName, e.value),
+        e.record_id,
+      ]);
+    }
+  }
+
+  /** 删除自定义表的物理表（建表登记失败时回滚用）。 */
+  async dropTable(tableKey: string): Promise<void> {
+    if (!/^tbl_[a-z0-9]+$/.test(tableKey)) throw new Error(`refuse to drop: ${tableKey}`);
+    await this.pool.query(`DROP TABLE IF EXISTS ${q(tableKey)}`);
+    this.tableDefs.delete(tableKey);
+    this.fieldDefs.delete(tableKey);
   }
 
   private def(tableKey: string): TableDef {
@@ -164,10 +271,11 @@ export class PgTableStore implements TableStore {
       where.push(`("visibility" IS DISTINCT FROM '保密' OR "owner_open_id" @> $${params.length}::jsonb)`);
     }
 
-    let orderBy = '';
+    // 默认按创建时间；record_id 兜底，保证翻页稳定
+    let orderBy = ' ORDER BY created_at, record_id';
     const sm = opts.sort?.match(/^([\p{L}\p{N}_]+)\s*(asc|desc)?$/iu);
     if (sm && (fdefs.has(sm[1]) || sm[1] === 'created_at' || sm[1] === 'updated_at')) {
-      orderBy = ` ORDER BY ${q(sm[1])} ${sm[2]?.toLowerCase() === 'desc' ? 'DESC' : 'ASC'}`;
+      orderBy = ` ORDER BY ${q(sm[1])} ${sm[2]?.toLowerCase() === 'desc' ? 'DESC' : 'ASC'}, created_at, record_id`;
     }
 
     const offset = opts.pageToken ? Number(opts.pageToken) || 0 : 0;

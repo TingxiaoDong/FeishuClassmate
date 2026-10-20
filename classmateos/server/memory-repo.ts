@@ -1,3 +1,8 @@
+import type { RelRow, ThreadStat } from './repo.js';
+import { isThreadOnly } from './repo.js';
+import type { EntityRecord } from './repo.js';
+import type { DocAccessRequest } from './repo.js';
+import type { ResourceGrant } from './repo.js';
 /**
  * MemoryRepo：进程内存实现（开发 / 测试默认）。语义与 PgRepo 保持一致，
  * 共享同一套契约测试（tests/classmateos/frontend-contract.test.ts）。
@@ -5,8 +10,15 @@
 
 import type {
   CalendarEventRecord,
+  EventCommit,
   ChatRecord,
   ChatView,
+  CustomFieldRecord,
+  CustomTableRecord,
+  NotificationRecord,
+  NotificationSettings,
+  TableSchemaRecord,
+  TableViewRecord,
   DeviceRecord,
   DocRecord,
   FileLink,
@@ -35,6 +47,58 @@ const includesCI = (hay: string | null | undefined, needle: string) =>
   !!hay && hay.toLowerCase().includes(needle.toLowerCase());
 
 export class MemoryRepo implements Repo {
+  private readonly entities = new Map<string, EntityRecord>();
+  async getEntity(kind: string, id: string) {
+    const e = this.entities.get(`${kind}\u0000${id}`);
+    return e ? structuredClone(e) : undefined;
+  }
+  async listEntities(kind: string, scope?: string) {
+    return [...this.entities.values()]
+      .filter((e) => e.kind === kind && (scope === undefined || e.scope === scope))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+      .map((e) => structuredClone(e));
+  }
+  async saveEntity(rec: EntityRecord, expectedVersion: number) {
+    const key = `${rec.kind}\u0000${rec.id}`;
+    if ((this.entities.get(key)?.version ?? 0) !== expectedVersion) return false;
+    this.entities.set(key, structuredClone({ ...rec, version: expectedVersion + 1 }));
+    return true;
+  }
+  async deleteEntity(kind: string, id: string) {
+    return this.entities.delete(`${kind}\u0000${id}`);
+  }
+
+  private readonly accessRequests = new Map<string, DocAccessRequest>();
+  async getDocAccessRequest(id: string) {
+    const r = this.accessRequests.get(id);
+    return r ? structuredClone(r) : undefined;
+  }
+  async saveDocAccessRequest(r: DocAccessRequest) {
+    if ([...this.accessRequests.values()].some(x => x.doc_id === r.doc_id && x.user_id === r.user_id && x.status === 'pending')) return false;
+    this.accessRequests.set(r.request_id, structuredClone(r));
+    return true;
+  }
+  async resolveDocAccessRequest(id: string, status: 'approved' | 'rejected', grant: ResourceGrant) {
+    const r = this.accessRequests.get(id);
+    const key = `doc:${grant.resource_id}`;
+    if (!r || r.status !== 'pending' || r.doc_id !== grant.resource_id || (this.resourceGrants.get(key)?.version ?? 0) !== grant.version) return false;
+    if (status === 'approved') this.resourceGrants.set(key, structuredClone({ ...grant, version: grant.version + 1 }));
+    r.status = status;
+    return true;
+  }
+
+  private readonly resourceGrants = new Map<string, ResourceGrant>();
+  async getResourceGrant(type: ResourceGrant['resource_type'], id: string): Promise<ResourceGrant | undefined> {
+    const value = this.resourceGrants.get(`${type}:${id}`);
+    return value ? structuredClone(value) : undefined;
+  }
+  async saveResourceGrant(grant: ResourceGrant, expectedVersion: number): Promise<boolean> {
+    const key = `${grant.resource_type}:${grant.resource_id}`;
+    if ((this.resourceGrants.get(key)?.version ?? 0) !== expectedVersion) return false;
+    this.resourceGrants.set(key, structuredClone({ ...grant, version: expectedVersion + 1 }));
+    return true;
+  }
+
   private readonly users = new Map<string, UserRecord>();
   private readonly refresh = new Map<string, { user_id: string; expires_at: string; revoked: boolean }>();
   private readonly chats = new Map<string, Omit<ChatRecord, 'member_ids'>>();
@@ -48,6 +112,11 @@ export class MemoryRepo implements Repo {
   private readonly tasks = new Map<string, TaskRecord>();
   private readonly docs = new Map<string, DocRecord>();
   private readonly devices = new Map<string, DeviceRecord>();
+  private readonly customTables = new Map<string, CustomTableRecord>();
+  private readonly tableSchemas = new Map<string, TableSchemaRecord>();
+  private readonly views = new Map<string, TableViewRecord>();
+  private readonly notifications: NotificationRecord[] = [];
+  private readonly notificationSettings = new Map<string, NotificationSettings>();
 
   // ---------------- users ----------------
 
@@ -141,9 +210,10 @@ export class MemoryRepo implements Repo {
     return c ? this.chatRecord(c.chat_id) : undefined;
   }
 
-  async updateChat(chatId: string, patch: { name?: string | null; description?: string | null; kind?: 'normal' | 'drive'; owner_id?: string | null }) {
+  async updateChat(chatId: string, patch: { name?: string | null; description?: string | null; kind?: 'normal' | 'drive'; owner_id?: string | null; thread_mode?: boolean }) {
     const c = this.chats.get(chatId);
     if (!c) return undefined;
+    if (patch.thread_mode !== undefined) c.thread_mode = patch.thread_mode;
     if (patch.name !== undefined) c.name = patch.name;
     if (patch.description !== undefined) c.description = patch.description;
     if (patch.kind !== undefined) c.kind = patch.kind;
@@ -186,7 +256,7 @@ export class MemoryRepo implements Repo {
     const chat = this.chatRecord(chatId);
     const state = this.members.get(chatId)?.find((m) => m.user_id === userId);
     if (!chat || !state) return undefined;
-    const msgs = this.messages.get(chatId) ?? [];
+    const msgs = (this.messages.get(chatId) ?? []).filter((m) => !isThreadOnly(m));
     const unread = msgs.filter(
       (m) => m.seq > state.last_read_seq && m.sender_id !== userId && m.msg_type !== 'system' && !m.recalled,
     ).length;
@@ -243,6 +313,9 @@ export class MemoryRepo implements Repo {
     }
     const rec: MessageRecord = {
       ...clone(m),
+      thread_root_id: m.thread_root_id ?? null,
+      also_send_to_chat: !!m.also_send_to_chat,
+      forwarded_from: m.forwarded_from ?? null,
       updated_at: null,
       recalled: false,
       seq: ++this.seq,
@@ -250,7 +323,7 @@ export class MemoryRepo implements Repo {
     list.push(rec);
     this.messageIndex.set(rec.message_id, rec);
     const chat = this.chats.get(m.chat_id)!;
-    if (m.created_at > chat.updated_at) chat.updated_at = m.created_at;
+    if (!isThreadOnly(rec) && m.created_at > chat.updated_at) chat.updated_at = m.created_at;
     return { message: clone(rec), duplicate: false };
   }
 
@@ -260,21 +333,101 @@ export class MemoryRepo implements Repo {
   }
 
   async listMessages(chatId: string, opts: { limit: number; beforeId?: string; afterId?: string }) {
-    const msgs = this.messages.get(chatId) ?? [];
+    const all = this.messages.get(chatId) ?? [];
+    const msgs = all.filter((m) => !isThreadOnly(m));
     if (opts.afterId) {
-      const cursor = msgs.find((m) => m.message_id === opts.afterId);
+      const cursor = all.find((m) => m.message_id === opts.afterId);
       if (!cursor) return undefined;
       const newer = msgs.filter((m) => m.seq > cursor.seq);
       return { items: newer.slice(0, opts.limit).map(clone), has_more: newer.length > opts.limit };
     }
     let older = msgs;
     if (opts.beforeId) {
-      const cursor = msgs.find((m) => m.message_id === opts.beforeId);
+      const cursor = all.find((m) => m.message_id === opts.beforeId);
       if (!cursor) return undefined;
       older = msgs.filter((m) => m.seq < cursor.seq);
     }
     const desc = [...older].reverse();
     return { items: desc.slice(0, opts.limit).map(clone), has_more: desc.length > opts.limit };
+  }
+
+  async listThreadReplies(rootId: string, opts: { afterSeq?: number; limit: number }) {
+    const root = this.messageIndex.get(rootId);
+    const list = (root ? this.messages.get(root.chat_id) ?? [] : []).filter((m) => m.thread_root_id === rootId && m.seq > (opts.afterSeq ?? 0));
+    return { items: list.slice(0, opts.limit).map(clone), has_more: list.length > opts.limit };
+  }
+
+  async threadStats(rootIds: string[]) {
+    const out = new Map<string, ThreadStat>();
+    const want = new Set(rootIds);
+    for (const id of want) {
+      const root = this.messageIndex.get(id);
+      if (!root) continue;
+      for (const m of this.messages.get(root.chat_id) ?? []) {
+        if (m.thread_root_id !== id || m.recalled) continue;
+        const s = out.get(id) ?? { reply_count: 0, last_reply_at: null, last_seq: 0, participants: [] };
+        s.reply_count++;
+        s.last_reply_at = m.created_at;
+        s.last_seq = m.seq;
+        if (!s.participants.includes(m.sender_id)) s.participants.push(m.sender_id);
+        out.set(id, s);
+      }
+    }
+    return out;
+  }
+
+  async chatReadStates(chatId: string) {
+    return (this.members.get(chatId) ?? []).map((m) => ({ user_id: m.user_id, last_read_seq: m.last_read_seq }));
+  }
+
+  private readonly rels = new Map<string, RelRow & { _seq: number }>();
+  private relSeq = 0;
+  private relKey = (kind: string, k1: string, k2: string, k3: string) => [kind, k1, k2, k3].join('\u0000');
+
+  async relPut(row: Omit<RelRow, 'created_at' | 'updated_at'> & { at: string }, opts: { upsert?: boolean; maxPerK1?: number } = {}) {
+    const key = this.relKey(row.kind, row.k1, row.k2, row.k3);
+    const cur = this.rels.get(key);
+    if (cur) {
+      if (!opts.upsert) return 'exists' as const;
+      cur.data = clone(row.data);
+      cur.updated_at = row.at;
+      return 'updated' as const;
+    }
+    if (opts.maxPerK1 !== undefined) {
+      let n = 0;
+      for (const r of this.rels.values()) if (r.kind === row.kind && r.k1 === row.k1) n++;
+      if (n >= opts.maxPerK1) return 'limit' as const;
+    }
+    this.rels.set(key, { kind: row.kind, k1: row.k1, k2: row.k2, k3: row.k3, data: clone(row.data), created_at: row.at, updated_at: row.at, _seq: ++this.relSeq });
+    return 'inserted' as const;
+  }
+
+  async relGet(kind: string, k1: string, k2: string, k3 = '') {
+    const r = this.rels.get(this.relKey(kind, k1, k2, k3));
+    if (!r) return undefined;
+    const { _seq, ...row } = r;
+    return clone(row);
+  }
+
+  async relDelete(kind: string, k1: string, k2?: string, k3?: string) {
+    let n = 0;
+    for (const [key, r] of this.rels) {
+      if (r.kind === kind && r.k1 === k1 && (k2 === undefined || r.k2 === k2) && (k3 === undefined || r.k3 === k3)) {
+        this.rels.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  async relList(kind: string, filter: { k1?: string | string[]; k2?: string; k3?: string }, opts: { limit?: number; offset?: number; order?: 'asc' | 'desc' } = {}) {
+    const k1s = filter.k1 === undefined ? undefined : new Set(Array.isArray(filter.k1) ? filter.k1 : [filter.k1]);
+    const all = [...this.rels.values()]
+      .filter((r) => r.kind === kind && (!k1s || k1s.has(r.k1)) && (filter.k2 === undefined || r.k2 === filter.k2) && (filter.k3 === undefined || r.k3 === filter.k3))
+      .sort((a, b) => a.updated_at.localeCompare(b.updated_at) || a._seq - b._seq);
+    if (opts.order !== 'asc') all.reverse();
+    const off = opts.offset ?? 0;
+    return { items: all.slice(off, opts.limit === undefined ? undefined : off + opts.limit).map(({ _seq, ...r }) => clone(r)), total: all.length };
   }
 
   async findMessageByCardId(cardId: string) {
@@ -300,15 +453,17 @@ export class MemoryRepo implements Repo {
     return clone(m);
   }
 
-  async searchMessages(userId: string, opts: { keyword: string; chatId?: string; limit: number; offset: number }) {
+  async searchMessages(userId: string, opts: { keyword: string; chatId?: string; senderId?: string; sinceIso?: string; limit: number; offset: number }) {
     const hits: MessageRecord[] = [];
     for (const [chatId, list] of this.messages) {
       if (opts.chatId && chatId !== opts.chatId) continue;
       if (!this.members.get(chatId)?.some((m) => m.user_id === userId)) continue;
       for (const m of list) {
         if (m.recalled || m.msg_type === 'system') continue;
+        if (opts.senderId && m.sender_id !== opts.senderId) continue;
+        if (opts.sinceIso && m.created_at < opts.sinceIso) continue;
         const c = m.content;
-        if ([c.text, c.title, c.file_name].some((v) => typeof v === 'string' && includesCI(v, opts.keyword))) {
+        if ([c.text, c.title, c.markdown, c.file_name].some((v) => typeof v === 'string' && includesCI(v, opts.keyword))) {
           hits.push(m);
         }
       }
@@ -317,6 +472,7 @@ export class MemoryRepo implements Repo {
     return {
       items: hits.slice(opts.offset, opts.offset + opts.limit).map(clone),
       has_more: hits.length > opts.offset + opts.limit,
+      total: hits.length,
     };
   }
 
@@ -430,11 +586,34 @@ export class MemoryRepo implements Repo {
       .filter(
         (e) =>
           (e.created_by === userId || e.attendees.some((a) => a.user_id === userId)) &&
+          !e.recurrence &&
           e.end_ms > fromMs &&
           e.start_ms < toMs,
       )
       .sort((a, b) => a.start_ms - b.start_ms)
       .map(clone);
+  }
+
+  async listRecurringEvents(userId: string, beforeMs: number) {
+    return [...this.events.values()]
+      .filter((e) => !!e.recurrence && e.start_ms < beforeMs && (e.created_by === userId || e.attendees.some((a) => a.user_id === userId)))
+      .sort((a, b) => a.start_ms - b.start_ms)
+      .map(clone);
+  }
+
+  async commitEvents(c: EventCommit) {
+    // 同步完成检查和写入，中间没有 await，不会和其他请求交错
+    if (c.expect) {
+      const cur = this.events.get(c.expect.event_id);
+      if (!cur || cur.updated_at !== c.expect.updated_at) return false;
+    }
+    for (const id of c.remove) this.events.delete(id);
+    for (const ev of c.save) this.events.set(ev.event_id, clone(ev));
+    return true;
+  }
+
+  async listEventExceptions(masterId: string) {
+    return [...this.events.values()].filter((e) => e.recurring_event_id === masterId).map(clone);
   }
 
   // ---------------- tasks ----------------
@@ -452,9 +631,19 @@ export class MemoryRepo implements Repo {
     return this.tasks.delete(taskId);
   }
 
-  async listTasks(userId: string, opts: { assignee_id?: string; status?: string; created_by?: string }) {
+  async listSubtasks(parentId: string) {
     return [...this.tasks.values()]
-      .filter((t) => t.created_by === userId || t.assignee_id === userId)
+      .filter((t) => t.parent_id === parentId)
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0) || a.created_at.localeCompare(b.created_at) || a.task_id.localeCompare(b.task_id))
+      .map(clone);
+  }
+
+  async listTasks(userId: string, opts: { assignee_id?: string; status?: string; created_by?: string; follower_id?: string; parent?: string; extra_ids?: string[] }) {
+    const extra = new Set(opts.extra_ids ?? []);
+    return [...this.tasks.values()]
+      .filter((t) => t.created_by === userId || t.assignee_id === userId || (t.follower_ids ?? []).includes(userId) || extra.has(t.task_id))
+      .filter((t) => !opts.follower_id || (t.follower_ids ?? []).includes(opts.follower_id))
+      .filter((t) => opts.parent === undefined || (opts.parent === 'top' ? !t.parent_id : t.parent_id === opts.parent))
       .filter((t) => !opts.assignee_id || t.assignee_id === opts.assignee_id)
       .filter((t) => !opts.status || t.status === opts.status)
       .filter((t) => !opts.created_by || t.created_by === opts.created_by)
@@ -492,6 +681,164 @@ export class MemoryRepo implements Repo {
       .filter((d) => !kw || includesCI(d.title, kw))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.doc_id.localeCompare(b.doc_id));
     return { items: all.slice(opts.offset, opts.offset + opts.limit).map(clone), total: all.length };
+  }
+
+  async searchDocs(opts: { keyword: string; sinceIso?: string; limit: number }) {
+    return [...this.docs.values()]
+      .filter((d) => (includesCI(d.title, opts.keyword) || includesCI(d.markdown, opts.keyword)) && (!opts.sinceIso || d.updated_at >= opts.sinceIso))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.doc_id.localeCompare(b.doc_id))
+      .slice(0, opts.limit)
+      .map(clone);
+  }
+
+  // ---------------- custom tables ----------------
+
+  async insertCustomTable(t: CustomTableRecord) {
+    if (await this.findCustomTableByName(t.name)) return 'name_exists' as const;
+    this.customTables.set(t.key, clone(t));
+    return 'ok' as const;
+  }
+
+  async getCustomTable(key: string) {
+    const t = this.customTables.get(key);
+    return t ? clone(t) : undefined;
+  }
+
+  async listCustomTables() {
+    return [...this.customTables.values()]
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.key.localeCompare(b.key))
+      .map(clone);
+  }
+
+  async findCustomTableByName(name: string) {
+    const n = name.trim().toLowerCase();
+    const t = [...this.customTables.values()].find((x) => x.name.trim().toLowerCase() === n);
+    return t ? clone(t) : undefined;
+  }
+
+  async findCustomTableByRequest(userId: string, clientRequestId: string, sinceIso: string) {
+    const t = [...this.customTables.values()].find(
+      (x) => x.created_by === userId && x.client_request_id === clientRequestId && x.created_at >= sinceIso,
+    );
+    return t ? clone(t) : undefined;
+  }
+
+  async deleteCustomTable(key: string) {
+    return this.customTables.delete(key);
+  }
+
+  async updateCustomTableFields(key: string, fields: CustomFieldRecord[], version: number, updatedAt: string, ifVersion: number) {
+    const t = this.customTables.get(key);
+    if (!t || (t.version ?? 1) !== ifVersion) return false;
+    t.fields = clone(fields);
+    t.version = version;
+    t.updated_at = updatedAt;
+    return true;
+  }
+
+  // ---------------- 内置表结构覆盖层 ----------------
+
+  async getTableSchema(key: string) {
+    const s = this.tableSchemas.get(key);
+    return s ? clone(s) : undefined;
+  }
+
+  async saveTableSchema(rec: TableSchemaRecord, ifVersion: number | null) {
+    const cur = this.tableSchemas.get(rec.table_key);
+    if (ifVersion === null ? !!cur : !cur || cur.version !== ifVersion) return false;
+    this.tableSchemas.set(rec.table_key, clone(rec));
+    return true;
+  }
+
+  // ---------------- 视图 ----------------
+
+  async listViews(tableKey: string) {
+    return [...this.views.values()]
+      .filter((v) => v.table_key === tableKey)
+      .sort((a, b) => a.position - b.position || a.created_at.localeCompare(b.created_at) || a.view_id.localeCompare(b.view_id))
+      .map(clone);
+  }
+
+  async getView(viewId: string) {
+    const v = this.views.get(viewId);
+    return v ? clone(v) : undefined;
+  }
+
+  async insertView(v: TableViewRecord) {
+    if (this.views.has(v.view_id)) return false;
+    this.views.set(v.view_id, clone(v));
+    return true;
+  }
+
+  async updateView(v: TableViewRecord, ifVersion: number) {
+    const cur = this.views.get(v.view_id);
+    if (!cur || cur.version !== ifVersion) return false;
+    this.views.set(v.view_id, clone(v));
+    return true;
+  }
+
+  async deleteView(viewId: string) {
+    return this.views.delete(viewId);
+  }
+
+  async setViewPositions(tableKey: string, positions: Array<{ view_id: string; position: number }>) {
+    for (const p of positions) {
+      const v = this.views.get(p.view_id);
+      if (v && v.table_key === tableKey) v.position = p.position;
+    }
+  }
+
+  // ---------------- 通知 ----------------
+
+  async insertNotification(n: NotificationRecord) {
+    if (n.dedupe_key && this.notifications.some((x) => x.user_id === n.user_id && x.dedupe_key === n.dedupe_key)) return false;
+    this.notifications.push(clone(n));
+    return true;
+  }
+
+  async listNotifications(userId: string, opts: { mentionOnly: boolean; limit: number; offset: number }) {
+    // 插入顺序即时间顺序；倒序返回
+    const all = this.notifications
+      .filter((n) => n.user_id === userId && (!opts.mentionOnly || n.type.endsWith('.mention')))
+      .reverse();
+    return { items: all.slice(opts.offset, opts.offset + opts.limit).map(clone), total: all.length };
+  }
+
+  async countUnreadNotifications(userId: string) {
+    return this.notifications.filter((n) => n.user_id === userId && !n.read).length;
+  }
+
+  async markNotificationsRead(userId: string, ids: string[] | 'all') {
+    const set = ids === 'all' ? undefined : new Set(ids);
+    let n = 0;
+    for (const x of this.notifications) {
+      if (x.user_id !== userId || x.read || (set && !set.has(x.notification_id))) continue;
+      x.read = true;
+      n++;
+    }
+    return n;
+  }
+
+  async getNotificationSettings(userId: string) {
+    const s = this.notificationSettings.get(userId);
+    return s ? clone(s) : undefined;
+  }
+
+  async saveNotificationSettings(userId: string, s: NotificationSettings) {
+    this.notificationSettings.set(userId, clone(s));
+  }
+
+  async listTasksDueBetween(fromMs: number, toMs: number) {
+    return [...this.tasks.values()]
+      .filter(
+        (t) =>
+          t.assignee_id &&
+          t.due_ms != null &&
+          t.due_ms >= fromMs &&
+          t.due_ms < toMs &&
+          (t.status === 'pending' || t.status === 'in_progress'),
+      )
+      .map(clone);
   }
 
   // ---------------- devices ----------------

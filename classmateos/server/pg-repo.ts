@@ -1,3 +1,7 @@
+import type { RelRow, ThreadStat } from './repo.js';
+import type { EntityRecord } from './repo.js';
+import type { DocAccessRequest } from './repo.js';
+import type { ResourceGrant } from './repo.js';
 /**
  * PgRepo：PostgreSQL 持久化实现，表结构见 classmateos/schema-platform.sql。
  * 与 MemoryRepo 语义一致（同一套契约测试）。
@@ -7,9 +11,17 @@ import { readFile } from 'node:fs/promises';
 import type { Pool, PoolClient } from 'pg';
 import type {
   CalendarEventRecord,
+  EventCommit,
   ChatRecord,
   ChatView,
+  CustomFieldRecord,
+  CustomTableRecord,
   DeviceRecord,
+  FieldMetaRecord,
+  NotificationRecord,
+  NotificationSettings,
+  TableSchemaRecord,
+  TableViewRecord,
   DocRecord,
   FileKind,
   FileLink,
@@ -73,6 +85,9 @@ function toMessage(r: Row): MessageRecord {
     seq: num(r.seq),
     client_msg_id: (r.client_msg_id as string) ?? null,
     card_id: (r.card_id as string) ?? null,
+    thread_root_id: (r.thread_root_id as string) ?? null,
+    also_send_to_chat: Boolean(r.also_send_to_chat),
+    forwarded_from: (r.forwarded_from as Record<string, unknown>) ?? null,
   };
 }
 
@@ -88,6 +103,17 @@ function toChat(r: Row): ChatRecord {
     member_ids: (r.member_ids as string[] | null) ?? [],
     created_at: isoReq(r.created_at),
     updated_at: isoReq(r.updated_at),
+    thread_mode: Boolean(r.thread_mode),
+  };
+}
+
+const MSG_SEARCH_EXPR = `(coalesce(g.content->>'text','') || ' ' || coalesce(g.content->>'title','') || ' ' || coalesce(g.content->>'markdown','') || ' ' || coalesce(g.content->>'file_name',''))`;
+const MAIN_FLOW = '(g.thread_root_id IS NULL OR g.also_send_to_chat)';
+
+function toRel(r: Row): RelRow {
+  return {
+    kind: String(r.kind), k1: String(r.k1), k2: String(r.k2), k3: String(r.k3),
+    data: (r.data as Record<string, unknown>) ?? {}, created_at: isoReq(r.created_at), updated_at: isoReq(r.updated_at),
   };
 }
 
@@ -121,6 +147,11 @@ function toEvent(r: Row): CalendarEventRecord {
     created_by: String(r.created_by),
     created_at: isoReq(r.created_at),
     updated_at: isoReq(r.updated_at),
+    recurrence: (r.recurrence as string) ?? null,
+    recurring_event_id: (r.recurring_event_id as string) ?? null,
+    original_start_ms: numOrNull(r.original_start_ms),
+    exdates: ((r.exdates as unknown[] | null) ?? []).map(Number),
+    timezone: (r.timezone as string) ?? null,
   };
 }
 
@@ -138,6 +169,9 @@ function toTask(r: Row): TaskRecord {
     created_at: isoReq(r.created_at),
     updated_at: isoReq(r.updated_at),
     completed_at: iso(r.completed_at),
+    parent_id: (r.parent_id as string) ?? null,
+    position: numOrNull(r.position),
+    follower_ids: (r.follower_ids as string[] | null) ?? [],
   };
 }
 
@@ -151,6 +185,66 @@ function toDoc(r: Row): DocRecord {
     updated_at: isoReq(r.updated_at),
     updated_by: String(r.updated_by ?? r.created_by),
     yjs_update: (r.yjs_update as string) ?? null,
+  };
+}
+
+function toCustomTable(r: Row): CustomTableRecord {
+  const fields = typeof r.fields === 'string' ? JSON.parse(r.fields) : r.fields;
+  return {
+    key: String(r.table_key),
+    name: String(r.name),
+    description: (r.description as string) ?? null,
+    icon: String(r.icon ?? 'table'),
+    primary_field: String(r.primary_field),
+    fields: (fields ?? []) as CustomFieldRecord[],
+    created_by: String(r.created_by),
+    created_at: isoReq(r.created_at),
+    updated_at: isoReq(r.updated_at),
+    client_request_id: (r.client_request_id as string) ?? null,
+    version: Number(r.version ?? 1),
+  };
+}
+
+const json = <T>(v: unknown): T => (typeof v === 'string' ? JSON.parse(v) : v) as T;
+
+function toTableSchema(r: Row): TableSchemaRecord {
+  return {
+    table_key: String(r.table_key),
+    version: Number(r.version),
+    fields: json<FieldMetaRecord[]>(r.fields) ?? [],
+    updated_at: isoReq(r.updated_at),
+  };
+}
+
+function toView(r: Row): TableViewRecord {
+  return {
+    view_id: String(r.view_id),
+    table_key: String(r.table_key),
+    name: String(r.name),
+    type: r.type as TableViewRecord['type'],
+    personal: Boolean(r.personal),
+    owner_id: (r.owner_id as string) ?? null,
+    config: json<Record<string, unknown>>(r.config) ?? {},
+    version: Number(r.version),
+    position: Number(r.position),
+    created_by: String(r.created_by),
+    created_at: isoReq(r.created_at),
+    updated_at: isoReq(r.updated_at),
+  };
+}
+
+function toNotification(r: Row): NotificationRecord {
+  return {
+    notification_id: String(r.notification_id),
+    user_id: String(r.user_id),
+    type: String(r.type),
+    actor_id: (r.actor_id as string) ?? null,
+    title: String(r.title),
+    summary: String(r.summary ?? ''),
+    target: json<Record<string, unknown>>(r.target) ?? {},
+    read: Boolean(r.is_read),
+    created_at: isoReq(r.created_at),
+    dedupe_key: (r.dedupe_key as string) ?? null,
   };
 }
 
@@ -171,6 +265,73 @@ const CHAT_SELECT = `
   FROM cos_chats c`;
 
 export class PgRepo implements Repo {
+  private toEntity(r: Record<string, unknown>): EntityRecord {
+    return { kind: String(r.kind), id: String(r.id), scope: String(r.scope), data: r.data as Record<string, unknown>, version: Number(r.version), created_at: new Date(String(r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at)).toISOString(), updated_at: new Date(String(r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at)).toISOString() };
+  }
+  async getEntity(kind: string, id: string) {
+    const rows = await this.q('SELECT * FROM cos_entities WHERE kind=$1 AND id=$2', [kind, id]);
+    return rows[0] ? this.toEntity(rows[0]) : undefined;
+  }
+  async listEntities(kind: string, scope?: string) {
+    const rows = scope === undefined
+      ? await this.q('SELECT * FROM cos_entities WHERE kind=$1 ORDER BY created_at, id', [kind])
+      : await this.q('SELECT * FROM cos_entities WHERE kind=$1 AND scope=$2 ORDER BY created_at, id', [kind, scope]);
+    return rows.map((r) => this.toEntity(r));
+  }
+  async saveEntity(e: EntityRecord, expectedVersion: number) {
+    const args = [e.kind, e.id, e.scope, JSON.stringify(e.data), e.created_at, e.updated_at];
+    const rows = expectedVersion === 0
+      ? await this.q('INSERT INTO cos_entities(kind,id,scope,data,version,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,1,$5,$6) ON CONFLICT DO NOTHING RETURNING id', args)
+      : await this.q('UPDATE cos_entities SET scope=$3,data=$4::jsonb,version=version+1,updated_at=$5 WHERE kind=$1 AND id=$2 AND version=$6 RETURNING id', [e.kind, e.id, e.scope, JSON.stringify(e.data), e.updated_at, expectedVersion]);
+    return rows.length === 1;
+  }
+  async deleteEntity(kind: string, id: string) {
+    return (await this.q('DELETE FROM cos_entities WHERE kind=$1 AND id=$2 RETURNING id', [kind, id])).length > 0;
+  }
+
+  async getDocAccessRequest(id: string): Promise<DocAccessRequest | undefined> {
+    const rows = await this.q('SELECT data, status FROM cos_doc_access_requests WHERE request_id=$1', [id]);
+    return rows[0] ? { ...(rows[0].data as DocAccessRequest), status: rows[0].status as DocAccessRequest['status'] } : undefined;
+  }
+  async saveDocAccessRequest(r: DocAccessRequest) {
+    return (await this.q(`INSERT INTO cos_doc_access_requests(request_id,doc_id,user_id,status,data) VALUES($1,$2,$3,'pending',$4::jsonb) ON CONFLICT DO NOTHING RETURNING request_id`, [r.request_id,r.doc_id,r.user_id,JSON.stringify(r)])).length > 0;
+  }
+  async resolveDocAccessRequest(id: string, status: 'approved' | 'rejected', grant: ResourceGrant) {
+    const c = await this.pool.connect();
+    try {
+      await c.query('BEGIN');
+      const request = await c.query("SELECT request_id FROM cos_doc_access_requests WHERE request_id=$1 AND doc_id=$2 AND status='pending' FOR UPDATE", [id,grant.resource_id]);
+      if (!request.rowCount) { await c.query('ROLLBACK'); return false; }
+      const data = JSON.stringify({ ...grant, version: grant.version + 1 });
+      if (status === 'approved') {
+        const result = grant.version === 0
+          ? await c.query("INSERT INTO cos_resource_grants(resource_type,resource_id,data,version) VALUES('doc',$1,$2::jsonb,1) ON CONFLICT DO NOTHING RETURNING version", [grant.resource_id,data])
+          : await c.query("UPDATE cos_resource_grants SET data=$2::jsonb,version=version+1 WHERE resource_type='doc' AND resource_id=$1 AND version=$3 RETURNING version", [grant.resource_id,data,grant.version]);
+        if (!result.rowCount) { await c.query('ROLLBACK'); return false; }
+      } else {
+        const current = await c.query("SELECT version FROM cos_resource_grants WHERE resource_type='doc' AND resource_id=$1 FOR UPDATE", [grant.resource_id]);
+        if (Number(current.rows[0]?.version ?? 0) !== grant.version) { await c.query('ROLLBACK'); return false; }
+      }
+      await c.query('UPDATE cos_doc_access_requests SET status=$2 WHERE request_id=$1', [id,status]);
+      await c.query('COMMIT'); return true;
+    } catch (e) { await c.query('ROLLBACK'); throw e; }
+    finally { c.release(); }
+  }
+
+  async getResourceGrant(type: ResourceGrant['resource_type'], id: string): Promise<ResourceGrant | undefined> {
+    const rows = await this.q('SELECT data, version FROM cos_resource_grants WHERE resource_type=$1 AND resource_id=$2', [type, id]);
+    return rows[0] ? { ...(rows[0].data as ResourceGrant), version: Number(rows[0].version) } : undefined;
+  }
+  async saveResourceGrant(grant: ResourceGrant, expectedVersion: number): Promise<boolean> {
+    const data = { ...grant, version: expectedVersion + 1 };
+    if (expectedVersion === 0) {
+      const rows = await this.q('INSERT INTO cos_resource_grants(resource_type,resource_id,data,version) VALUES($1,$2,$3::jsonb,1) ON CONFLICT DO NOTHING RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data)]);
+      return rows.length === 1;
+    }
+    const rows = await this.q('UPDATE cos_resource_grants SET data=$3::jsonb,version=version+1 WHERE resource_type=$1 AND resource_id=$2 AND version=$4 RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data), expectedVersion]);
+    return rows.length === 1;
+  }
+
   constructor(private readonly pool: Pool) {}
 
   /** 执行 schema-platform.sql（幂等）。 */
@@ -310,7 +471,7 @@ export class PgRepo implements Repo {
     return rows[0] ? toChat(rows[0]) : undefined;
   }
 
-  async updateChat(chatId: string, patch: { name?: string | null; description?: string | null; kind?: 'normal' | 'drive'; owner_id?: string | null }) {
+  async updateChat(chatId: string, patch: { name?: string | null; description?: string | null; kind?: 'normal' | 'drive'; owner_id?: string | null; thread_mode?: boolean }) {
     const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
     if (entries.length > 0) {
       const sets = entries.map(([k], i) => `"${k}" = $${i + 2}`).join(', ');
@@ -349,8 +510,8 @@ export class PgRepo implements Repo {
          m.last_read_message_id, m.pinned, m.muted,
          (SELECT count(*) FROM cos_messages g
             WHERE g.chat_id = c.chat_id AND g.seq > m.last_read_seq AND g.sender_id <> $1
-              AND g.msg_type <> 'system' AND NOT g.recalled) AS unread_count,
-         (SELECT to_jsonb(g) FROM cos_messages g WHERE g.chat_id = c.chat_id ORDER BY g.seq DESC LIMIT 1) AS last_message,
+              AND g.msg_type <> 'system' AND NOT g.recalled AND ${MAIN_FLOW}) AS unread_count,
+         (SELECT to_jsonb(g) FROM cos_messages g WHERE g.chat_id = c.chat_id AND ${MAIN_FLOW} ORDER BY g.seq DESC LIMIT 1) AS last_message,
          count(*) OVER() AS _total
        FROM cos_chat_members m JOIN cos_chats c ON c.chat_id = m.chat_id
        WHERE m.user_id = $1 ${where}
@@ -419,17 +580,18 @@ export class PgRepo implements Repo {
     const rows = await this.q(
       `WITH ins AS (
          INSERT INTO cos_messages (message_id, chat_id, sender_id, msg_type, content, created_at,
-                                   reply_to_message_id, client_msg_id, card_id)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+                                   reply_to_message_id, client_msg_id, card_id, thread_root_id, also_send_to_chat, forwarded_from)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12::jsonb)
          ON CONFLICT (chat_id, sender_id, client_msg_id) WHERE client_msg_id IS NOT NULL DO NOTHING
          RETURNING *
        ), upd AS (
          UPDATE cos_chats SET updated_at = GREATEST(updated_at, $6::timestamptz)
-         WHERE chat_id = $2 AND EXISTS (SELECT 1 FROM ins)
+         WHERE chat_id = $2 AND EXISTS (SELECT 1 FROM ins) AND ($10::text IS NULL OR $11::boolean)
        )
        SELECT * FROM ins`,
       [m.message_id, m.chat_id, m.sender_id, m.msg_type, JSON.stringify(m.content), m.created_at,
-        m.reply_to_message_id, m.client_msg_id, m.card_id],
+        m.reply_to_message_id, m.client_msg_id, m.card_id, m.thread_root_id ?? null, !!m.also_send_to_chat,
+        m.forwarded_from ? JSON.stringify(m.forwarded_from) : null],
     );
     if (rows[0]) return { message: toMessage(rows[0]), duplicate: false };
     const dup = await this.q(
@@ -455,21 +617,106 @@ export class PgRepo implements Repo {
     const lim = opts.limit + 1;
     let rows: Row[];
     if (opts.afterId) {
-      rows = await this.q('SELECT * FROM cos_messages WHERE chat_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3', [
+      rows = await this.q(`SELECT * FROM cos_messages g WHERE chat_id = $1 AND seq > $2 AND ${MAIN_FLOW} ORDER BY seq ASC LIMIT $3`, [
         chatId,
         cursorSeq,
         lim,
       ]);
     } else if (opts.beforeId) {
-      rows = await this.q('SELECT * FROM cos_messages WHERE chat_id = $1 AND seq < $2 ORDER BY seq DESC LIMIT $3', [
+      rows = await this.q(`SELECT * FROM cos_messages g WHERE chat_id = $1 AND seq < $2 AND ${MAIN_FLOW} ORDER BY seq DESC LIMIT $3`, [
         chatId,
         cursorSeq,
         lim,
       ]);
     } else {
-      rows = await this.q('SELECT * FROM cos_messages WHERE chat_id = $1 ORDER BY seq DESC LIMIT $2', [chatId, lim]);
+      rows = await this.q(`SELECT * FROM cos_messages g WHERE chat_id = $1 AND ${MAIN_FLOW} ORDER BY seq DESC LIMIT $2`, [chatId, lim]);
     }
     return { items: rows.slice(0, opts.limit).map(toMessage), has_more: rows.length > opts.limit };
+  }
+
+  async listThreadReplies(rootId: string, opts: { afterSeq?: number; limit: number }) {
+    const rows = await this.q('SELECT * FROM cos_messages WHERE thread_root_id = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3', [rootId, opts.afterSeq ?? 0, opts.limit + 1]);
+    return { items: rows.slice(0, opts.limit).map(toMessage), has_more: rows.length > opts.limit };
+  }
+
+  async threadStats(rootIds: string[]) {
+    const out = new Map<string, ThreadStat>();
+    if (!rootIds.length) return out;
+    const rows = await this.q(
+      `SELECT thread_root_id, count(*) AS n, max(created_at) AS last_at, max(seq) AS last_seq,
+              (SELECT array_agg(s ORDER BY f) FROM (SELECT sender_id AS s, min(seq) AS f FROM cos_messages x
+                 WHERE x.thread_root_id = g.thread_root_id AND NOT x.recalled GROUP BY sender_id) t) AS participants
+       FROM cos_messages g WHERE thread_root_id = ANY($1::text[]) AND NOT recalled GROUP BY thread_root_id`,
+      [[...new Set(rootIds)]],
+    );
+    for (const r of rows) {
+      out.set(String(r.thread_root_id), { reply_count: num(r.n), last_reply_at: iso(r.last_at), last_seq: num(r.last_seq), participants: (r.participants as string[]) ?? [] });
+    }
+    return out;
+  }
+
+  async chatReadStates(chatId: string) {
+    const rows = await this.q('SELECT user_id, last_read_seq FROM cos_chat_members WHERE chat_id = $1', [chatId]);
+    return rows.map((r) => ({ user_id: String(r.user_id), last_read_seq: num(r.last_read_seq) }));
+  }
+
+  async relPut(row: Omit<RelRow, 'created_at' | 'updated_at'> & { at: string }, opts: { upsert?: boolean; maxPerK1?: number } = {}) {
+    const params = [row.kind, row.k1, row.k2, row.k3, JSON.stringify(row.data), row.at];
+    if (opts.maxPerK1 !== undefined) {
+      return this.tx(async (c) => {
+        await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`rel:${row.kind}:${row.k1}`]);
+        const ex = await c.query('SELECT 1 FROM cos_relations WHERE kind=$1 AND k1=$2 AND k2=$3 AND k3=$4', params.slice(0, 4));
+        if (ex.rowCount) {
+          if (!opts.upsert) return 'exists' as const;
+          await c.query('UPDATE cos_relations SET data=$5::jsonb, updated_at=$6 WHERE kind=$1 AND k1=$2 AND k2=$3 AND k3=$4', params);
+          return 'updated' as const;
+        }
+        const n = await c.query('SELECT count(*) AS n FROM cos_relations WHERE kind=$1 AND k1=$2', params.slice(0, 2));
+        if (Number(n.rows[0].n) >= opts.maxPerK1!) return 'limit' as const;
+        await c.query('INSERT INTO cos_relations(kind,k1,k2,k3,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$6)', params);
+        return 'inserted' as const;
+      });
+    }
+    if (opts.upsert) {
+      const rows = await this.q(
+        `INSERT INTO cos_relations(kind,k1,k2,k3,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$6)
+         ON CONFLICT (kind,k1,k2,k3) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at
+         RETURNING (xmax = 0) AS inserted`, params);
+      return rows[0]?.inserted ? 'inserted' : 'updated';
+    }
+    const rows = await this.q(
+      `INSERT INTO cos_relations(kind,k1,k2,k3,data,created_at,updated_at) VALUES($1,$2,$3,$4,$5::jsonb,$6,$6)
+       ON CONFLICT (kind,k1,k2,k3) DO NOTHING RETURNING 1 AS ok`, params);
+    return rows.length ? 'inserted' : 'exists';
+  }
+
+  async relGet(kind: string, k1: string, k2: string, k3 = '') {
+    const rows = await this.q('SELECT * FROM cos_relations WHERE kind=$1 AND k1=$2 AND k2=$3 AND k3=$4', [kind, k1, k2, k3]);
+    return rows[0] ? toRel(rows[0]) : undefined;
+  }
+
+  async relDelete(kind: string, k1: string, k2?: string, k3?: string) {
+    const rows = await this.q(
+      'DELETE FROM cos_relations WHERE kind=$1 AND k1=$2 AND ($3::text IS NULL OR k2=$3) AND ($4::text IS NULL OR k3=$4) RETURNING 1',
+      [kind, k1, k2 ?? null, k3 ?? null]);
+    return rows.length;
+  }
+
+  async relList(kind: string, filter: { k1?: string | string[]; k2?: string; k3?: string }, opts: { limit?: number; offset?: number; order?: 'asc' | 'desc' } = {}) {
+    const k1s = filter.k1 === undefined ? null : Array.isArray(filter.k1) ? filter.k1 : [filter.k1];
+    const dir = opts.order === 'asc' ? 'ASC' : 'DESC';
+    const rows = await this.q(
+      `SELECT *, count(*) OVER() AS _total FROM cos_relations
+       WHERE kind=$1 AND ($2::text[] IS NULL OR k1 = ANY($2)) AND ($3::text IS NULL OR k2=$3) AND ($4::text IS NULL OR k3=$4)
+       ORDER BY updated_at ${dir}, seq ${dir}
+       ${opts.limit !== undefined ? `LIMIT ${Number(opts.limit)}` : ''} OFFSET ${Number(opts.offset ?? 0)}`,
+      [kind, k1s, filter.k2 ?? null, filter.k3 ?? null]);
+    let total = rows.length ? num(rows[0]._total) : 0;
+    if (!rows.length && (opts.offset ?? 0) > 0) {
+      const n = await this.q('SELECT count(*) AS n FROM cos_relations WHERE kind=$1 AND ($2::text[] IS NULL OR k1 = ANY($2)) AND ($3::text IS NULL OR k2=$3) AND ($4::text IS NULL OR k3=$4)', [kind, k1s, filter.k2 ?? null, filter.k3 ?? null]);
+      total = num(n[0]?.n);
+    }
+    return { items: rows.map(toRel), total };
   }
 
   async findMessageByCardId(cardId: string) {
@@ -498,17 +745,37 @@ export class PgRepo implements Repo {
     return rows[0] ? toMessage(rows[0]) : undefined;
   }
 
-  async searchMessages(userId: string, opts: { keyword: string; chatId?: string; limit: number; offset: number }) {
+  async searchMessages(userId: string, opts: { keyword: string; chatId?: string; senderId?: string; sinceIso?: string; limit: number; offset: number }) {
+    // 表达式和 schema-platform.sql 里的 trigram 索引一致，才能走索引
     const rows = await this.q(
-      `SELECT g.* FROM cos_messages g
+      `SELECT g.*, count(*) OVER() AS _total FROM cos_messages g
        JOIN cos_chat_members m ON m.chat_id = g.chat_id AND m.user_id = $1
        WHERE NOT g.recalled AND g.msg_type <> 'system'
          AND ($3::text IS NULL OR g.chat_id = $3)
-         AND (g.content->>'text' ILIKE $2 OR g.content->>'title' ILIKE $2 OR g.content->>'file_name' ILIKE $2)
+         AND ($6::text IS NULL OR g.sender_id = $6)
+         AND ($7::timestamptz IS NULL OR g.created_at >= $7)
+         AND ${MSG_SEARCH_EXPR} ILIKE $2
        ORDER BY g.seq DESC LIMIT $4 OFFSET $5`,
-      [userId, like(opts.keyword), opts.chatId ?? null, opts.limit + 1, opts.offset],
+      [userId, like(opts.keyword), opts.chatId ?? null, opts.limit, opts.offset, opts.senderId ?? null, opts.sinceIso ?? null],
     );
-    return { items: rows.slice(0, opts.limit).map(toMessage), has_more: rows.length > opts.limit };
+    let total = rows.length ? num(rows[0]._total) : 0;
+    if (!rows.length && opts.offset > 0) {
+      const n = await this.q(
+        `SELECT count(*) AS n FROM cos_messages g JOIN cos_chat_members m ON m.chat_id = g.chat_id AND m.user_id = $1
+         WHERE NOT g.recalled AND g.msg_type <> 'system' AND ($3::text IS NULL OR g.chat_id = $3)
+           AND ($4::text IS NULL OR g.sender_id = $4) AND ($5::timestamptz IS NULL OR g.created_at >= $5) AND ${MSG_SEARCH_EXPR} ILIKE $2`,
+        [userId, like(opts.keyword), opts.chatId ?? null, opts.senderId ?? null, opts.sinceIso ?? null]);
+      total = num(n[0]?.n);
+    }
+    return { items: rows.map(toMessage), has_more: opts.offset + rows.length < total, total };
+  }
+
+  async searchDocs(opts: { keyword: string; sinceIso?: string; limit: number }) {
+    const rows = await this.q(
+      `SELECT * FROM cos_docs WHERE (title || ' ' || markdown) ILIKE $1 AND ($2::timestamptz IS NULL OR updated_at >= $2)
+       ORDER BY updated_at DESC, doc_id LIMIT $3`,
+      [like(opts.keyword), opts.sinceIso ?? null, opts.limit]);
+    return rows.map(toDoc);
   }
 
   // ---------------- files ----------------
@@ -616,20 +883,36 @@ export class PgRepo implements Repo {
 
   // ---------------- calendar ----------------
 
-  async saveEvent(ev: CalendarEventRecord) {
-    await this.q(
+  async saveEvent(ev: CalendarEventRecord, client?: PoolClient) {
+    await (client ? client.query.bind(client) : this.pool.query.bind(this.pool))(
       `INSERT INTO cos_calendar_events (event_id, title, start_ms, end_ms, attendees, description, location, all_day,
-                                        color, reminders, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13)
+                                        color, reminders, created_by, created_at, updated_at,
+                                        recurrence, recurring_event_id, original_start_ms, exdates, timezone)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17::jsonb, $18)
        ON CONFLICT (event_id) DO UPDATE SET
          title = EXCLUDED.title, start_ms = EXCLUDED.start_ms, end_ms = EXCLUDED.end_ms,
          attendees = EXCLUDED.attendees, description = EXCLUDED.description, location = EXCLUDED.location,
          all_day = EXCLUDED.all_day, color = EXCLUDED.color, reminders = EXCLUDED.reminders,
-         updated_at = EXCLUDED.updated_at`,
+         updated_at = EXCLUDED.updated_at, recurrence = EXCLUDED.recurrence,
+         recurring_event_id = EXCLUDED.recurring_event_id, original_start_ms = EXCLUDED.original_start_ms,
+         exdates = EXCLUDED.exdates, timezone = EXCLUDED.timezone`,
       [ev.event_id, ev.title, ev.start_ms, ev.end_ms, JSON.stringify(ev.attendees), ev.description, ev.location,
         ev.all_day, ev.color, ev.reminders == null ? null : JSON.stringify(ev.reminders), ev.created_by,
-        ev.created_at, ev.updated_at],
+        ev.created_at, ev.updated_at, ev.recurrence ?? null, ev.recurring_event_id ?? null,
+        ev.original_start_ms ?? null, JSON.stringify(ev.exdates ?? []), ev.timezone ?? null],
     );
+  }
+
+  async commitEvents(c: EventCommit) {
+    return this.tx(async (client) => {
+      if (c.expect) {
+        const r = await client.query('SELECT updated_at FROM cos_calendar_events WHERE event_id = $1 FOR UPDATE', [c.expect.event_id]);
+        if (!r.rowCount || isoReq(r.rows[0].updated_at) !== c.expect.updated_at) return false;
+      }
+      if (c.remove.length) await client.query('DELETE FROM cos_calendar_events WHERE event_id = ANY($1::text[])', [c.remove]);
+      for (const ev of c.save) await this.saveEvent(ev, client);
+      return true;
+    });
   }
 
   async getEvent(eventId: string) {
@@ -644,10 +927,25 @@ export class PgRepo implements Repo {
   async listEvents(userId: string, fromMs: number, toMs: number) {
     const rows = await this.q(
       `SELECT * FROM cos_calendar_events
-       WHERE (created_by = $1 OR attendees @> $2::jsonb) AND end_ms > $3 AND start_ms < $4
+       WHERE (created_by = $1 OR attendees @> $2::jsonb) AND recurrence IS NULL AND end_ms > $3 AND start_ms < $4
        ORDER BY start_ms, event_id`,
       [userId, JSON.stringify([{ user_id: userId }]), fromMs, toMs],
     );
+    return rows.map(toEvent);
+  }
+
+  async listRecurringEvents(userId: string, beforeMs: number) {
+    const rows = await this.q(
+      `SELECT * FROM cos_calendar_events
+       WHERE (created_by = $1 OR attendees @> $2::jsonb) AND recurrence IS NOT NULL AND start_ms < $3
+       ORDER BY start_ms, event_id`,
+      [userId, JSON.stringify([{ user_id: userId }]), beforeMs],
+    );
+    return rows.map(toEvent);
+  }
+
+  async listEventExceptions(masterId: string) {
+    const rows = await this.q('SELECT * FROM cos_calendar_events WHERE recurring_event_id = $1 ORDER BY original_start_ms', [masterId]);
     return rows.map(toEvent);
   }
 
@@ -656,14 +954,16 @@ export class PgRepo implements Repo {
   async saveTask(t: TaskRecord) {
     await this.q(
       `INSERT INTO cos_tasks (task_id, title, status, assignee_id, due_ms, description, priority, source,
-                              created_by, created_at, updated_at, completed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)
+                              created_by, created_at, updated_at, completed_at, parent_id, position, follower_ids)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (task_id) DO UPDATE SET
          title = EXCLUDED.title, status = EXCLUDED.status, assignee_id = EXCLUDED.assignee_id,
          due_ms = EXCLUDED.due_ms, description = EXCLUDED.description, priority = EXCLUDED.priority,
-         source = EXCLUDED.source, updated_at = EXCLUDED.updated_at, completed_at = EXCLUDED.completed_at`,
+         source = EXCLUDED.source, updated_at = EXCLUDED.updated_at, completed_at = EXCLUDED.completed_at,
+         parent_id = EXCLUDED.parent_id, position = EXCLUDED.position, follower_ids = EXCLUDED.follower_ids`,
       [t.task_id, t.title, t.status, t.assignee_id, t.due_ms, t.description, t.priority,
-        t.source == null ? null : JSON.stringify(t.source), t.created_by, t.created_at, t.updated_at, t.completed_at],
+        t.source == null ? null : JSON.stringify(t.source), t.created_by, t.created_at, t.updated_at, t.completed_at,
+        t.parent_id ?? null, t.position ?? null, t.follower_ids ?? []],
     );
   }
 
@@ -676,15 +976,26 @@ export class PgRepo implements Repo {
     return (await this.q('DELETE FROM cos_tasks WHERE task_id = $1 RETURNING task_id', [taskId])).length > 0;
   }
 
-  async listTasks(userId: string, opts: { assignee_id?: string; status?: string; created_by?: string }) {
+  async listTasks(userId: string, opts: { assignee_id?: string; status?: string; created_by?: string; follower_id?: string; parent?: string; extra_ids?: string[] }) {
     const rows = await this.q(
       `SELECT * FROM cos_tasks
-       WHERE (created_by = $1 OR assignee_id = $1)
+       WHERE (created_by = $1 OR assignee_id = $1 OR $1 = ANY(follower_ids) OR task_id = ANY($5::text[]))
          AND ($2::text IS NULL OR assignee_id = $2)
          AND ($3::text IS NULL OR status = $3)
          AND ($4::text IS NULL OR created_by = $4)
+         AND ($6::text IS NULL OR $6 = ANY(follower_ids))
+         AND ($7::text IS NULL OR ($7 = 'top' AND parent_id IS NULL) OR ($7 <> 'top' AND parent_id = $7))
        ORDER BY created_at, task_id`,
-      [userId, opts.assignee_id ?? null, opts.status ?? null, opts.created_by ?? null],
+      [userId, opts.assignee_id ?? null, opts.status ?? null, opts.created_by ?? null, opts.extra_ids ?? [],
+        opts.follower_id ?? null, opts.parent ?? null],
+    );
+    return rows.map(toTask);
+  }
+
+  async listSubtasks(parentId: string) {
+    const rows = await this.q(
+      'SELECT * FROM cos_tasks WHERE parent_id = $1 ORDER BY position NULLS LAST, created_at, task_id',
+      [parentId],
     );
     return rows.map(toTask);
   }
@@ -729,6 +1040,208 @@ export class PgRepo implements Repo {
       [opts.userId, opts.scope, kw ? like(kw) : null, opts.limit, opts.offset],
     );
     return { items: rows.map(toDoc), total: rows.length ? num(rows[0]._total) : 0 };
+  }
+
+  // ---------------- custom tables ----------------
+
+  async insertCustomTable(t: CustomTableRecord) {
+    try {
+      await this.q(
+        `INSERT INTO cos_custom_tables
+           (table_key, name, description, icon, primary_field, fields, created_by, created_at, updated_at, client_request_id, version)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)`,
+        [t.key, t.name, t.description, t.icon, t.primary_field, JSON.stringify(t.fields), t.created_by, t.created_at, t.updated_at, t.client_request_id, t.version ?? 1],
+      );
+      return 'ok' as const;
+    } catch (err) {
+      // 唯一索引 cos_custom_tables_name_uq（lower(btrim(name))）冲突
+      if ((err as { code?: string }).code === '23505' && /name/.test(String((err as { constraint?: string }).constraint))) {
+        return 'name_exists' as const;
+      }
+      throw err;
+    }
+  }
+
+  async getCustomTable(key: string) {
+    const rows = await this.q('SELECT * FROM cos_custom_tables WHERE table_key = $1', [key]);
+    return rows[0] ? toCustomTable(rows[0]) : undefined;
+  }
+
+  async listCustomTables() {
+    const rows = await this.q('SELECT * FROM cos_custom_tables ORDER BY created_at, table_key');
+    return rows.map(toCustomTable);
+  }
+
+  async findCustomTableByName(name: string) {
+    const rows = await this.q('SELECT * FROM cos_custom_tables WHERE lower(btrim(name)) = lower(btrim($1))', [name]);
+    return rows[0] ? toCustomTable(rows[0]) : undefined;
+  }
+
+  async findCustomTableByRequest(userId: string, clientRequestId: string, sinceIso: string) {
+    const rows = await this.q(
+      `SELECT * FROM cos_custom_tables WHERE created_by = $1 AND client_request_id = $2 AND created_at >= $3
+       ORDER BY created_at LIMIT 1`,
+      [userId, clientRequestId, sinceIso],
+    );
+    return rows[0] ? toCustomTable(rows[0]) : undefined;
+  }
+
+  async deleteCustomTable(key: string) {
+    return (await this.q('DELETE FROM cos_custom_tables WHERE table_key = $1 RETURNING table_key', [key])).length > 0;
+  }
+
+  async updateCustomTableFields(key: string, fields: CustomFieldRecord[], version: number, updatedAt: string, ifVersion: number) {
+    const rows = await this.q(
+      `UPDATE cos_custom_tables SET fields = $2::jsonb, version = $3, updated_at = $4
+       WHERE table_key = $1 AND version = $5 RETURNING table_key`,
+      [key, JSON.stringify(fields), version, updatedAt, ifVersion],
+    );
+    return rows.length > 0;
+  }
+
+  // ---------------- 内置表结构覆盖层 ----------------
+
+  async getTableSchema(key: string) {
+    const rows = await this.q('SELECT * FROM cos_table_schemas WHERE table_key = $1', [key]);
+    return rows[0] ? toTableSchema(rows[0]) : undefined;
+  }
+
+  async saveTableSchema(rec: TableSchemaRecord, ifVersion: number | null) {
+    const params = [rec.table_key, rec.version, JSON.stringify(rec.fields), rec.updated_at];
+    const rows =
+      ifVersion === null
+        ? await this.q(
+            `INSERT INTO cos_table_schemas (table_key, version, fields, updated_at) VALUES ($1, $2, $3::jsonb, $4)
+             ON CONFLICT (table_key) DO NOTHING RETURNING table_key`,
+            params,
+          )
+        : await this.q(
+            `UPDATE cos_table_schemas SET version = $2, fields = $3::jsonb, updated_at = $4
+             WHERE table_key = $1 AND version = $5 RETURNING table_key`,
+            [...params, ifVersion],
+          );
+    return rows.length > 0;
+  }
+
+  // ---------------- 视图 ----------------
+
+  async listViews(tableKey: string) {
+    const rows = await this.q(
+      'SELECT * FROM cos_table_views WHERE table_key = $1 ORDER BY position, created_at, view_id',
+      [tableKey],
+    );
+    return rows.map(toView);
+  }
+
+  async getView(viewId: string) {
+    const rows = await this.q('SELECT * FROM cos_table_views WHERE view_id = $1', [viewId]);
+    return rows[0] ? toView(rows[0]) : undefined;
+  }
+
+  async insertView(v: TableViewRecord) {
+    const rows = await this.q(
+      `INSERT INTO cos_table_views
+         (view_id, table_key, name, type, personal, owner_id, config, version, position, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+       ON CONFLICT (view_id) DO NOTHING RETURNING view_id`,
+      [v.view_id, v.table_key, v.name, v.type, v.personal, v.owner_id, JSON.stringify(v.config), v.version, v.position, v.created_by, v.created_at, v.updated_at],
+    );
+    return rows.length > 0;
+  }
+
+  async updateView(v: TableViewRecord, ifVersion: number) {
+    const rows = await this.q(
+      `UPDATE cos_table_views SET name = $2, type = $3, personal = $4, owner_id = $5, config = $6::jsonb,
+         version = $7, position = $8, updated_at = $9
+       WHERE view_id = $1 AND version = $10 RETURNING view_id`,
+      [v.view_id, v.name, v.type, v.personal, v.owner_id, JSON.stringify(v.config), v.version, v.position, v.updated_at, ifVersion],
+    );
+    return rows.length > 0;
+  }
+
+  async deleteView(viewId: string) {
+    return (await this.q('DELETE FROM cos_table_views WHERE view_id = $1 RETURNING view_id', [viewId])).length > 0;
+  }
+
+  async setViewPositions(tableKey: string, positions: Array<{ view_id: string; position: number }>) {
+    if (positions.length === 0) return;
+    await this.q(
+      `UPDATE cos_table_views v SET position = p.position
+       FROM unnest($2::text[], $3::double precision[]) AS p(view_id, position)
+       WHERE v.view_id = p.view_id AND v.table_key = $1`,
+      [tableKey, positions.map((p) => p.view_id), positions.map((p) => p.position)],
+    );
+  }
+
+  // ---------------- 通知 ----------------
+
+  async insertNotification(n: NotificationRecord) {
+    const rows = await this.q(
+      `INSERT INTO cos_notifications
+         (notification_id, user_id, type, actor_id, title, summary, target, is_read, created_at, dedupe_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+       ON CONFLICT (user_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+       RETURNING notification_id`,
+      [n.notification_id, n.user_id, n.type, n.actor_id, n.title, n.summary, JSON.stringify(n.target), n.read, n.created_at, n.dedupe_key],
+    );
+    return rows.length > 0;
+  }
+
+  async listNotifications(userId: string, opts: { mentionOnly: boolean; limit: number; offset: number }) {
+    const rows = await this.q(
+      `SELECT *, count(*) OVER() AS _total FROM cos_notifications
+       WHERE user_id = $1 AND (NOT $2::boolean OR type LIKE '%.mention')
+       ORDER BY seq DESC LIMIT $3 OFFSET $4`,
+      [userId, opts.mentionOnly, opts.limit, opts.offset],
+    );
+    let total = rows.length ? num(rows[0]._total) : 0;
+    if (!rows.length && opts.offset > 0) {
+      const c = await this.q(
+        `SELECT count(*) AS n FROM cos_notifications WHERE user_id = $1 AND (NOT $2::boolean OR type LIKE '%.mention')`,
+        [userId, opts.mentionOnly],
+      );
+      total = num(c[0]?.n);
+    }
+    return { items: rows.map(toNotification), total };
+  }
+
+  async countUnreadNotifications(userId: string) {
+    const rows = await this.q('SELECT count(*) AS n FROM cos_notifications WHERE user_id = $1 AND NOT is_read', [userId]);
+    return num(rows[0]?.n);
+  }
+
+  async markNotificationsRead(userId: string, ids: string[] | 'all') {
+    const rows =
+      ids === 'all'
+        ? await this.q('UPDATE cos_notifications SET is_read = true WHERE user_id = $1 AND NOT is_read RETURNING notification_id', [userId])
+        : await this.q(
+            `UPDATE cos_notifications SET is_read = true
+             WHERE user_id = $1 AND NOT is_read AND notification_id = ANY($2::text[]) RETURNING notification_id`,
+            [userId, ids],
+          );
+    return rows.length;
+  }
+
+  async getNotificationSettings(userId: string) {
+    const rows = await this.q('SELECT settings FROM cos_notification_settings WHERE user_id = $1', [userId]);
+    return rows[0] ? json<NotificationSettings>(rows[0].settings) : undefined;
+  }
+
+  async saveNotificationSettings(userId: string, s: NotificationSettings, at: string) {
+    await this.q(
+      `INSERT INTO cos_notification_settings (user_id, settings, updated_at) VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (user_id) DO UPDATE SET settings = EXCLUDED.settings, updated_at = EXCLUDED.updated_at`,
+      [userId, JSON.stringify(s), at],
+    );
+  }
+
+  async listTasksDueBetween(fromMs: number, toMs: number) {
+    const rows = await this.q(
+      `SELECT * FROM cos_tasks WHERE assignee_id IS NOT NULL AND due_ms >= $1 AND due_ms < $2
+         AND status IN ('pending', 'in_progress') ORDER BY due_ms`,
+      [fromMs, toMs],
+    );
+    return rows.map(toTask);
   }
 
   // ---------------- devices ----------------
