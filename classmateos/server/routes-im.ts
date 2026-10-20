@@ -15,6 +15,7 @@ import {
   type Ctx,
   type FieldError,
 } from './context.js';
+import { parseAgentContext, parseAgentResult } from './agent-message.js';
 import { nowIso, p2pKeyOf, publicMessage, type ChatRecord, type MessageRecord } from './repo.js';
 import { extractUrls, type LinkPreviewService } from './link-preview.js';
 
@@ -87,6 +88,19 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
           }
         }
         if (sender !== 'bot') delete c.link_previews;
+        // M5：侧栏上下文只能由同学发；结果卡片只能由机器人发（防伪造）
+        if (sender === 'bot') delete c.agent_context;
+        else if (c.agent_context !== undefined) {
+          const r = parseAgentContext(c.agent_context);
+          if (r.error) errors.push({ field: 'content.agent_context', message: r.error });
+          else c.agent_context = r.value;
+        }
+        if (sender !== 'bot') delete c.agent_result;
+        else if (c.agent_result !== undefined) {
+          const r = parseAgentResult(c.agent_result);
+          if (r.error) errors.push({ field: 'content.agent_result', message: r.error });
+          else c.agent_result = r.value;
+        }
         break;
       }
       case 'post': {

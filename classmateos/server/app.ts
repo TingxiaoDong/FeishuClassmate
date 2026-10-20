@@ -58,6 +58,7 @@ import { registerAgentContext } from './agent-context.js';
 import { registerAgentRoutes } from './routes-agent.js';
 import { registerAutomationRoutes } from './routes-automation.js';
 import { registerRobotRoutes } from './routes-robots.js';
+import { registerAgentMetricsRoutes } from './routes-agent-metrics.js';
 import { registerWorkbenchRoutes } from './routes-workbench.js';
 import { registerQrLoginRoutes } from './routes-qr.js';
 import { registerImportExportRoutes } from './routes-import-export.js';
@@ -176,6 +177,9 @@ export const CAPABILITIES: Record<string, boolean> = {
   'auth.sessions': true,
   sheet: false,
   'auth.qr_login': true,
+  // AGENT_PLAN M5：文档 / 表格的 AI 助手侧栏、消息结果卡片、工作台 Agent 指标
+  'agent.sidebar': true,
+  'agent.metrics': true,
 };
 
 const MB = 1024 * 1024;
@@ -327,6 +331,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   registerAgentRoutes(ctx);
   registerAutomationRoutes(ctx);
   registerRobotRoutes(ctx);
+  registerAgentMetricsRoutes(ctx);
   registerAgentAudit(app, {
     audit: ctx.agentAudit,
     isBot: (req) => ctx.isBot(req),
