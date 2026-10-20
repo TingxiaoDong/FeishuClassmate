@@ -2,7 +2,8 @@ import type { NotificationService } from './notifications.js';
 import type { Ctx } from './context.js';
 import { fail, invalid, newId } from './context.js';
 import { nowIso, type DocRecord, type ResourceGrant } from './repo.js';
-import { permissionFlags, resourceRole, validateGrant } from './resource-access.js';
+import { permissionFlags, resourceRole, validateGrant, type ResourceRole } from './resource-access.js';
+import { SPACE, toResourceRole, wikiPageOf, wikiRole } from './wiki-access.js';
 
 export async function docGrant(ctx: Ctx, doc: DocRecord): Promise<ResourceGrant> {
   return (await ctx.repo.getResourceGrant('doc', doc.doc_id)) ?? {
@@ -10,10 +11,28 @@ export async function docGrant(ctx: Ctx, doc: DocRecord): Promise<ResourceGrant>
     visibility: 'org_view', members: [], version: 0,
   };
 }
-export async function docAccess(ctx: Ctx, doc: DocRecord, userId: string) {
+/** 不考虑回收站的真实权限（只给回收站列表、恢复、彻底删除用）。 */
+export async function rawDocAccess(ctx: Ctx, doc: DocRecord, userId: string) {
   const grant = await docGrant(ctx, doc);
-  const role = await resourceRole(ctx.repo, userId, grant);
+  let role = await resourceRole(ctx.repo, userId, grant);
+  // 知识库页面：权限继承空间，文档自己的协作者不生效，只保留链接分享（R-WK-03）
+  const page = await wikiPageOf(ctx, doc.doc_id);
+  if (page) {
+    const ranks: Record<ResourceRole, number> = { viewer: 1, commenter: 2, editor: 3, manager: 4 };
+    const w = await wikiRole(ctx, page.space_id, userId);
+    const user = await ctx.repo.getUser(userId);
+    const link: ResourceRole | null = !user || user.disabled || user.role === 'bot' ? null : grant.visibility === 'org_edit' ? 'editor' : grant.visibility === 'org_view' ? 'viewer' : null;
+    const sys: ResourceRole | null = user?.role === 'admin' ? 'manager' : null;
+    role = [w ? toResourceRole(w) : null, link, sys].reduce<ResourceRole | null>((a, b) => (b && (!a || ranks[b] > ranks[a]) ? b : a), null);
+  }
   return { owner_id: grant.owner_id, my_role: role, permissions: permissionFlags(role), can_edit: permissionFlags(role).can_edit };
+}
+/** 文档权限；在回收站里的文档对所有人都视为无权访问。 */
+export async function docAccess(ctx: Ctx, doc: DocRecord, userId: string) {
+  if (await ctx.repo.getEntity('doc_trash', doc.doc_id)) {
+    return { owner_id: (await docGrant(ctx, doc)).owner_id, my_role: null, permissions: permissionFlags(null), can_edit: false };
+  }
+  return rawDocAccess(ctx, doc, userId);
 }
 
 export function registerDocAccessRoutes(ctx: Ctx, notifications: NotificationService) {
@@ -100,6 +119,11 @@ export function registerDocAccessRoutes(ctx: Ctx, notifications: NotificationSer
     const doc = await ctx.repo.getDoc((req.params as { doc_id: string }).doc_id);
     if (!doc) return fail(reply, 404, '文档不存在');
     if (!(await docAccess(ctx, doc, me.sub)).permissions.can_view) return fail(reply, 403, '没有权限访问', { code: 'FORBIDDEN' });
+    const page = await wikiPageOf(ctx, doc.doc_id);
+    if (page) {
+      const space = await ctx.repo.getEntity(SPACE, page.space_id);
+      return { ...json(await docGrant(ctx, doc)), members: [], inherited_from: { space_id: page.space_id, name: space ? String(space.data.name) : '' } };
+    }
     return json(await docGrant(ctx, doc));
   });
   ctx.app.put('/api/v1/docs/:doc_id/permissions', async (req, reply) => {
@@ -108,9 +132,11 @@ export function registerDocAccessRoutes(ctx: Ctx, notifications: NotificationSer
     const doc = await ctx.repo.getDoc((req.params as { doc_id: string }).doc_id);
     if (!doc) return fail(reply, 404, '文档不存在');
     const grant = await docGrant(ctx, doc);
-    if (!(await resourceRole(ctx.repo, me.sub, grant) === 'manager')) return fail(reply, 403, '需要管理权限', { code: 'FORBIDDEN' });
+    const page = await wikiPageOf(ctx, doc.doc_id);
+    // 知识库页面：空间管理员可以改链接分享，协作者继承空间、不能单独设
+    if (page ? (await rawDocAccess(ctx, doc, me.sub)).my_role !== 'manager' : !(await resourceRole(ctx.repo, me.sub, grant) === 'manager')) return fail(reply, 403, '需要管理权限', { code: 'FORBIDDEN' });
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const next = { ...grant, visibility: body.link_share, members: body.members } as ResourceGrant;
+    const next = { ...grant, visibility: body.link_share, members: page ? grant.members : body.members } as ResourceGrant;
     const errors = await validateGrant(ctx.repo, next);
     if (errors.length) return invalid(reply, errors);
     if (body.version !== undefined && body.version !== grant.version) return fail(reply, 409, '权限已被修改，请刷新', { code: 'VERSION_CONFLICT' });

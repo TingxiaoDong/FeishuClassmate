@@ -17,6 +17,9 @@ import { nowIso, type ChatRecord, type MessageRecord } from './repo.js';
 import { canAccessRecord, hasRowAccessRule } from './row-access.js';
 import { occurrences, parseRRule } from './rrule.js';
 import { TaskAccess } from './task-access.js';
+import { tableAccessOf } from './table-access.js';
+import { searchWikiNodes } from './routes-wiki.js';
+import type { TableSchema } from './table-schema.js';
 
 export const SEARCH_TYPES = ['user', 'chat', 'message', 'doc', 'wiki', 'record', 'task', 'event'] as const;
 type SearchType = (typeof SEARCH_TYPES)[number];
@@ -258,6 +261,10 @@ export function registerSearchRoutes(ctx: Ctx, opts: { defaultZone: () => string
     for (const key of keys) {
       const def = ctx.tableDefs.get(key);
       if (!def) continue;
+      // 表级权限（R-BT-09）：看不到的表不搜
+      const custom = ctx.customTables.get(key);
+      const schemaLike = { key, builtin: !custom, created_by: custom?.created_by ?? null } as unknown as TableSchema;
+      if (!(await tableAccessOf(ctx).canView(me, schemaLike))) continue;
       const confidentialFor = hasRowAccessRule(def) && me.role !== 'admin' ? me.sub : undefined;
       let token: string | undefined;
       for (let n = 0; n < MAX_SCAN; n += 500) {
@@ -333,12 +340,25 @@ export function registerSearchRoutes(ctx: Ctx, opts: { defaultZone: () => string
     return { total: all.length, items: all.slice(p.offset, p.offset + p.limit).map(({ _t: _drop, ...h }) => h) };
   };
 
+  /** 知识库页面：标题和正文，按更新时间倒序。extra 带 node_id、space_id、space_name、path、doc_id。 */
+  const searchWiki = async (me: AuthedUser, p: Params): Promise<Page> => {
+    const found = await searchWikiNodes(ctx, me, p.terms, p.q.space_id || undefined);
+    found.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return paged(found.map((f) => ({
+      id: f.id,
+      title: highlight(f.title || '未命名页面', p.terms),
+      snippet: snippetOf(f.markdown, p.terms),
+      updated_at: f.updated_at,
+      extra: { node_id: f.id, space_id: f.space_id, space_name: f.space_name, path: f.path, doc_id: f.doc.doc_id, owner_id: f.doc.created_by },
+    })), p);
+  };
+
   const searchers: Record<SearchType, (me: AuthedUser, p: Params) => Promise<Page>> = {
     user: searchUsers,
     chat: searchChats,
     message: searchMessages,
     doc: searchDocs,
-    wiki: async () => ({ total: 0, items: [] }), // 知识库尚未实现
+    wiki: searchWiki,
     record: searchRecords,
     task: searchTasks,
     event: searchEvents,
@@ -375,6 +395,11 @@ export function registerSearchRoutes(ctx: Ctx, opts: { defaultZone: () => string
       const next = offset + page.items.length;
       return { type, total: page.total, items: page.items, ...(next < page.total ? { page_token: String(next) } : {}) };
     }));
+    // 迭代 2 的空间内搜索（scope=wiki，不带 types）读顶层 items
+    if (!q.types && q.scope === 'wiki') {
+      const g = groups[0];
+      return { groups, items: g.items.map((h) => ({ type: 'wiki', ...h, ...(h.extra ?? {}), highlight: h.snippet })), total: g.total, ...(g.page_token ? { page_token: g.page_token, has_more: true } : { has_more: false }) };
+    }
     return { groups };
   });
 }

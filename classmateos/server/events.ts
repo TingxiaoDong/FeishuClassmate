@@ -32,6 +32,8 @@ export type BotEventType =
   | 'table.view_changed'
   | 'table.created'
   | 'table.deleted'
+  | 'wiki.node_changed'
+  | 'wiki.space_changed'
   | 'notification.new'
   | 'notification.read'
   | 'capabilities.changed'
