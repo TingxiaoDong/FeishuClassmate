@@ -35,7 +35,7 @@ import { hashPassword } from './auth.js';
 import { AuthService } from './auth-service.js';
 import { CollabHub, collabTextFromUpdate } from './collab.js';
 import { BOT_ID, bearer, createCtx, fail, type Ctx } from './context.js';
-import { buildDashboardSummary } from './dashboard.js';
+import { buildDashboardSummary, DashboardRangeError, parseDashboardRange } from './dashboard.js';
 import { BotEventBus } from './events.js';
 import { LocalFileStore } from './files.js';
 import { MemoryRepo } from './memory-repo.js';
@@ -58,6 +58,10 @@ import { registerAgentContext } from './agent-context.js';
 import { registerAgentRoutes } from './routes-agent.js';
 import { registerAutomationRoutes } from './routes-automation.js';
 import { registerRobotRoutes } from './routes-robots.js';
+import { registerWorkbenchRoutes } from './routes-workbench.js';
+import { registerQrLoginRoutes } from './routes-qr.js';
+import { registerImportExportRoutes } from './routes-import-export.js';
+import { registerWikiRoutes } from './routes-wiki.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -125,12 +129,14 @@ export const CAPABILITIES: Record<string, boolean> = {
   'table.realtime': true,
   'table.batch': true,
   'record.history': true,
-  // 二期迭代 2：云文档（文件夹 / 回收站未做，doc.folders 保持关闭）
+  // 二期迭代 2：云文档（含文件夹、收藏、回收站）
   'doc.permissions': true,
+  'doc.folders': true,
   'doc.comments': true,
   'doc.versions': true,
   'doc.presence': true,
-  wiki: false,
+  // 二期迭代 2：知识库（空间、目录树、页面即文档、搜索 / 最近 / 收藏）
+  wiki: true,
   approval: false,
   search: true,
   // 二期迭代 4：消息增强
@@ -149,12 +155,27 @@ export const CAPABILITIES: Record<string, boolean> = {
   'task.comments': true,
   'task.lists': true,
   notifications: true,
-  admin: false,
+  // 迭代 5 批次 2：管理后台（成员、角色、操作日志、安全设置）与组织架构
+  admin: true,
+  'org.departments': true,
+  // 报表时间范围（week / month / semester / custom）
+  'dashboard.range': true,
+  // 工作台内置应用顺序与个人快捷方式
+  'workbench.apps': true,
+  // 多维表格：表权限、表管理（改名 / 复制 / 删除）、记录评论
+  'table.permissions': true,
+  'table.manage': true,
+  'record.comments': true,
+  // 导入导出：表格 xlsx / csv 导入导出、文档 PDF / Word 导出、成员批量导入
+  'table.import': true,
+  'table.export': true,
+  'doc.export': true,
+  'user.import': true,
   // 迭代 5 批次 1：「我的」页改密码、登录设备
   'auth.password': true,
   'auth.sessions': true,
   sheet: false,
-  'auth.qr_login': false,
+  'auth.qr_login': true,
 };
 
 const MB = 1024 * 1024;
@@ -336,6 +357,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   await ctx.org.migrate();
   registerDepartmentRoutes(ctx);
   registerAuthRoutes(ctx);
+  registerQrLoginRoutes(ctx);
   registerAdminRoutes(ctx);
   const imPlus = registerImPlusRoutes(ctx, { notifications });
   const linkFetcher = opts.linkPreviewFetcher === undefined ? defaultLinkFetcher : opts.linkPreviewFetcher;
@@ -346,11 +368,14 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   });
   registerRealtimeRoutes(ctx, { pushProvider, heartbeatMs: opts.heartbeatMs, presence, push: pushDispatcher });
   registerFileRoutes(ctx);
-  const tables = registerTableRoutes(ctx, { clock });
+  const tables = registerTableRoutes(ctx, { clock, notifications });
+  registerImportExportRoutes(ctx, tables, clock.tzOffsetMinutes);
   registerNotificationRoutes(ctx, notifications, pushDispatcher);
   // 测试 / 运维用的内部句柄
   app.decorate('cos', { ctx, tables, notifications, push: pushDispatcher, presence, clock });
   registerDocRoutes(ctx, notifications, docVersions!);
+  registerWorkbenchRoutes(ctx, CAPABILITIES);
+  registerWikiRoutes(ctx);
   // 日历默认时区：参数 > 环境变量 COS_CALENDAR_TZ > 指定了固定偏移时用偏移 > Asia/Shanghai
   const envCalTz = process.env.COS_CALENDAR_TZ;
   const calendarZone: Zone = opts.calendarTimezone
@@ -361,7 +386,15 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // ---------------- 报表视图（吸收 dashboard/ 六卡） ----------------
   app.get('/api/v1/dashboard/summary', async (req, reply) => {
     if (!(await ctx.requireUser(req, reply))) return;
-    return buildDashboardSummary(store);
+    const now = clock.now();
+    let range;
+    try {
+      range = parseDashboardRange(req.query as { range?: string; start_at?: string; end_at?: string }, now, clock.tzOffsetMinutes);
+    } catch (e) {
+      if (e instanceof DashboardRangeError) return fail(reply, 422, e.message, { code: 'VALIDATION_FAILED', errors: [{ field: 'range', message: e.message }] });
+      throw e;
+    }
+    return buildDashboardSummary(store, now, range);
   });
 
   registerConsole(app);

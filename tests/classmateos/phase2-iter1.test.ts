@@ -134,7 +134,7 @@ describe.each(backends)('二期迭代 1（$name）', ({ usePg }) => {
     expect(r.statusCode).toBe(200);
     const f = r.json().features;
     for (const k of ['table.create', 'table.fields', 'table.views', 'notifications']) expect(f[k]).toBe(true);
-    for (const k of ['wiki', 'approval', 'doc.folders']) expect(f[k]).toBeFalsy();
+    for (const k of ['approval']) expect(f[k]).toBeFalsy();
   });
 
   // ---------------- R-BT-01 / 02 ----------------

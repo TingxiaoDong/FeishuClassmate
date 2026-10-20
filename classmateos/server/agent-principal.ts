@@ -49,6 +49,8 @@ export const DEFAULT_BOT_DENY: string[] = [
   'POST /api/v1/docs/:doc_id/transfer',
   'POST /api/v1/docs/:doc_id/access-requests/*',
   'PUT /api/v1/tasklists/:list_id/members',
+  'PUT /api/v1/tables/:table_key/permissions',
+  'PUT /api/v1/wiki/spaces/:space_id/members',
   // 迭代 5：账号安全 / 管理后台
   'POST /api/v1/users/me/password',
   '* /api/v1/users/me/sessions*',

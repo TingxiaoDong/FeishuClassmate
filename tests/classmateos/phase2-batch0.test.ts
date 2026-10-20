@@ -91,11 +91,11 @@ async function connect(app: FastifyInstance, docId: string, token: string): Prom
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe('功能开关与 web_url', () => {
-  it('打开 doc.permissions / comments / versions / presence；文件夹、wiki、迭代 5 后续批次仍关闭', async () => {
+  it('打开 doc.permissions / comments / versions / presence / folders、管理后台与组织架构；wiki 等未做的仍关闭', async () => {
     const { call } = await makeApp();
     const body = (await call(undefined, 'GET', '/capabilities')).json();
-    for (const k of ['doc.permissions', 'doc.comments', 'doc.versions', 'doc.presence']) expect(body.features[k], k).toBe(true);
-    for (const k of ['doc.folders', 'wiki', 'table.permissions', 'table.manage', 'record.comments', 'admin', 'auth.qr_login', 'table.import', 'table.export', 'doc.export']) {
+    for (const k of ['doc.permissions', 'doc.comments', 'doc.versions', 'doc.presence', 'doc.folders', 'admin', 'org.departments', 'dashboard.range', 'workbench.apps', 'auth.qr_login', 'table.permissions', 'table.manage', 'record.comments', 'table.import', 'table.export', 'doc.export', 'user.import', 'wiki']) expect(body.features[k], k).toBe(true);
+    for (const k of ['sheet', 'approval']) {
       expect(body.features[k], k).toBeFalsy();
     }
     expect(body).not.toHaveProperty('web_url');

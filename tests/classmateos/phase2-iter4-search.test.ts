@@ -62,11 +62,11 @@ describe.each(backends)('二期迭代 4 全局搜索（$name）', ({ usePg }) =>
     return { app, call, search };
   }
 
-  it('功能开关 search 已打开，wiki 仍关闭', async () => {
+  it('功能开关 search、wiki 都已打开', async () => {
     const { app, call } = await makeApp();
     const f = (await call('ou_li', 'GET', '/capabilities')).json().features;
     expect(f.search).toBe(true);
-    expect(f.wiki).toBe(false);
+    expect(f.wiki).toBe(true);
     await app.close();
   });
 
@@ -163,7 +163,7 @@ describe.each(backends)('二期迭代 4 全局搜索（$name）', ({ usePg }) =>
     await app.close();
   });
 
-  it('wiki 分组可请求，未实现时返回空', async () => {
+  it('wiki 分组可请求，没有知识空间时返回空', async () => {
     const { app, search } = await makeApp();
     const r = await search('ou_li', 'q=x&types=wiki');
     expect(r.wiki).toEqual({ type: 'wiki', total: 0, items: [] });
