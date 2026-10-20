@@ -1,3 +1,8 @@
+import { registerAdminRoutes } from './routes-admin.js';
+import { RoleService } from './roles.js';
+import { AuditLogService } from './audit-log.js';
+import { OrganizationService } from './organization.js';
+import { registerDepartmentRoutes } from './routes-departments.js';
 /**
  * ClassmateOS 平台后端：按《前端接口需求文档》实现的 Fastify 应用。
  *
@@ -6,7 +11,8 @@
  *   routes-im.ts              会话 / 消息 / 卡片 / 机器人网关（第 5 节）
  *   routes-realtime.ts        用户 WS、bot WS、设备推送（第 6 节）
  *   routes-files.ts           文件与云盘（第 7 节）
- *   routes-tables.ts          多维表格（第 8 节）
+ *   routes-tables.ts          多维表格（第 8 节 + 二期 R-BT-01~06：字段、视图、批量、实时）
+ *   notifications.ts          通知中心、通知设置、推送规则（二期 R-NT-01 / 02）
  *   routes-docs.ts            云文档 + 协同（第 9 节）
  *   routes-calendar-tasks.ts  日历 / 任务（第 10、11 节）
  *
@@ -14,6 +20,11 @@
  * buildApp() 返回未 listen 的 Fastify 实例，测试用 app.inject。
  */
 
+import { isValidTimeZone, type Zone } from './rrule.js';
+import { registerImPlusRoutes } from './routes-im-plus.js';
+import { registerSearchRoutes } from './routes-search.js';
+import { LinkPreviewService, defaultLinkFetcher, type LinkFetcher } from './link-preview.js';
+import { DocVersions } from './doc-extras.js';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import fastifyWebsocket from '@fastify/websocket';
 import { randomBytes } from 'node:crypto';
@@ -21,14 +32,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ALL_TABLES, type TableDef } from '../../src/bitable/schema.js';
 import { hashPassword } from './auth.js';
+import { AuthService } from './auth-service.js';
 import { CollabHub, collabTextFromUpdate } from './collab.js';
-import { BOT_ID, createCtx, fail, type Ctx } from './context.js';
+import { BOT_ID, bearer, createCtx, fail, type Ctx } from './context.js';
 import { buildDashboardSummary } from './dashboard.js';
 import { BotEventBus } from './events.js';
 import { LocalFileStore } from './files.js';
 import { MemoryRepo } from './memory-repo.js';
 import { MemoryPushProvider, type PushProvider } from './push.js';
-import { nowIso, type Repo, type Role } from './repo.js';
+import { customTableDef } from './custom-tables.js';
+import { NotificationService, Presence, PushDispatcher, registerNotificationRoutes } from './notifications.js';
+import { Clock } from './view-engine.js';
+import { nowIso, type CustomTableRecord, type Repo, type Role } from './repo.js';
 import { registerAuthRoutes } from './routes-auth.js';
 import { registerCalendarTaskRoutes } from './routes-calendar-tasks.js';
 import { registerDocRoutes } from './routes-docs.js';
@@ -38,6 +53,11 @@ import { registerRealtimeRoutes } from './routes-realtime.js';
 import { registerTableRoutes } from './routes-tables.js';
 import { MemoryTableStore, type TableStore } from './store.js';
 import { registerConsole } from './console.js';
+import { AgentAuditLog, BotScopePolicy, registerAgentAudit, type AgentScopeOptions } from './agent-principal.js';
+import { registerAgentContext } from './agent-context.js';
+import { registerAgentRoutes } from './routes-agent.js';
+import { registerAutomationRoutes } from './routes-automation.js';
+import { registerRobotRoutes } from './routes-robots.js';
 
 export interface PlatformUser {
   user_id: string;
@@ -55,8 +75,12 @@ export interface AppOptions {
   users: PlatformUser[];
   /** HMAC secret。 */
   secret: string;
+  /** Web 版地址（分享链接域名），也可用环境变量 CLASSMATE_OS_WEB_URL。 */
+  webUrl?: string;
   /** Bot 网关令牌（X-Bot-Token）。 */
   botToken?: string;
+  /** 机器人代办作用域（X-On-Behalf-Of），缺省用 DEFAULT_BOT_DENY 黑名单。 */
+  botScopes?: AgentScopeOptions;
   /** 平台数据层；缺省 MemoryRepo。PgRepo 在这里传入。 */
   repo?: Repo;
   /** 表格记录存储；缺省 MemoryTableStore。 */
@@ -74,13 +98,72 @@ export interface AppOptions {
   heartbeatMs?: number;
   /** 打印请求日志。 */
   logger?: boolean;
+  /** 「今天 / 本周」、免打扰时段按哪个时区算（相对 UTC 的分钟数），默认 480（北京时间）。 */
+  timezoneOffsetMinutes?: number;
+  /** 迭代 4：外部链接预览抓取器；false 关闭，默认用带防 SSRF 的抓取器。 */
+  linkPreviewFetcher?: LinkFetcher | false;
+  /** 本服务对外地址（内部分享链接 /app/... 的前缀，不抓预览）。 */
+  publicBaseUrl?: string;
+  /** 日历默认时区（IANA），日程没带 timezone 时按它展开重复规则。 */
+  calendarTimezone?: string;
+  /** 测试用：固定「现在」。 */
+  now?: () => number;
+  /** 是否定时扫描「任务即将到期」，默认 true。 */
+  notificationScanner?: boolean;
+  /** 停止编辑多久后自动存历史版本，默认 2 分钟（测试可调小）。 */
+  docVersionIdleMs?: number;
 }
+
+/**
+ * 二期功能开关（《二期功能需求文档》2.1）：只打开后端已经实现的功能。
+ * 缺失的 key 前端当作 false。
+ */
+export const CAPABILITIES: Record<string, boolean> = {
+  'table.create': true,
+  'table.fields': true,
+  'table.views': true,
+  'table.realtime': true,
+  'table.batch': true,
+  'record.history': true,
+  // 二期迭代 2：云文档（文件夹 / 回收站未做，doc.folders 保持关闭）
+  'doc.permissions': true,
+  'doc.comments': true,
+  'doc.versions': true,
+  'doc.presence': true,
+  wiki: false,
+  approval: false,
+  search: true,
+  // 二期迭代 4：消息增强
+  'message.thread': true,
+  'message.reaction': true,
+  'message.forward': true,
+  'message.urgent': true,
+  'message.favorite': true,
+  'message.pin': true,
+  'message.link_preview': true,
+  'message.rich_text': true,
+  // 二期迭代 3（审批已取消，approval 保持 false）
+  'calendar.recurrence': true,
+  'task.subtasks': true,
+  'task.followers': true,
+  'task.comments': true,
+  'task.lists': true,
+  notifications: true,
+  admin: false,
+  // 迭代 5 批次 1：「我的」页改密码、登录设备
+  'auth.password': true,
+  'auth.sessions': true,
+  sheet: false,
+  'auth.qr_login': false,
+};
 
 const MB = 1024 * 1024;
 
 export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const maxFileSize = opts.maxFileSize ?? 200 * MB;
   const app = Fastify({ logger: opts.logger ?? false, bodyLimit: 10 * MB });
+  // 请求级代办上下文（记录历史、文档版本等写入点据此打「代办」标记）
+  registerAgentContext(app);
 
   // CORS：Flutter Web / 浏览器跨源调试（内网开发放开，生产可收紧为白名单）。
   app.addHook('onSend', async (_req, reply) => {
@@ -141,6 +224,8 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
 
   // 协同编辑枢纽：房间首建播种 / 末连接断开持久化
+  // eslint-disable-next-line prefer-const
+  let docVersions: DocVersions | undefined;
   const collabHub = new CollabHub({
     loadSeed: async (docId) => {
       const d = await repo.getDoc(docId);
@@ -154,6 +239,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       let updatedAt = nowIso();
       if (updatedAt <= d.updated_at) updatedAt = new Date(Date.parse(d.updated_at) + 1).toISOString();
       await repo.updateDoc({ ...d, yjs_update: yjsUpdate, markdown, updated_at: updatedAt });
+      docVersions?.touch(docId, null);
     },
   });
 
@@ -184,29 +270,93 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
   }
 
+  // 自定义数据表（POST /tables 建的）：启动时注册到表格存储（PG 模式会补建缺失的物理表）
+  const customTables = new Map<string, CustomTableRecord>();
+  for (const t of await repo.listCustomTables()) {
+    const def = customTableDef(t);
+    await store.registerTable?.(def);
+    tableDefs.set(t.key, def);
+    customTables.set(t.key, t);
+  }
+
   const ctx: Ctx = createCtx({
     app,
     repo,
+    auth: new AuthService(repo),
+    roles: new RoleService(repo),
+    org: new OrganizationService(repo),
+    auditLog: new AuditLogService(repo),
     store,
     eventBus,
     fileStore,
     collabHub,
     secret: opts.secret,
     botToken: opts.botToken,
+    botPolicy: new BotScopePolicy(opts.botScopes),
+    agentAudit: new AgentAuditLog(5000, repo),
     tableDefs,
+    customTables,
     maxFileSize,
     driveQuota: opts.driveQuota ?? 10 * 1024 * MB,
   });
 
+  docVersions = new DocVersions(ctx, opts.docVersionIdleMs);
+  app.addHook('onClose', async () => docVersions?.stop());
+
+  registerAgentRoutes(ctx);
+  registerAutomationRoutes(ctx);
+  registerRobotRoutes(ctx);
+  registerAgentAudit(app, {
+    audit: ctx.agentAudit,
+    isBot: (req) => ctx.isBot(req),
+    isAdmin: async (req) => {
+      const t = bearer(req);
+      const r = await ctx.verifyWsToken(t);
+      return 'user' in r && r.user.role === 'admin';
+    },
+  });
+
   app.get('/api/v1/health', async () => ({ ok: true, time: nowIso() }));
 
+  // 功能开关：不需要登录（登录页也可能要按它显示扫码登录等入口）
+  // web_url：分享链接域名（迭代 5 第 2 节），没配置时不返回该字段
+  const webUrl = (opts.webUrl ?? process.env.CLASSMATE_OS_WEB_URL ?? '').trim().replace(/\/+$/, '');
+  app.get('/api/v1/capabilities', async () => ({ features: { ...CAPABILITIES }, ...(webUrl ? { web_url: webUrl } : {}) }));
+
+  const envTz = Number(process.env.CLASSMATE_OS_TZ_OFFSET_MINUTES);
+  const clock = new Clock(opts.timezoneOffsetMinutes ?? (Number.isFinite(envTz) ? envTz : 480), opts.now ?? Date.now);
+  const pushProvider = opts.pushProvider ?? new MemoryPushProvider();
+  const presence = new Presence();
+  const pushDispatcher = new PushDispatcher(repo, pushProvider, presence, clock);
+  const notifications = new NotificationService(ctx, pushDispatcher, clock);
+  notifications.attachEventSources();
+  if (opts.notificationScanner !== false) notifications.startScanner();
+  app.addHook('onClose', async () => notifications.stop());
+
+  await ctx.org.migrate();
+  registerDepartmentRoutes(ctx);
   registerAuthRoutes(ctx);
-  registerImRoutes(ctx);
-  registerRealtimeRoutes(ctx, { pushProvider: opts.pushProvider ?? new MemoryPushProvider(), heartbeatMs: opts.heartbeatMs });
+  registerAdminRoutes(ctx);
+  const imPlus = registerImPlusRoutes(ctx, { notifications });
+  const linkFetcher = opts.linkPreviewFetcher === undefined ? defaultLinkFetcher : opts.linkPreviewFetcher;
+  registerImRoutes(ctx, {
+    chatExtras: imPlus.chatExtras,
+    linkPreview: linkFetcher ? new LinkPreviewService(linkFetcher) : undefined,
+    publicBaseUrl: opts.publicBaseUrl ?? process.env.COS_PUBLIC_BASE_URL,
+  });
+  registerRealtimeRoutes(ctx, { pushProvider, heartbeatMs: opts.heartbeatMs, presence, push: pushDispatcher });
   registerFileRoutes(ctx);
-  registerTableRoutes(ctx);
-  registerDocRoutes(ctx);
-  registerCalendarTaskRoutes(ctx);
+  const tables = registerTableRoutes(ctx, { clock });
+  registerNotificationRoutes(ctx, notifications, pushDispatcher);
+  // 测试 / 运维用的内部句柄
+  app.decorate('cos', { ctx, tables, notifications, push: pushDispatcher, presence, clock });
+  registerDocRoutes(ctx, notifications, docVersions!);
+  // 日历默认时区：参数 > 环境变量 COS_CALENDAR_TZ > 指定了固定偏移时用偏移 > Asia/Shanghai
+  const envCalTz = process.env.COS_CALENDAR_TZ;
+  const calendarZone: Zone = opts.calendarTimezone
+    ?? (isValidTimeZone(envCalTz) ? envCalTz : opts.timezoneOffsetMinutes !== undefined ? opts.timezoneOffsetMinutes : 'Asia/Shanghai');
+  registerCalendarTaskRoutes(ctx, { notifications, calendarZone: () => calendarZone });
+  registerSearchRoutes(ctx, { defaultZone: () => calendarZone, now: opts.now });
 
   // ---------------- 报表视图（吸收 dashboard/ 六卡） ----------------
   app.get('/api/v1/dashboard/summary', async (req, reply) => {

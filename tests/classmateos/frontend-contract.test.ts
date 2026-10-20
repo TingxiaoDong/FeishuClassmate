@@ -294,7 +294,10 @@ describe.each(backends)('前端接口验收清单（$name）', ({ usePg }) => {
     const z = await tok('u_zhang');
     const me = (await call(z, 'GET', '/users/me')).json();
     const list = (await call(z, 'GET', '/users')).json();
-    expect(list.items.find((u: Ev) => u.user_id === 'u_zhang')).toEqual(me);
+    // 迭代 5：/users/me 多带本人的 permissions，通讯录里不带，其余字段一致
+    const { permissions, ...meBase } = me;
+    expect(Array.isArray(permissions)).toBe(true);
+    expect(list.items.find((u: Ev) => u.user_id === 'u_zhang')).toEqual(meBase);
     expect(me.department).toBe('机器人组');
     expect(me.password_hash).toBeUndefined();
     expect(list.total).toBe(list.items.length);

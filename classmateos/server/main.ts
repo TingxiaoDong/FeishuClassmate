@@ -64,6 +64,8 @@ const app = await buildApp({
   users,
   secret,
   botToken,
+  // 机器人代办删除类操作默认关闭；管理员确认后设 CLASSMATE_OS_BOT_ALLOW_DELETE=1 打开
+  botScopes: { allowDestructive: process.env.CLASSMATE_OS_BOT_ALLOW_DELETE === '1' },
   store,
   repo,
   fileStore,
