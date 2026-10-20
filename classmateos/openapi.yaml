@@ -27,6 +27,9 @@ tags:
   - name: tasks
   - name: docs
   - name: dashboard
+  - name: notifications
+  - name: search
+    description: 二期迭代 4 全局搜索与最近访问
 
 paths:
   # ---------------------------------------------------------------------------
@@ -34,7 +37,7 @@ paths:
   # ---------------------------------------------------------------------------
   /auth/login:
     post:
-      tags: [auth]
+      tags: [ auth ]
       summary: 账号密码登录，返回访问令牌
       security: []
       requestBody:
@@ -43,7 +46,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [ username, password ]
               properties:
                 username: { type: string }
                 password: { type: string, format: password }
@@ -54,7 +57,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [access_token, refresh_token, user]
+                required: [ access_token, refresh_token, user ]
                 properties:
                   access_token: { type: string, description: JWT，默认 2h }
                   refresh_token: { type: string }
@@ -63,7 +66,7 @@ paths:
 
   /auth/refresh:
     post:
-      tags: [auth]
+      tags: [ auth ]
       summary: 刷新访问令牌
       security: []
       requestBody:
@@ -72,7 +75,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [refresh_token]
+              required: [ refresh_token ]
               properties:
                 refresh_token: { type: string }
       responses:
@@ -86,9 +89,70 @@ paths:
                   access_token: { type: string }
                   refresh_token: { type: string }
 
+  /users/me/password:
+    post:
+      tags: [ users ]
+      summary: 修改本人密码（其他设备下线，当前设备保留）
+      responses:
+        '204': { description: 成功 }
+        '400': { description: INVALID_PASSWORD / WEAK_PASSWORD }
+  /users/me/sessions:
+    get:
+      tags: [ users ]
+      summary: 本人登录设备列表
+      responses:
+        '200': { description: "{items:[{session_id,device_name,platform,ip,last_active_at,created_at,current}]}" }
+  /users/me/sessions/{session_id}:
+    delete:
+      tags: [ users ]
+      summary: 退出某个登录设备
+      parameters: [ { name: session_id, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '204': { description: 成功 }
+        '404': { description: 不存在或不是本人的 }
+  /users/me/logout-all:
+    post:
+      tags: [ users ]
+      summary: 退出除当前设备外的所有设备
+      responses:
+        '200': { description: "{revoked}" }
+  /users/{user_id}/avatar:
+    get:
+      tags: [ users ]
+      summary: 用户头像（公开，无需令牌）
+      parameters: [ { name: user_id, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: 图片 }
+        '404': { description: 没有头像 }
+  /users/{user_id}/reset-password:
+    post:
+      tags: [ admin ]
+      summary: 管理员重置成员密码（返回一次性密码，成员下次登录须改密）
+      parameters: [ { name: user_id, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: "{password}" }
+  /users/{user_id}/logout-all:
+    post:
+      tags: [ admin ]
+      summary: 管理员强制成员所有设备下线
+      parameters: [ { name: user_id, in: path, required: true, schema: { type: string } } ]
+      responses:
+        '200': { description: "{revoked}" }
+  /admin/security-settings:
+    get:
+      tags: [ admin ]
+      summary: 读取安全设置
+      responses:
+        '200': { description: 安全设置 }
+    put:
+      tags: [ admin ]
+      summary: 修改安全设置（可部分更新）
+      responses:
+        '200': { description: 修改后的安全设置 }
+        '422': { description: 校验失败 }
   /users/me:
     get:
-      tags: [users]
+      tags: [ users ]
       summary: 当前用户信息
       responses:
         '200':
@@ -99,7 +163,7 @@ paths:
 
   /users:
     get:
-      tags: [users]
+      tags: [ users ]
       summary: 组织成员列表（通讯录）
       parameters:
         - { name: keyword, in: query, schema: { type: string } }
@@ -122,7 +186,7 @@ paths:
   # ---------------------------------------------------------------------------
   /chats:
     get:
-      tags: [im]
+      tags: [ im ]
       summary: 我的会话列表（单聊+群聊）
       responses:
         '200':
@@ -135,7 +199,7 @@ paths:
                   items: { type: array, items: { $ref: '#/components/schemas/Chat' } }
                   has_more: { type: boolean }
     post:
-      tags: [im]
+      tags: [ im ]
       summary: 创建会话（单聊或群聊）
       requestBody:
         required: true
@@ -143,7 +207,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [member_ids]
+              required: [ member_ids ]
               properties:
                 name: { type: string, description: 群名；单聊可空 }
                 member_ids: { type: array, items: { type: string } }
@@ -156,7 +220,7 @@ paths:
 
   /chats/{chat_id}/messages:
     get:
-      tags: [im]
+      tags: [ im ]
       summary: 拉取消息历史（倒序分页）
       parameters:
         - { $ref: '#/components/parameters/chatId' }
@@ -173,7 +237,7 @@ paths:
                   items: { type: array, items: { $ref: '#/components/schemas/Message' } }
                   has_more: { type: boolean }
     post:
-      tags: [im]
+      tags: [ im ]
       summary: 发送消息（文本/富文本/卡片）
       parameters:
         - { $ref: '#/components/parameters/chatId' }
@@ -183,14 +247,20 @@ paths:
           application/json:
             schema:
               type: object
-              required: [msg_type, content]
+              required: [ msg_type, content ]
               properties:
                 msg_type:
                   type: string
-                  enum: [text, post, image, file, interactive_card]
+                  enum: [ text, post, image, file, interactive_card ]
                 content:
                   type: object
-                  description: 按 msg_type 而定；interactive_card 时为卡片 JSON
+                  description: 按 msg_type 而定；interactive_card 时为卡片 JSON。post 支持 markdown（≤2 万字）；text 支持 mentions [{user_id,name}]；前端传的 link_previews 会被忽略，由后端异步生成
+                thread_root_id:
+                  type: string
+                  description: 迭代4：话题回复，填话题第一条消息 ID；不能在话题回复里再开话题（422）
+                also_send_to_chat:
+                  type: boolean
+                  description: 迭代4：话题回复同时出现在会话消息流
       responses:
         '201':
           description: 已发送
@@ -200,7 +270,7 @@ paths:
 
   /chats/{chat_id}/messages/{message_id}/read:
     post:
-      tags: [im]
+      tags: [ im ]
       summary: 已读回执（标记本人已读至该消息）
       parameters:
         - { $ref: '#/components/parameters/chatId' }
@@ -210,11 +280,10 @@ paths:
 
   /cards/{card_id}/actions:
     post:
-      tags: [im]
+      tags: [ im ]
       summary: 卡片交互回调（ask_user_question 等价物）
       description: >-
-        大脑发出的交互卡片上按钮/表单被点击后，客户端调用此接口；
-        平台把回答通过 Bot 事件 WS 推送给大脑 runtime，恢复被挂起的会话。
+        大脑发出的交互卡片上按钮/表单被点击后，客户端调用此接口； 平台把回答通过 Bot 事件 WS 推送给大脑 runtime，恢复被挂起的会话。
       parameters:
         - { name: card_id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -223,7 +292,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [action]
+              required: [ action ]
               properties:
                 action: { type: string, description: 按钮 value / 表单 action id }
                 form_values: { type: object, additionalProperties: true }
@@ -235,8 +304,8 @@ paths:
   # ---------------------------------------------------------------------------
   /tables:
     get:
-      tags: [tables]
-      summary: 表清单（23 张核心表 + 元信息）
+      tags: [ tables ]
+      summary: 表清单（内置表在前，自定义表按创建时间正序；每项带 builtin）
       responses:
         '200':
           description: 表定义列表
@@ -248,10 +317,58 @@ paths:
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/TableMeta' }
+    post:
+      tags: [ tables ]
+      summary: 新建数据表（所有已登录、未禁用用户）
+      description: |
+        规则见《多维表格新建数据表接口需求》。key 由后端生成（tbl_xxxxxxxxxx），创建后即可用于 /tables/{table_key}/records。
+        同一用户 24 小时内重复提交同一 client_request_id 返回第一次创建的表（200）。
+        字段类型支持 1/2/3/4/5/7/11/15/17；单选、多选必须带 options（1–50 项），可选 option_colors（不给则自动分配）。
+        field_name 不能用系统保留名：record_id、created_at、updated_at、created_by、updated_by、feishu_record_id、cos_created_by、cos_updated_by。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ name, primary_field, fields ]
+              properties:
+                name: { type: string, maxLength: 60 }
+                description: { type: string, maxLength: 500, nullable: true }
+                primary_field: { type: string, description: fields 中的文本（type 1）且必填字段 }
+                client_request_id: { type: string, maxLength: 128 }
+                fields:
+                  type: array
+                  minItems: 1
+                  maxItems: 30
+                  items:
+                    type: object
+                    required: [ field_name, title, type ]
+                    properties:
+                      field_name: { type: string, pattern: '^[a-z][a-z0-9_]{0,62}$' }
+                      title: { type: string, maxLength: 40 }
+                      type: { type: integer, enum: [ 1, 2, 3, 4, 5, 7, 11, 15, 17 ] }
+                      required: { type: boolean, default: false }
+                      options: { type: array, items: { type: string, maxLength: 40 }, maxItems: 50 }
+                      option_colors: { type: object, additionalProperties: { type: string } }
+      responses:
+        '201':
+          {
+            description: 已创建，返回与 GET /tables 单项相同的结构,
+            content: { application/json: { schema: { $ref: '#/components/schemas/TableMeta' } } }
+          }
+        '200':
+          {
+            description: client_request_id 幂等命中，返回第一次创建的表,
+            content: { application/json: { schema: { $ref: '#/components/schemas/TableMeta' } } }
+          }
+        '401': { description: 未登录（UNAUTHORIZED） }
+        '409': { description: 表名重复（TABLE_NAME_EXISTS），去空格后大小写不敏感，内置表名也算 }
+        '422': { description: '参数不正确（VALIDATION_FAILED），errors[].field 形如 fields[1].options' }
 
   /tables/{table_key}/records:
     get:
-      tags: [tables]
+      tags: [ tables ]
       summary: 查询记录（过滤/排序/分页）
       parameters:
         - { $ref: '#/components/parameters/tableKey' }
@@ -259,9 +376,18 @@ paths:
           in: query
           schema: { type: string }
           description: 简化过滤表达式，如 status="进行中" AND progress<50
-        - { name: sort, in: query, schema: { type: string }, description: 如 due_date asc }
+        - {
+            name: sort,
+            in: query,
+            schema: { type: string },
+            description: 如 due_date asc
+          }
         - { name: page_token, in: query, schema: { type: string } }
-        - { name: page_size, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+        - {
+            name: page_size,
+            in: query,
+            schema: { type: integer, default: 100, maximum: 500 }
+          }
       responses:
         '200':
           description: 记录分页
@@ -274,7 +400,7 @@ paths:
                   has_more: { type: boolean }
                   page_token: { type: string }
     post:
-      tags: [tables]
+      tags: [ tables ]
       summary: 新建记录
       parameters:
         - { $ref: '#/components/parameters/tableKey' }
@@ -284,7 +410,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [fields]
+              required: [ fields ]
               properties:
                 fields: { $ref: '#/components/schemas/RecordFields' }
       responses:
@@ -297,7 +423,7 @@ paths:
 
   /tables/{table_key}/records/{record_id}:
     get:
-      tags: [tables]
+      tags: [ tables ]
       summary: 读取单条记录
       parameters:
         - { $ref: '#/components/parameters/tableKey' }
@@ -310,7 +436,7 @@ paths:
               schema: { $ref: '#/components/schemas/Record' }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
-      tags: [tables]
+      tags: [ tables ]
       summary: 更新记录（部分字段）
       parameters:
         - { $ref: '#/components/parameters/tableKey' }
@@ -321,7 +447,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [fields]
+              required: [ fields ]
               properties:
                 fields: { $ref: '#/components/schemas/RecordFields' }
       responses:
@@ -331,7 +457,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Record' }
     delete:
-      tags: [tables]
+      tags: [ tables ]
       summary: 删除记录
       parameters:
         - { $ref: '#/components/parameters/tableKey' }
@@ -344,7 +470,7 @@ paths:
   # ---------------------------------------------------------------------------
   /files/upload-url:
     post:
-      tags: [files]
+      tags: [ files ]
       summary: 申请上传预签名 URL
       requestBody:
         required: true
@@ -352,7 +478,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [file_name, size]
+              required: [ file_name, size ]
               properties:
                 file_name: { type: string }
                 size: { type: integer, format: int64 }
@@ -371,7 +497,7 @@ paths:
 
   /files/{file_key}/download-url:
     get:
-      tags: [files]
+      tags: [ files ]
       summary: 获取下载预签名 URL
       parameters:
         - { name: file_key, in: path, required: true, schema: { type: string } }
@@ -391,7 +517,7 @@ paths:
   # ---------------------------------------------------------------------------
   /bot/messages:
     post:
-      tags: [bot]
+      tags: [ bot ]
       summary: 大脑代 bot 发送消息/卡片
       security:
         - botToken: []
@@ -401,11 +527,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [receive_id, msg_type, content]
+              required: [ receive_id, msg_type, content ]
               properties:
                 receive_id: { type: string, description: chat_id 或 user_id }
-                receive_id_type: { type: string, enum: [chat_id, user_id], default: chat_id }
-                msg_type: { type: string, enum: [text, post, interactive_card] }
+                receive_id_type: { type: string, enum: [ chat_id, user_id ], default: chat_id }
+                msg_type: { type: string, enum: [ text, post, interactive_card ] }
                 content: { type: object }
                 reply_to: { type: string, description: 被回复的 message_id }
       responses:
@@ -417,12 +543,12 @@ paths:
 
   /bot/events/ws:
     get:
-      tags: [bot]
+      tags: [ bot ]
       summary: Bot 事件长连接（WebSocket upgrade）
       description: >-
         大脑 runtime 连接此端点接收平台事件：message.receive（用户消息）、
-        card.action（ask_user_question 回答）、message.read 等。
-        事件帧格式见 components.schemas.BotEvent。支持 ?since=<event_id> 断点续传。
+        card.action（ask_user_question 回答）、message.read 等。 事件帧格式见
+        components.schemas.BotEvent。支持 ?since=<event_id> 断点续传。
       security:
         - botToken: []
       responses:
@@ -430,12 +556,11 @@ paths:
 
   /events/ws:
     get:
-      tags: [im]
+      tags: [ im ]
       summary: 用户态事件长连接（四端实时收消息）
       description: >-
-        客户端（Flutter 四端）连接此端点接收本人所在会话的新消息事件
-        （message.receive，含 bot 回复）。浏览器/移动端不便设自定义头，
-        JWT 走 ?token=<access_token>；非本会话成员收不到消息。
+        客户端（Flutter 四端）连接此端点接收本人所在会话的新消息事件 （message.receive，含 bot
+        回复）。浏览器/移动端不便设自定义头， JWT 走 ?token=<access_token>；非本会话成员收不到消息。
       security: []
       parameters:
         - { name: token, in: query, required: true, schema: { type: string } }
@@ -447,11 +572,37 @@ paths:
   # ---------------------------------------------------------------------------
   /calendar/events:
     get:
-      tags: [calendar]
+      tags: [ calendar ]
       summary: 查询时间窗内的日程
       parameters:
-        - { name: from, in: query, required: true, schema: { type: integer, format: int64 }, description: ms 时间戳 }
-        - { name: to, in: query, required: true, schema: { type: integer, format: int64 } }
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: from/to 或 start_ms/end_ms 必须提供完整的一对
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: from/to 或 start_ms/end_ms 必须提供完整的一对
+        - name: start_ms
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: from/to 或 start_ms/end_ms 必须提供完整的一对
+        - name: end_ms
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+          description: from/to 或 start_ms/end_ms 必须提供完整的一对
       responses:
         '200':
           description: 日程列表
@@ -462,7 +613,7 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: '#/components/schemas/CalendarEvent' } }
     post:
-      tags: [calendar]
+      tags: [ calendar ]
       summary: 创建日程
       requestBody:
         required: true
@@ -470,13 +621,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [title, start_ms, end_ms]
+              required: [ title, start_ms, end_ms ]
               properties:
                 title: { type: string }
                 start_ms: { type: integer, format: int64 }
                 end_ms: { type: integer, format: int64 }
                 attendee_ids: { type: array, items: { type: string } }
                 description: { type: string }
+                recurrence:
+                  type: string
+                  nullable: true
+                  description: 试验接口：仅支持常用 RRULE 子集，calendar.recurrence 开关保持 false
       responses:
         '201':
           description: 已创建
@@ -487,21 +642,139 @@ paths:
 
   /calendar/events/{event_id}:
     delete:
-      tags: [calendar]
-      summary: 删除日程
+      tags:
+        - calendar
+      summary: 删除日程或指定重复范围
       parameters:
-        - { name: event_id, in: path, required: true, schema: { type: string } }
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum:
+              - this
+              - following
+              - all
       responses:
-        '204': { description: 已删除 }
-        '404': { $ref: '#/components/responses/NotFound' }
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    get:
+      tags:
+        - calendar
+      summary: 读取日程或重复实例
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarEvent"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    patch:
+      tags:
+        - calendar
+      summary: 试验：修改日程及指定重复范围
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: &anc1
+            type: string
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum:
+              - this
+              - following
+              - all
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CalendarEvent"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: *anc1
+                start_ms:
+                  type: integer
+                  format: int64
+                end_ms:
+                  type: integer
+                  format: int64
+                recurrence:
+                  type: string
+                  nullable: true
+                  description: 试验接口：仅支持常用 RRULE 子集，calendar.recurrence 开关保持 false
 
   /tasks:
     get:
-      tags: [tasks]
+      tags: [ tasks ]
       summary: 任务列表（可按指派人/状态过滤）
       parameters:
-        - { name: assignee_id, in: query, schema: { type: string } }
-        - { name: status, in: query, schema: { type: string, enum: [pending, in_progress, done, cancelled] } }
+        - name: assignee_id
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending
+              - in_progress
+              - done
+              - cancelled
+        - name: created_by
+          in: query
+          schema: &anc2
+            type: string
+        - name: follower_id
+          in: query
+          schema: *anc2
+        - name: include_subtasks
+          in: query
+          schema: *anc2
       responses:
         '200':
           description: 任务列表
@@ -512,7 +785,7 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: '#/components/schemas/TaskItem' } }
     post:
-      tags: [tasks]
+      tags: [ tasks ]
       summary: 创建任务（帮扶提醒等场景）
       requestBody:
         required: true
@@ -520,12 +793,21 @@ paths:
           application/json:
             schema:
               type: object
-              required: [title]
+              required: [ title ]
               properties:
                 title: { type: string }
                 assignee_id: { type: string }
                 due_ms: { type: integer, format: int64 }
                 description: { type: string }
+                parent_id:
+                  type: string
+                  nullable: true
+                list_id:
+                  type: string
+                  nullable: true
+                section_id:
+                  type: string
+                  nullable: true
       responses:
         '201':
           description: 已创建
@@ -535,7 +817,7 @@ paths:
 
   /tasks/{task_id}:
     patch:
-      tags: [tasks]
+      tags: [ tasks ]
       summary: 更新任务（状态/标题/截止时间）
       parameters:
         - { name: task_id, in: path, required: true, schema: { type: string } }
@@ -547,7 +829,7 @@ paths:
               type: object
               properties:
                 title: { type: string }
-                status: { type: string, enum: [pending, in_progress, done, cancelled] }
+                status: { type: string, enum: [ pending, in_progress, done, cancelled ] }
                 due_ms: { type: integer, format: int64 }
                 description: { type: string }
       responses:
@@ -557,10 +839,56 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TaskItem' }
         '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags:
+        - tasks
+      summary: 获取有权查看的任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskItem"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    delete:
+      tags:
+        - tasks
+      summary: 删除任务及其子任务
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
 
   /docs:
     get:
-      tags: [docs]
+      tags: [ docs ]
       summary: 文档列表
       responses:
         '200':
@@ -580,7 +908,7 @@ paths:
                         created_by: { type: string }
                         updated_at: { type: string, format: date-time }
     post:
-      tags: [docs]
+      tags: [ docs ]
       summary: 创建文档（markdown 正文；块编辑器协同为 P3 深化项）
       requestBody:
         required: true
@@ -588,7 +916,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [title, markdown]
+              required: [ title, markdown ]
               properties:
                 title: { type: string }
                 markdown: { type: string }
@@ -605,7 +933,7 @@ paths:
 
   /docs/{doc_id}:
     get:
-      tags: [docs]
+      tags: [ docs ]
       summary: 读取文档 markdown
       parameters:
         - { name: doc_id, in: path, required: true, schema: { type: string } }
@@ -623,7 +951,7 @@ paths:
                   updated_at: { type: string, format: date-time }
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
-      tags: [docs]
+      tags: [ docs ]
       summary: 更新文档（整体替换正文）
       parameters:
         - { name: doc_id, in: path, required: true, schema: { type: string } }
@@ -642,7 +970,7 @@ paths:
 
   /docs/{doc_id}/collab:
     get:
-      tags: [docs]
+      tags: [ docs ]
       summary: 协同编辑 WebSocket（Yjs 同步协议；升级请求）
       description: |
         浏览器/移动端经 `?token=<jwt>` 鉴权。连接后走 y-protocols 消息：
@@ -657,7 +985,7 @@ paths:
 
   /dashboard/summary:
     get:
-      tags: [dashboard]
+      tags: [ dashboard ]
       summary: 报表聚合（六张卡片：Tool 用量/成功率、项目甘特 KPI、器材、投稿、失败归档）
       responses:
         '200':
@@ -665,6 +993,1207 @@ paths:
           content:
             application/json:
               schema: { type: object, additionalProperties: true }
+
+  # ---------------------------------------------------------------------------
+  # 二期迭代 1（字段 / 视图 / 批量 / 通知），细节见《后端对接说明》第 4 节
+  # ---------------------------------------------------------------------------
+  /capabilities:
+    get:
+      {
+        tags: [ tables ],
+        security: [],
+        summary: 功能开关（不用登录）,
+        description: 'features 里缺失的 key 当 false。web_url 是 Web 版地址（分享链接域名），由 CLASSMATE_OS_WEB_URL 配置，没配置时不返回。',
+        responses: { '200': { description: '{ features: { key: bool }, web_url?: string }' } }
+      }
+  /tables/{table_key}:
+    get:
+      {
+        tags: [ tables ],
+        summary: 单张表定义（含 version、permissions、view_ids）,
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: 表对象 }, '404': { description: TABLE_NOT_FOUND } }
+      }
+  /tables/{table_key}/fields:
+    post:
+      {
+        tags: [ tables ],
+        summary: 新增字段（可带 after_field、base_version）,
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses:
+          {
+            '201': { description: 整张表 },
+            '409': { description: VERSION_CONFLICT },
+            '422': { description: VALIDATION_FAILED }
+          }
+      }
+  /tables/{table_key}/fields/order:
+    put:
+      {
+        tags: [ tables ],
+        summary: '字段默认顺序 { field_names }',
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: 整张表 } }
+      }
+  /tables/{table_key}/fields/{field_name}:
+    parameters:
+      [
+        { name: table_key, in: path, required: true, schema: { type: string } },
+        { name: field_name, in: path, required: true, schema: { type: string } }
+      ]
+    patch:
+      {
+        tags: [ tables ],
+        summary: 改名称 / 类型 / 必填 / 选项（option_renames）/ 说明,
+        responses:
+          {
+            '200': { description: 整张表 },
+            '403': { description: 内置字段只能改名称和选项 },
+            '409': { description: VERSION_CONFLICT }
+          }
+      }
+    delete:
+      {
+        tags: [ tables ],
+        summary: 删除字段（base_version 放 query）,
+        parameters: [ { name: base_version, in: query, schema: { type: integer } } ],
+        responses:
+          {
+            '200': { description: 整张表 },
+            '409': { description: VERSION_CONFLICT / FIELD_IN_USE },
+            '422': { description: 主字段不能删 }
+          }
+      }
+  /tables/{table_key}/fields/{field_name}/convert-preview:
+    post:
+      {
+        tags: [ tables ],
+        summary: '改类型前预估 → { affected, will_clear }',
+        parameters:
+          [
+            { name: table_key, in: path, required: true, schema: { type: string } },
+            { name: field_name, in: path, required: true, schema: { type: string } }
+          ],
+        responses: { '200': { description: ok } }
+      }
+  /tables/{table_key}/views:
+    parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ]
+    get:
+      {
+        tags: [ tables ],
+        summary: 公共视图 + 我的个人视图,
+        responses: { '200': { description: '{ items }' } }
+      }
+    post: { tags: [ tables ], summary: 新建视图, responses: { '201': { description: 视图 } } }
+  /tables/{table_key}/views/order:
+    put:
+      {
+        tags: [ tables ],
+        summary: '视图顺序 { view_ids }',
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: '{ items }' } }
+      }
+  /tables/{table_key}/views/{view_id}:
+    parameters:
+      [
+        { name: table_key, in: path, required: true, schema: { type: string } },
+        { name: view_id, in: path, required: true, schema: { type: string } }
+      ]
+    patch:
+      {
+        tags: [ tables ],
+        summary: 改视图（必须带 version）,
+        responses:
+          {
+            '200': { description: 视图 },
+            '409': { description: VERSION_CONFLICT（带最新 view） }
+          }
+      }
+    delete:
+      {
+        tags: [ tables ],
+        summary: 删视图（最后一个公共视图 422）,
+        responses: { '204': { description: ok } }
+      }
+  /tables/{table_key}/records/batch_create:
+    post:
+      {
+        tags: [ tables ],
+        summary: '批量新建（≤500）→ { succeeded, failed }',
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: ok } }
+      }
+  /tables/{table_key}/records/batch_update:
+    post:
+      {
+        tags: [ tables ],
+        summary: '批量修改：records[] 或 record_ids + fields',
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: ok } }
+      }
+  /tables/{table_key}/records/batch_delete:
+    post:
+      {
+        tags: [ tables ],
+        summary: '批量删除：record_ids 或 view_id + all',
+        parameters: [ { name: table_key, in: path, required: true, schema: { type: string } } ],
+        responses: { '200': { description: ok } }
+      }
+  /notifications:
+    get:
+      {
+        tags: [ notifications ],
+        summary: '通知列表 ?filter=all|mention',
+        responses:
+          {
+            '200': { description: '{ items, has_more, page_token, total, unread_count }' }
+          }
+      }
+  /notifications/unread-count:
+    get:
+      {
+        tags: [ notifications ],
+        summary: '{ count }',
+        responses: { '200': { description: ok } }
+      }
+  /notifications/read:
+    post:
+      {
+        tags: [ notifications ],
+        summary: '{ ids } 或 { all: true } → { updated, count }',
+        responses: { '200': { description: ok } }
+      }
+  /users/me/notification-settings:
+    get:
+      {
+        tags: [ notifications ],
+        summary: 通知设置,
+        responses: { '200': { description: ok } }
+      }
+    put:
+      {
+        tags: [ notifications ],
+        summary: 修改通知设置（可只传一部分）,
+        responses: { '200': { description: ok }, '422': { description: VALIDATION_FAILED } }
+      }
+  /tasks/{task_id}/subtasks:
+    get:
+      tags:
+        - tasks
+      summary: 读取subtasks
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasks/{task_id}/comments:
+    get:
+      tags:
+        - tasks
+      summary: 读取comments
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    post:
+      tags:
+        - tasks
+      summary: 发表任务评论
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: 成功
+          content:
+            application/json:
+              schema: &anc3
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content: *anc3
+                attachments:
+                  type: array
+                  items: *anc3
+  /tasks/{task_id}/activities:
+    get:
+      tags:
+        - tasks
+      summary: 读取activities
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasks/{task_id}/subtasks/order:
+    post:
+      tags:
+        - tasks
+      summary: 保存全部直接子任务顺序
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                task_ids:
+                  type: array
+                  items:
+                    type: string
+  /tasks/{task_id}/followers/{user_id}:
+    post:
+      tags:
+        - tasks
+      summary: 添加关注人
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskItem"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    delete:
+      tags:
+        - tasks
+      summary: 移除关注人
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: &anc4
+            type: string
+        - name: user_id
+          in: path
+          required: true
+          schema: *anc4
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskItem"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasks/{task_id}/comments/{comment_id}:
+    delete:
+      tags:
+        - tasks
+      summary: 删除有权删除的评论
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: comment_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasklists:
+    get:
+      tags:
+        - tasks
+      summary: 可见任务清单
+      parameters: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    post:
+      tags:
+        - tasks
+      summary: 创建清单及默认分组
+      parameters: []
+      responses:
+        "201":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: &anc5
+                  type: string
+                description: *anc5
+                project_record_id:
+                  type: string
+                  nullable: true
+  /tasklists/{list_id}:
+    patch:
+      tags:
+        - tasks
+      summary: 修改清单
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+    delete:
+      tags:
+        - tasks
+      summary: 删除清单但保留任务
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasklists/{list_id}/members:
+    get:
+      tags:
+        - tasks
+      summary: 清单成员与版本
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    put:
+      tags:
+        - tasks
+      summary: 保存清单授权
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema: &anc6
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                members:
+                  type: array
+                  items: *anc6
+                version:
+                  type: integer
+  /tasklists/{list_id}/sections:
+    get:
+      tags:
+        - tasks
+      summary: 有序分组
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+    post:
+      tags:
+        - tasks
+      summary: 创建分组
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema: &anc7
+            type: string
+      responses:
+        "201":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: *anc7
+  /tasklists/{list_id}/sections/{section_id}:
+    patch:
+      tags:
+        - tasks
+      summary: 分组改名
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: section_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+    delete:
+      tags:
+        - tasks
+      summary: 删除分组，任务移至未分组
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema: &anc8
+            type: string
+        - name: section_id
+          in: path
+          required: true
+          schema: *anc8
+      responses:
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasklists/{list_id}/tasks:
+    get:
+      tags:
+        - tasks
+      summary: 清单任务
+      parameters:
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  has_more:
+                    type: boolean
+                  page_token:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+  /tasks/{task_id}/tasklists:
+    post:
+      tags:
+        - tasks
+      summary: 加入清单或移动分组
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskItem"
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                list_id:
+                  type: string
+                section_id:
+                  type: string
+                  nullable: true
+  /tasks/{task_id}/tasklists/{list_id}:
+    delete:
+      tags:
+        - tasks
+      summary: 解除清单关联
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: list_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: 成功
+        "403":
+          description: 无权操作
+        "404":
+          description: 资源不存在
+        "409":
+          description: 状态或版本冲突
+        "422":
+          description: 参数错误
+
+  # ---------------- 二期迭代 4：消息增强 ----------------
+  /chats/{chat_id}:
+    patch:
+      tags: [ im ]
+      summary: 修改会话（迭代4：thread_mode 切换话题模式）
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                thread_mode: { type: boolean }
+      responses:
+        '200': { description: 会话对象（含 thread_mode、thread_unread_count、pinned_message_ids） }
+  /messages/{message_id}/read-users:
+    get:
+      tags: [ im ]
+      summary: 已读 / 未读名单（只有发送人可看，其他人 403）
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 名单
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  read: { type: array, items: { type: string } }
+                  unread: { type: array, items: { type: string } }
+        '403': { description: 不是发送人 }
+  /messages/{message_id}/thread:
+    get:
+      tags: [ im ]
+      summary: 话题回复（正序分页，打开即记为已读）
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+        - { name: page_size, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: page_token, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 回复分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Message' } }
+                  has_more: { type: boolean }
+                  page_token: { type: string }
+        '422': { description: 传的是话题回复而不是根消息 }
+  /messages/{message_id}/thread/follow:
+    post:
+      tags: [ im ]
+      summary: 关注话题
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 更新后的根消息 }
+    delete:
+      tags: [ im ]
+      summary: 取消关注话题
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 更新后的根消息 }
+  /messages/{message_id}/reactions:
+    post:
+      tags: [ im ]
+      summary: 添加表情回应（幂等；每条最多 50 种，每人每分钟 60 次）
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ emoji ]
+              properties:
+                emoji: { type: string, pattern: '^[A-Za-z0-9_]{1,32}$' }
+      responses:
+        '200': { description: 更新后的消息，并推 message.updated }
+        '429': { description: RATE_LIMITED }
+  /messages/{message_id}/reactions/{emoji}:
+    delete:
+      tags: [ im ]
+      summary: 取消表情回应
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+        - { name: emoji, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 更新后的消息 }
+  /messages/forward:
+    post:
+      tags: [ im ]
+      summary: 逐条 / 合并转发（最多 100 条消息、10 个会话）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ message_ids, chat_ids ]
+              properties:
+                message_ids: { type: array, items: { type: string }, maxItems: 100 }
+                chat_ids: { type: array, items: { type: string }, maxItems: 10 }
+                mode: { type: string, enum: [ single, merge ], default: single }
+                note: { type: string, maxLength: 5000 }
+                client_request_id: { type: string, maxLength: 128 }
+      responses:
+        '201':
+          description: 新生成的消息
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Message' } }
+        '200': { description: 相同 client_request_id 重复提交，返回第一次的结果 }
+        '409': { description: REQUEST_IN_PROGRESS }
+        '422': { description: 源消息 / 目标会话不可用，field 指出第几项 }
+  /messages/urgent/pending:
+    get:
+      tags: [ im ]
+      summary: 我还没确认的加急
+      responses:
+        '200':
+          description: 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        message_id: { type: string }
+                        chat_id: { type: string }
+                        from_user_id: { type: string }
+                        preview: { type: string }
+                        urged_at: { type: string, format: date-time }
+  /messages/{message_id}/urgent:
+    post:
+      tags: [ im ]
+      summary: 加急自己发的消息
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ user_ids ]
+              properties:
+                user_ids: { type: array, items: { type: string } }
+                type: { type: string, enum: [ app, push ], default: app }
+      responses:
+        '200': { description: 更新后的消息；被加急的人收到 message.urgent }
+        '429': { description: URGENT_TOO_FREQUENT }
+  /messages/{message_id}/urgent/ack:
+    post:
+      tags: [ im ]
+      summary: 确认加急（推 message.urgent_acked）
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已确认 }
+  /messages/{message_id}/favorite:
+    post:
+      tags: [ im ]
+      summary: 收藏（幂等）
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已收藏 }
+    delete:
+      tags: [ im ]
+      summary: 取消收藏
+      parameters:
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: 已取消 }
+  /favorites:
+    get:
+      tags: [ im ]
+      summary: 我的收藏
+      parameters:
+        - { name: page_size, in: query, schema: { type: integer } }
+        - { name: page_token, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 收藏分页
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        favorite_id: { type: string }
+                        message: { $ref: '#/components/schemas/Message' }
+                        chat_name: { type: string }
+                        created_at: { type: string, format: date-time }
+                  has_more: { type: boolean }
+                  page_token: { type: string }
+  /chats/{chat_id}/pins:
+    get:
+      tags: [ im ]
+      summary: 会话的 Pin 消息
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+      responses:
+        '200': { description: '{ items: [Message] }' }
+  /chats/{chat_id}/pins/{message_id}:
+    post:
+      tags: [ im ]
+      summary: Pin 消息（每个会话最多 10 条）
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已 Pin，推 chat.updated }
+        '409': { description: PIN_LIMIT }
+    delete:
+      tags: [ im ]
+      summary: 取消 Pin
+      parameters:
+        - { $ref: '#/components/parameters/chatId' }
+        - { name: message_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: 已取消，推 chat.updated }
+
+  # ---------------- 二期迭代 4：全局搜索 / 最近访问 ----------------
+  /search:
+    get:
+      tags: [ search ]
+      summary: 全局搜索（按权限过滤，total 准确，<em> 高亮）
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, maxLength: 100 }, description: 空格分隔多个词（最多 5 个），都要出现 }
+        - { name: types, in: query, schema: { type: string }, description: '逗号分隔：user,chat,message,doc,wiki,record,task,event；默认除 wiki 外 7 类' }
+        - { name: page_size, in: query, schema: { type: integer, maximum: 50 }, description: 多类型默认 3，单类型默认 20 }
+        - { name: page_token, in: query, schema: { type: string }, description: 仅单类型时生效 }
+        - { name: chat_id, in: query, schema: { type: string } }
+        - { name: sender_id, in: query, schema: { type: string } }
+        - { name: owner_id, in: query, schema: { type: string } }
+        - { name: start_ms, in: query, schema: { type: integer, format: int64 } }
+        - { name: table_key, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 分组结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups: { type: array, items: { $ref: '#/components/schemas/SearchGroup' } }
+        '400': { description: 空关键词 }
+        '422': { description: 关键词过长、未知类型或坏游标 }
+  /recent:
+    get:
+      tags: [ search ]
+      summary: 最近访问（打开文档、表格、单条记录时自动记录）
+      parameters:
+        - { name: page_size, in: query, schema: { type: integer, default: 10, maximum: 50 } }
+      responses:
+        '200':
+          description: 最新在前，已无权限的不返回
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: { type: string, enum: [ doc, table, record ] }
+                        id: { type: string }
+                        title: { type: string }
+                        visited_at: { type: string, format: date-time }
+                        extra: { type: object, additionalProperties: true }
 
 components:
   securitySchemes:
@@ -705,20 +2234,28 @@ components:
   schemas:
     User:
       type: object
-      required: [user_id, name]
+      required: [ user_id, name ]
       properties:
         user_id: { type: string, description: 对齐飞书 open_id 的稳定 ID }
         name: { type: string }
         email: { type: string }
         avatar_file_key: { type: string }
-        role: { type: string, enum: [admin, member, bot] }
+        role: { type: string, enum: [ admin, member, bot ] }
+        department: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        status_text: { type: string, nullable: true, description: 个性签名 }
+        permissions:
+          type: array
+          items: { type: string }
+          description: 权限点并集（迭代 5 第 3 节）。只在本人视角返回：登录、刷新、GET/PATCH /users/me；通讯录里没有
 
     Chat:
       type: object
-      required: [chat_id, chat_type]
+      required: [ chat_id, chat_type ]
       properties:
         chat_id: { type: string }
-        chat_type: { type: string, enum: [p2p, group] }
+        chat_type: { type: string, enum: [ p2p, group ] }
         name: { type: string }
         member_ids: { type: array, items: { type: string } }
         last_message: { $ref: '#/components/schemas/Message' }
@@ -726,20 +2263,72 @@ components:
 
     Message:
       type: object
-      required: [message_id, chat_id, sender_id, msg_type, created_at]
+      required: [ message_id, chat_id, sender_id, msg_type, created_at ]
       properties:
         message_id: { type: string }
         chat_id: { type: string }
         sender_id: { type: string, description: user_id；bot 消息为 bot 的 user_id }
-        msg_type: { type: string, enum: [text, post, image, file, interactive_card, system] }
+        msg_type: { type: string, enum: [ text, post, image, file, interactive_card, system ] }
         content: { type: object, additionalProperties: true }
         reply_to: { type: string }
         created_at: { type: string, format: date-time }
         read_by: { type: array, items: { type: string } }
+        thread_root_id: { type: string, nullable: true, description: 迭代4：话题回复所属话题 }
+        also_send_to_chat: { type: boolean }
+        member_count: { type: integer, description: 迭代4：仅自己发的消息，除自己和机器人外的成员数 }
+        read_count: { type: integer, description: 迭代4：仅自己发的消息，准确已读人数 }
+        thread:
+          type: object
+          description: 迭代4：仅话题根消息
+          properties:
+            reply_count: { type: integer }
+            last_reply_at: { type: string, format: date-time, nullable: true }
+            participants: { type: array, items: { type: string } }
+            followed: { type: boolean }
+        reactions:
+          type: array
+          items:
+            type: object
+            properties:
+              emoji: { type: string }
+              count: { type: integer }
+              user_ids: { type: array, items: { type: string } }
+              reacted_by_me: { type: boolean }
+        forwarded_from:
+          type: object
+          properties:
+            chat_id: { type: string }
+            chat_name: { type: string }
+            sender_id: { type: string }
+            message_id: { type: string }
+        urgent:
+          type: object
+          description: 迭代4：仅发送人可见
+          properties:
+            user_ids: { type: array, items: { type: string } }
+            ack_user_ids: { type: array, items: { type: string } }
+
+    SearchGroup:
+      type: object
+      required: [ type, total, items ]
+      properties:
+        type: { type: string, enum: [ user, chat, message, doc, wiki, record, task, event ] }
+        total: { type: integer, description: 按权限过滤后的准确总数 }
+        page_token: { type: string, description: 仅单类型搜索时返回，不透明，原样回传 }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              title: { type: string, description: 带 <em> 高亮 }
+              snippet: { type: string, description: 命中附近片段，带 <em> 高亮 }
+              updated_at: { type: string }
+              extra: { type: object, additionalProperties: true }
 
     TableMeta:
       type: object
-      required: [key, name, fields]
+      required: [ key, name, fields ]
       properties:
         key: { type: string }
         name: { type: string }
@@ -759,7 +2348,7 @@ components:
 
     Record:
       type: object
-      required: [record_id, fields]
+      required: [ record_id, fields ]
       properties:
         record_id: { type: string }
         fields: { $ref: '#/components/schemas/RecordFields' }
@@ -768,12 +2357,12 @@ components:
 
     BotEvent:
       type: object
-      required: [event_id, event_type, created_at]
+      required: [ event_id, event_type, created_at ]
       properties:
         event_id: { type: string }
         event_type:
           type: string
-          enum: [message.receive, card.action, message.read, chat.member_added]
+          enum: [ message.receive, card.action, message.read, chat.member_added ]
         created_at: { type: string, format: date-time }
         message: { $ref: '#/components/schemas/Message' }
         card_action:
@@ -786,7 +2375,7 @@ components:
 
     CalendarEvent:
       type: object
-      required: [event_id, title, start_ms, end_ms, created_by]
+      required: [ event_id, title, start_ms, end_ms, created_by ]
       properties:
         event_id: { type: string }
         title: { type: string }
@@ -795,19 +2384,54 @@ components:
         attendee_ids: { type: array, items: { type: string } }
         description: { type: string }
         created_by: { type: string }
+        recurrence:
+          type: string
+          nullable: true
+          description: 试验接口：仅支持常用 RRULE 子集，calendar.recurrence 开关保持 false
+        recurring_event_id:
+          type: string
+          nullable: true
+        original_start_ms:
+          type: integer
+          format: int64
+          nullable: true
+        is_exception:
+          type: boolean
 
     TaskItem:
       type: object
-      required: [task_id, title, status, created_by, created_at]
+      required: [ task_id, title, status, created_by, created_at ]
       properties:
         task_id: { type: string }
         title: { type: string }
-        status: { type: string, enum: [pending, in_progress, done, cancelled] }
+        status: { type: string, enum: [ pending, in_progress, done, cancelled ] }
         assignee_id: { type: string }
         due_ms: { type: integer, format: int64 }
         description: { type: string }
         created_by: { type: string }
         created_at: { type: string, format: date-time }
+        parent_id:
+          type: string
+          nullable: true
+        depth:
+          type: integer
+        subtask_count:
+          type: integer
+        subtask_done_count:
+          type: integer
+        follower_ids:
+          type: array
+          items:
+            type: string
+        permissions:
+          type: object
+          additionalProperties:
+            type: boolean
+        tasklists:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
 
 security:
   - bearerAuth: []
