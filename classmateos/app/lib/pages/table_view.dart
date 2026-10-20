@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show kPrimaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -19,6 +20,7 @@ import '../widgets/common.dart';
 import 'bitable_field.dart';
 import 'field_editor.dart';
 import 'view_engine.dart';
+import 'table_clipboard.dart';
 import 'table_import_export.dart';
 import 'view_panels.dart';
 
@@ -69,6 +71,14 @@ class TableViewState extends State<TableView> {
   String? _remoteEditor;
   bool _deletedWhileEditing = false;
   TableUndo? lastUndo;
+
+  /// 区域选择（复制粘贴用）：起点格和终点格，按记录 ID + 字段名记，表格刷新后仍有效。
+  ({String rec, String field})? cellAnchor;
+  ({String rec, String field})? cellFocus;
+
+  /// 当前表格视图里能看到的记录（含分组、不含折叠）和列，每次构建表格时更新。
+  List<CosRecord> _gridRecs = const [];
+  List<CosFieldMeta> _gridFields = const [];
 
   final Map<String, double> _liveWidths = {};
   Timer? _saveTimer;
@@ -800,6 +810,143 @@ class TableViewState extends State<TableView> {
     }
   }
 
+  // ---------------- 区域复制粘贴 ----------------
+
+  /// 选区的行列范围（含两端）；起点或终点已不在当前视图里时为 null。
+  ({int r0, int r1, int c0, int c1})? get cellRange {
+    final a = cellAnchor, b = cellFocus ?? cellAnchor;
+    if (a == null || b == null) return null;
+    final ra = _gridRecs.indexWhere((r) => r.recordId == a.rec), rb = _gridRecs.indexWhere((r) => r.recordId == b.rec);
+    final ca = _gridFields.indexWhere((f) => f.fieldName == a.field), cb = _gridFields.indexWhere((f) => f.fieldName == b.field);
+    if (ra < 0 || rb < 0 || ca < 0 || cb < 0) return null;
+    return (r0: math.min(ra, rb), r1: math.max(ra, rb), c0: math.min(ca, cb), c1: math.max(ca, cb));
+  }
+
+  void _cellDown(CosRecord r, CosFieldMeta f) {
+    final c = (rec: r.recordId, field: f.fieldName);
+    setState(() {
+      if (HardwareKeyboard.instance.isShiftPressed && cellAnchor != null) {
+        cellFocus = c;
+      } else {
+        cellAnchor = c;
+        cellFocus = c;
+      }
+    });
+    focus.requestFocus();
+  }
+
+  /// 按住鼠标拖过的格子扩展选区。
+  void _cellEnter(PointerEnterEvent e, CosRecord r, CosFieldMeta f) {
+    if (cellAnchor == null || e.buttons & kPrimaryMouseButton == 0) return;
+    final c = (rec: r.recordId, field: f.fieldName);
+    if (cellFocus != c) setState(() => cellFocus = c);
+  }
+
+  /// ⌘C / ⌘V（Windows、Linux 用 Ctrl）：只在表格自己有焦点时处理，输入框里照常复制粘贴。
+  KeyEventResult onGridKey(FocusNode node, KeyEvent e) {
+    if (e is! KeyDownEvent || FocusManager.instance.primaryFocus != focus || cellRange == null) return KeyEventResult.ignored;
+    final mod = HardwareKeyboard.instance.isMetaPressed || HardwareKeyboard.instance.isControlPressed;
+    if (!mod) return KeyEventResult.ignored;
+    if (e.logicalKey == LogicalKeyboardKey.keyC) {
+      copyRange();
+      return KeyEventResult.handled;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.keyV) {
+      pasteRange();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// 选区复制成 TSV（能直接粘到 Excel、Numbers、飞书表格）。
+  Future<void> copyRange() async {
+    final g = cellRange;
+    if (g == null) return;
+    final rows = [
+      for (var i = g.r0; i <= g.r1; i++)
+        [for (var j = g.c0; j <= g.c1; j++) cellCopyText(_gridFields[j], _gridRecs[i].fields[_gridFields[j].fieldName])],
+    ];
+    await Clipboard.setData(ClipboardData(text: toTsv(rows)));
+    if (mounted) showToast(context, '已复制 ${g.r1 - g.r0 + 1} 行 × ${g.c1 - g.c0 + 1} 列');
+  }
+
+  /// 从选区左上角开始粘贴；剪贴板只有一个值、选区有多格时填满整个选区。
+  /// 不会自动新增记录，超出的行列丢弃；转换不了的格子先列出来，确认后只写其余格子。一次批量写入，可撤销。
+  Future<void> pasteRange() async {
+    final g = cellRange;
+    if (g == null) return;
+    if (!perms.canEdit) {
+      showToast(context, '你没有这张表的编辑权限', error: true);
+      return;
+    }
+    final text = (await Clipboard.getData(Clipboard.kTextPlain))?.text ?? '';
+    if (!mounted) return;
+    var data = parseTsv(text);
+    if (data.isEmpty) {
+      showToast(context, '剪贴板里没有文字', error: true);
+      return;
+    }
+    final single = data.length == 1 && data.first.length == 1;
+    final rowsN = single ? g.r1 - g.r0 + 1 : data.length;
+    final colsN = single ? g.c1 - g.c0 + 1 : data.fold<int>(0, (a, r) => math.max(a, r.length));
+    if (single) data = List.generate(rowsN, (_) => List.filled(colsN, data.first.first));
+    final updates = <String, Map<String, dynamic>>{};
+    final restore = <String, Map<String, dynamic>>{};
+    final errors = <String>[];
+    var dropped = 0;
+    for (var i = 0; i < rowsN; i++) {
+      if (g.r0 + i >= _gridRecs.length) {
+        dropped++;
+        continue;
+      }
+      final r = _gridRecs[g.r0 + i];
+      for (var j = 0; j < colsN && j < data[i].length; j++) {
+        if (g.c0 + j >= _gridFields.length) continue;
+        final f = _gridFields[g.c0 + j];
+        final v = parsePasteValue(f, data[i][j], _s.users);
+        if (!v.ok) {
+          errors.add('第 ${g.r0 + i + 1} 行：${v.error}');
+          continue;
+        }
+        (updates[r.recordId] ??= {})[f.fieldName] = v.value;
+        (restore[r.recordId] ??= {})[f.fieldName] = r.fields[f.fieldName];
+      }
+    }
+    final cells = updates.values.fold<int>(0, (a, m) => a + m.length);
+    if (cells == 0) {
+      showToast(context, errors.isEmpty ? '没有可以粘贴的格子' : errors.first, error: true);
+      return;
+    }
+    if (errors.isNotEmpty) {
+      final more = errors.length > 8 ? '\n……共 ${errors.length} 个' : '';
+      final ok = await confirmDialog(context,
+          title: '有 ${errors.length} 个格子不能粘贴',
+          content: '${errors.take(8).join('\n')}$more\n\n其余 $cells 个格子照常粘贴吗？',
+          ok: '粘贴其余格子');
+      if (!ok || !mounted) return;
+    }
+    final ids = updates.keys.toList();
+    try {
+      final r = await _batch(
+        () => api.batchUpdate(meta.key, records: [for (final id in ids) (recordId: id, fields: updates[id]!)]),
+        ids,
+        (id) => api.updateRecord(meta.key, id, updates[id]!),
+      );
+      final failedIds = {for (final f in r.failed) f.recordId};
+      lastUndo = TableUndo('粘贴', [
+        for (final id in ids)
+          if (!failedIds.contains(id)) (recordId: id, fields: restore[id]!),
+      ]);
+      if (!mounted) return;
+      final tail = dropped > 0 ? '；超出表格的 $dropped 行没有粘贴（不会自动新增记录）' : '';
+      _toastUndo('已粘贴到 ${ids.length - failedIds.length} 条记录$tail');
+      await _showFailures('粘贴', r);
+      await _reload();
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
+  }
+
   // ---------------- 界面 ----------------
 
   @override
@@ -809,11 +956,15 @@ class TableViewState extends State<TableView> {
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): undo,
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true): undo,
-        const SingleActivator(LogicalKeyboardKey.escape): () => setState(selected.clear),
+        const SingleActivator(LogicalKeyboardKey.escape): () => setState(() {
+              selected.clear();
+              cellAnchor = cellFocus = null;
+            }),
       },
       child: Focus(
         focusNode: focus,
         autofocus: true,
+        onKeyEvent: onGridKey,
         child: Container(
           color: Colors.white,
           child: Column(children: [
@@ -1247,6 +1398,9 @@ class TableViewState extends State<TableView> {
     final extent = cfg.rowExtent;
     final ids = ordered.map((r) => r.recordId).toSet();
     final allSel = ids.isNotEmpty && selected.containsAll(ids);
+    _gridRecs = [for (final x in rows) if (x is RecordRow) x.record];
+    _gridFields = fields;
+    final range = cellRange;
     return Column(children: [
       Expanded(
         child: LayoutBuilder(builder: (context, c) {
@@ -1302,7 +1456,7 @@ class TableViewState extends State<TableView> {
                               itemBuilder: (_, i) => switch (rows[i]) {
                                 GroupHeaderRow h => _groupRow(h),
                                 AddRow a => _addRow(a),
-                                RecordRow r => _recordRow(r, fields, ordered, idxW),
+                                RecordRow r => _recordRow(r, fields, ordered, idxW, range),
                               },
                             ),
                           ),
@@ -1336,6 +1490,14 @@ class TableViewState extends State<TableView> {
             ),
           ],
           const Spacer(),
+          if (range != null && (range.r1 > range.r0 || range.c1 > range.c0)) ...[
+            Text(
+              '已选 ${range.r1 - range.r0 + 1} 行 × ${range.c1 - range.c0 + 1} 列 · ⌘C 复制${perms.canEdit ? ' · ⌘V 粘贴' : ''}',
+              key: const ValueKey('cell-range-hint'),
+              style: const TextStyle(fontSize: 12, color: Fs.primary),
+            ),
+            const SizedBox(width: 12),
+          ],
           Text(
             '${fields.length} 个字段${fields.length < meta.fields.length ? '（隐藏 ${meta.fields.length - fields.length} 个）' : ''}',
             style: const TextStyle(fontSize: 12, color: Fs.text3),
@@ -1391,7 +1553,10 @@ class TableViewState extends State<TableView> {
         )
       : const SizedBox.shrink();
 
-  Widget _recordRow(RecordRow row, List<CosFieldMeta> fields, List<CosRecord> ordered, double idxW) {
+  Widget _recordRow(RecordRow row, List<CosFieldMeta> fields, List<CosRecord> ordered, double idxW,
+      ({int r0, int r1, int c0, int c1})? range) {
+    final ri = _gridRecs.indexWhere((x) => x.recordId == row.record.recordId);
+    final inRows = range != null && ri >= range.r0 && ri <= range.r1;
     final r = row.record;
     final sel = selected.contains(r.recordId);
     final flashing = flash.containsKey(r.recordId);
@@ -1402,7 +1567,8 @@ class TableViewState extends State<TableView> {
       child: HoverReveal(
         builder: (context, hover) => GestureDetector(
           behavior: HitTestBehavior.opaque,
-          onTap: () => _open(r),
+          // Shift 点格子是扩展复制选区，不打开记录
+          onTap: () => HardwareKeyboard.instance.isShiftPressed && cellAnchor != null ? null : _open(r),
           child: MouseRegion(
             cursor: SystemMouseCursors.click,
             child: AnimatedContainer(
@@ -1428,7 +1594,8 @@ class TableViewState extends State<TableView> {
                         : Text('${row.index + 1}', style: const TextStyle(fontSize: 12, color: Fs.text3)),
                   ),
                 ),
-                for (final f in fields) _cellBox(_w(f), FieldValueView(field: f, value: r.fields[f.fieldName])),
+                for (var j = 0; j < fields.length; j++)
+                  _gridCell(r, fields[j], inRows && j >= range.c0 && j <= range.c1, range != null && range.r0 == range.r1 && range.c0 == range.c1),
               ]),
             ),
           ),
@@ -1436,6 +1603,26 @@ class TableViewState extends State<TableView> {
       ),
     );
   }
+
+  /// 普通格子：按下记为选区起点，按住拖过扩展选区；选中的格子带浅蓝底（只选一格时画蓝框）。
+  Widget _gridCell(CosRecord r, CosFieldMeta f, bool inRange, bool singleCell) => Listener(
+        key: ValueKey('cell-${r.recordId}-${f.fieldName}'),
+        onPointerDown: (e) {
+          if (e.buttons & kPrimaryMouseButton != 0) _cellDown(r, f);
+        },
+        child: MouseRegion(
+          onEnter: (e) => _cellEnter(e, r, f),
+          child: Container(
+            foregroundDecoration: !inRange
+                ? null
+                : BoxDecoration(
+                    color: singleCell ? null : const Color(0x1F3370FF),
+                    border: singleCell ? Border.all(color: Fs.primary, width: 1.5) : null,
+                  ),
+            child: _cellBox(_w(f), FieldValueView(field: f, value: r.fields[f.fieldName])),
+          ),
+        ),
+      );
 
   Widget _emptyRows() {
     final filtered = keyword.isNotEmpty || cfg.conditions.isNotEmpty;

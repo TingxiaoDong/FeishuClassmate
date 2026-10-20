@@ -367,7 +367,7 @@ class _BitablePageState extends State<BitablePage> {
                               child: Row(
                                 children: [
                                   Icon(
-                                    Icons.table_chart_outlined,
+                                    tableIcon(t.icon),
                                     size: 17,
                                     color: wide && t.key == selected
                                         ? Fs.primary

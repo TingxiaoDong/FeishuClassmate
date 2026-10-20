@@ -16,6 +16,29 @@ import 'table_import_export.dart';
 
 const kTableVisibility = {'all': '组织内所有人可查看', 'members': '仅协作者可访问'};
 
+/// 表图标（后端 `icon` 存 Material 图标名，默认 `table`）。
+const kTableIcons = <String, IconData>{
+  'table': Icons.table_chart_outlined,
+  'assignment': Icons.assignment_outlined,
+  'checklist': Icons.checklist_rounded,
+  'event_available': Icons.event_available_outlined,
+  'science': Icons.science_outlined,
+  'devices': Icons.devices_other_outlined,
+  'build': Icons.build_outlined,
+  'groups': Icons.groups_outlined,
+  'book': Icons.menu_book_outlined,
+  'timeline': Icons.timeline_rounded,
+  'report': Icons.insert_chart_outlined,
+  'model_training': Icons.model_training_rounded,
+  'inventory': Icons.inventory_2_outlined,
+  'folder': Icons.folder_outlined,
+  'star': Icons.star_outline_rounded,
+  'flag': Icons.flag_outlined,
+};
+
+/// 未知或为空时显示默认表格图标。
+IconData tableIcon(String? k) => kTableIcons[k] ?? Icons.table_chart_outlined;
+
 /// 表的操作；返回值告诉侧边栏怎么刷新。
 enum TableMenuResult { changed, deleted, copied }
 
@@ -27,7 +50,7 @@ List<PopupMenuEntry<String>> tableMenuItems(AppState s, CosTableMeta t) {
     if (s.feature('table.permissions'))
       PopupMenuItem(value: 'perm', child: _mi(Icons.lock_outline_rounded, p.canManage ? '权限设置' : '查看协作者')),
     if (manage && p.canManage) ...[
-      PopupMenuItem(value: 'rename', child: _mi(Icons.edit_outlined, '重命名与描述')),
+      PopupMenuItem(value: 'rename', child: _mi(Icons.edit_outlined, '名称、图标与描述')),
     ],
     if (manage) PopupMenuItem(value: 'copy', child: _mi(Icons.copy_all_rounded, '创建副本')),
     if (s.feature('table.import') && p.canEdit) PopupMenuItem(value: 'import', child: _mi(Icons.upload_file_rounded, '导入数据')),
@@ -168,6 +191,7 @@ class _RenameTable extends StatefulWidget {
 class _RenameTableState extends State<_RenameTable> {
   late final name = TextEditingController(text: widget.t.name);
   late final desc = TextEditingController(text: widget.t.description ?? '');
+  late String icon = kTableIcons.containsKey(widget.t.icon) ? widget.t.icon! : 'table';
   String? nameError;
   bool saving = false;
 
@@ -186,7 +210,11 @@ class _RenameTableState extends State<_RenameTable> {
     }
     setState(() => saving = true);
     try {
-      final r = await AppScope.read(context).api.updateTable(widget.t.key, name: n, description: desc.text.trim());
+      // 图标没动就不发，避免把后端的未知图标名改成默认值
+      final iconChanged = icon != (kTableIcons.containsKey(widget.t.icon) ? widget.t.icon : 'table');
+      final r = await AppScope.read(context)
+          .api
+          .updateTable(widget.t.key, name: n, description: desc.text.trim(), icon: iconChanged ? icon : null);
       if (mounted) Navigator.pop(context, r);
     } catch (e) {
       if (!mounted) return;
@@ -203,10 +231,10 @@ class _RenameTableState extends State<_RenameTable> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('重命名与描述'),
+        title: const Text('名称、图标与描述'),
         content: SizedBox(
           width: 420,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
             TextField(
               controller: name,
               autofocus: true,
@@ -216,6 +244,20 @@ class _RenameTableState extends State<_RenameTable> {
             ),
             const SizedBox(height: 4),
             TextField(controller: desc, maxLines: 3, maxLength: 200, decoration: const InputDecoration(labelText: '描述（选填）')),
+            const SizedBox(height: 4),
+            const Text('图标', style: TextStyle(fontSize: 13, color: Fs.text2)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 6, runSpacing: 6, children: [
+              for (final e in kTableIcons.entries)
+                HoverBox(
+                  key: ValueKey('table-icon-${e.key}'),
+                  selected: icon == e.key,
+                  selectedColor: Fs.primaryLight,
+                  padding: const EdgeInsets.all(6),
+                  onTap: () => setState(() => icon = e.key),
+                  child: Icon(e.value, size: 22, color: icon == e.key ? Fs.primary : Fs.text2),
+                ),
+            ]),
           ]),
         ),
         actions: [
