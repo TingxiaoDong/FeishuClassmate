@@ -16,6 +16,7 @@ import {
   type FieldError,
 } from './context.js';
 import { nowIso, p2pKeyOf, publicMessage, type ChatRecord, type MessageRecord } from './repo.js';
+import { extractUrls, type LinkPreviewService } from './link-preview.js';
 
 const USER_MSG_TYPES = new Set(['text', 'post', 'image', 'file']);
 const BOT_MSG_TYPES = new Set(['text', 'post', 'image', 'file', 'interactive_card']);
@@ -23,8 +24,40 @@ const MAX_TEXT = 5000;
 const RECALL_WINDOW_MS = 2 * 60_000;
 export const DRIVE_CHAT_NAME = '我的云盘';
 
-export function registerImRoutes(ctx: Ctx): void {
+export interface ImDeps {
+  /** 迭代 4：会话对象补充字段（thread_mode、thread_unread_count、pinned_message_ids）。 */
+  chatExtras?: (chats: ChatRecord[], userId: string) => Promise<Map<string, Record<string, unknown>>>;
+  /** 迭代 4：外部链接预览；不传表示关闭。 */
+  linkPreview?: LinkPreviewService;
+  /** 内部链接的前缀（如 https://cos.example.com），这些链接不抓预览。 */
+  publicBaseUrl?: string;
+}
+
+export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
   const { app, repo } = ctx;
+
+  /** 外部链接预览：发送后异步抓取，写回 content.link_previews 并推 message.updated。 */
+  const scheduleLinkPreview = (msg: MessageRecord, userId: string) => {
+    const lp = deps.linkPreview;
+    if (!lp || (msg.msg_type !== 'text' && msg.msg_type !== 'post')) return;
+    const text = [msg.content.text, msg.content.markdown].filter((v) => typeof v === 'string').join('\n');
+    const urls = extractUrls(text, 6)
+      .filter((u) => !u.includes('/app/') || !deps.publicBaseUrl || !u.startsWith(deps.publicBaseUrl))
+      .slice(0, 3);
+    if (!urls.length) return;
+    void (async () => {
+      const previews = await lp.previews(userId, urls);
+      if (!previews.length) return;
+      const cur = await repo.getMessage(msg.message_id);
+      if (!cur || cur.recalled) return;
+      const updated = await repo.updateMessage(cur.message_id, { content: { ...cur.content, link_previews: previews }, updated_at: nowIso() });
+      const chat = await repo.getChat(cur.chat_id);
+      if (updated && chat) await ctx.publishMessage('message.updated', updated, chat.member_ids);
+    })().catch(() => undefined);
+  };
+
+  const decorate = async (msgs: MessageRecord[], userId: string) =>
+    ctx.decorateMessages ? ctx.decorateMessages(msgs, userId) : msgs.map((m) => publicMessage(m) as unknown as Record<string, unknown>);
 
   /**
    * 校验并规范化消息内容。返回错误列表（空 = 通过）。
@@ -53,12 +86,19 @@ export function registerImRoutes(ctx: Ctx): void {
             errors.push({ field: 'content.mentions', message: '必须是 [{ user_id, name }] 列表' });
           }
         }
+        if (sender !== 'bot') delete c.link_previews;
         break;
       }
       case 'post': {
         const hasText = typeof c.text === 'string' && c.text.trim();
         const hasTitle = typeof c.title === 'string' && c.title.trim();
-        if (!hasText && !hasTitle) errors.push({ field: 'content.text', message: '标题和正文不能都为空' });
+        // 迭代 4 R-IM-07：Markdown 富文本 content.markdown
+        const hasMd = typeof c.markdown === 'string' && c.markdown.trim();
+        if (c.markdown !== undefined && typeof c.markdown !== 'string') errors.push({ field: 'content.markdown', message: '必须是文本' });
+        else if (typeof c.markdown === 'string' && c.markdown.length > 20000) errors.push({ field: 'content.markdown', message: '不能超过 20000 字' });
+        else if (!hasText && !hasTitle && !hasMd) errors.push({ field: 'content.text', message: '标题和正文不能都为空' });
+        // 链接预览只能由后端生成
+        if (sender !== 'bot') delete c.link_previews;
         break;
       }
       case 'image':
@@ -97,9 +137,18 @@ export function registerImRoutes(ctx: Ctx): void {
     return { errors, content: c };
   };
 
+  const withExtras = async (views: Array<Parameters<Ctx['chatJson']>[0]>, userId: string) => {
+    const extras = deps.chatExtras ? await deps.chatExtras(views.map((v) => v.chat), userId) : new Map();
+    return Promise.all(views.map(async (v) => {
+      const j: Record<string, unknown> = { ...ctx.chatJson(v), ...(extras.get(v.chat.chat_id) ?? {}) };
+      if (v.last_message) j.last_message = (await decorate([v.last_message], userId))[0];
+      return j;
+    }));
+  };
+
   const viewJson = async (chatId: string, userId: string) => {
     const v = await repo.getChatView(chatId, userId);
-    return v ? ctx.chatJson(v) : undefined;
+    return v ? (await withExtras([v], userId))[0] : undefined;
   };
 
   const names = async (ids: string[]) => (await Promise.all(ids.map((id) => ctx.userName(id)))).join('、');
@@ -113,7 +162,7 @@ export function registerImRoutes(ctx: Ctx): void {
     const limit = pageSize(q.page_size, 100, 200);
     const offset = pageOffset(q.page_token);
     const page = await repo.listChatViews(me.sub, { limit, offset });
-    return pageResult(page.items.map((v) => ctx.chatJson(v)), page.total, offset);
+    return pageResult(await withExtras(page.items, me.sub), page.total, offset);
   });
 
   app.post('/api/v1/chats', async (req, reply) => {
@@ -205,12 +254,18 @@ export function registerImRoutes(ctx: Ctx): void {
     if (body.description !== undefined && body.description !== null && typeof body.description !== 'string') {
       errors.push({ field: 'description', message: '必须是文本' });
     }
+    if (body.thread_mode !== undefined && typeof body.thread_mode !== 'boolean') errors.push({ field: 'thread_mode', message: '必须是 true / false' });
     if (errors.length) return invalid(reply, errors);
     const newName = typeof body.name === 'string' ? body.name.trim() : undefined;
+    const threadMode = body.thread_mode as boolean | undefined;
     const updated = await repo.updateChat(chat_id, {
       name: newName,
       description: body.description === undefined ? undefined : (body.description as string | null),
+      thread_mode: threadMode,
     });
+    if (threadMode !== undefined && threadMode !== !!chat.thread_mode) {
+      await ctx.postSystemMessage(updated!, `${me.name} ${threadMode ? '开启' : '关闭'}了话题模式`);
+    }
     if (newName !== undefined && newName !== chat.name) {
       await ctx.postSystemMessage(updated!, `${me.name} 将群名修改为「${newName}」`);
     } else if (body.description !== undefined && body.description !== chat.description) {
@@ -309,7 +364,7 @@ export function registerImRoutes(ctx: Ctx): void {
       afterId: q.after_message_id || undefined,
     });
     if (!res) return fail(reply, 404, '游标消息不存在', { code: 'CURSOR_NOT_FOUND' });
-    return { items: res.items.map(publicMessage), has_more: res.has_more };
+    return { items: await decorate(res.items, me.sub), has_more: res.has_more };
   });
 
   app.post('/api/v1/chats/:chat_id/messages', async (req, reply) => {
@@ -333,12 +388,41 @@ export function registerImRoutes(ctx: Ctx): void {
       const target = typeof replyTo === 'string' ? await repo.getMessage(replyTo) : undefined;
       if (!target || target.chat_id !== chat_id) errors.push({ field: 'reply_to_message_id', message: '引用的消息不存在' });
     }
+    // 迭代 4 R-IM-02：话题回复
+    const rootId = body.thread_root_id;
+    let root: MessageRecord | undefined;
+    if (rootId != null) {
+      root = typeof rootId === 'string' ? await repo.getMessage(rootId) : undefined;
+      if (!root || root.chat_id !== chat_id) errors.push({ field: 'thread_root_id', message: '话题不存在' });
+      else if (root.thread_root_id) errors.push({ field: 'thread_root_id', message: '不能在话题回复里再开话题' });
+      else if (root.recalled || root.msg_type === 'system') errors.push({ field: 'thread_root_id', message: '这条消息不能回复话题' });
+    }
+    if (body.also_send_to_chat !== undefined && typeof body.also_send_to_chat !== 'boolean') {
+      errors.push({ field: 'also_send_to_chat', message: '必须是 true / false' });
+    } else if (body.also_send_to_chat === true && rootId == null) {
+      errors.push({ field: 'also_send_to_chat', message: '只有话题回复可以同时发送到群' });
+    }
     if (errors.length) return invalid(reply, errors, '消息内容不合法');
     const res = await ctx.postMessage(chat, me.sub, body.msg_type as string, checked.content!, {
       replyTo: (replyTo as string | null | undefined) ?? null,
       clientMsgId: (clientMsgId as string | null | undefined) ?? null,
+      threadRootId: root?.message_id ?? null,
+      alsoSendToChat: root ? body.also_send_to_chat === true : false,
     });
-    return reply.code(res.duplicate ? 200 : 201).send(publicMessage(res.message));
+    if (!res.duplicate) {
+      if (root) {
+        const at = nowIso();
+        // 发起人和回复人自动关注话题；回复人自己读到这条
+        for (const uid of new Set([root.sender_id, me.sub])) {
+          if (uid === BOT_ID || uid === 'system') continue;
+          await repo.relPut({ kind: 'tfollow', k1: root.message_id, k2: uid, k3: '', data: { chat_id }, at });
+        }
+        await repo.relPut({ kind: 'tread', k1: me.sub, k2: root.message_id, k3: '', data: { seq: res.message.seq, chat_id }, at }, { upsert: true });
+        await ctx.publishMessage('message.updated', root, chat.member_ids);
+      }
+      scheduleLinkPreview(res.message, me.sub);
+    }
+    return reply.code(res.duplicate ? 200 : 201).send((await decorate([res.message], me.sub))[0]);
   });
 
   app.post('/api/v1/chats/:chat_id/read', async (req, reply) => {
@@ -353,7 +437,13 @@ export function registerImRoutes(ctx: Ctx): void {
     const res = await repo.markRead(chat_id, me.sub, (message_id as string | null | undefined) ?? undefined);
     if (!res) return fail(reply, 404, '消息不存在');
     if (res.changed) {
-      ctx.publish('message.read', { read: { chat_id, user_id: me.sub, message_id: res.message_id } }, [me.sub]);
+      // 迭代 4 R-IM-01：推给会话全体成员，发送人据此刷新已读数（read 字段保留给一期客户端）
+      const chat = await repo.getChat(chat_id);
+      ctx.publish(
+        'message.read',
+        { read: { chat_id, user_id: me.sub, message_id: res.message_id }, chat_id, user_id: me.sub, last_read_message_id: res.message_id },
+        chat?.member_ids ?? [me.sub],
+      );
     }
     return reply.code(204).send();
   });
@@ -372,7 +462,7 @@ export function registerImRoutes(ctx: Ctx): void {
 
   const broadcastUpdated = async (msg: MessageRecord) => {
     const chat = await repo.getChat(msg.chat_id);
-    ctx.publish('message.updated', { message: publicMessage(msg) }, chat?.member_ids ?? []);
+    await ctx.publishMessage('message.updated', msg, chat?.member_ids ?? []);
   };
 
   app.post('/api/v1/messages/:message_id/recall', async (req, reply) => {
@@ -385,10 +475,10 @@ export function registerImRoutes(ctx: Ctx): void {
     if (me.role !== 'admin' && Date.now() - Date.parse(msg.created_at) > RECALL_WINDOW_MS) {
       return fail(reply, 409, '超过 2 分钟的消息不能撤回');
     }
-    if (msg.recalled) return publicMessage(msg);
+    if (msg.recalled) return (await decorate([msg], me.sub))[0];
     const updated = (await repo.updateMessage(message_id, { content: {}, recalled: true, updated_at: nowIso() }))!;
     await broadcastUpdated(updated);
-    return publicMessage(updated);
+    return (await decorate([updated], me.sub))[0];
   });
 
   app.patch('/api/v1/messages/:message_id', async (req, reply) => {
@@ -406,7 +496,7 @@ export function registerImRoutes(ctx: Ctx): void {
     }
     const updated = (await repo.updateMessage(message_id, { content: { ...msg.content, text }, updated_at: nowIso() }))!;
     await broadcastUpdated(updated);
-    return publicMessage(updated);
+    return (await decorate([updated], me.sub))[0];
   });
 
   app.get('/api/v1/messages/search', async (req, reply) => {
@@ -447,6 +537,14 @@ export function registerImRoutes(ctx: Ctx): void {
     if (msg.content.expired === true) return fail(reply, 409, '这张卡片已过期', { code: 'CARD_EXPIRED' });
     if (msg.content.answer != null) {
       return fail(reply, 409, '这张卡片已经回答过了', { code: 'CARD_ANSWERED', answer: msg.content.answer });
+    }
+    // 机器人的确认卡片只能由发起操作的同学本人回答（群里其他人点无效）
+    const answerable = msg.content.answerable_by;
+    if (Array.isArray(answerable) && !answerable.includes(me.sub)) {
+      return fail(reply, 403, '这张卡片只能由发起操作的同学确认', { code: 'CARD_NOT_FOR_YOU' });
+    }
+    if (Array.isArray(msg.content.options) && msg.content.options.length && !(msg.content.options as unknown[]).includes(action)) {
+      if (msg.content.kind === 'confirm') return fail(reply, 422, '没有这个选项', { code: 'CARD_ANSWER_UNCLEAR' });
     }
     const now = nowIso();
     const answer = { user_id: me.sub, action, answered_at: now };
