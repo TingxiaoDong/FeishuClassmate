@@ -142,7 +142,7 @@ export function registerImportExportRoutes(ctx: Ctx, svc: TableService, tzOffset
     const headers = headersOf(up.sheet);
     const missing = mapping.filter(([col]) => !headers.includes(col));
     if (missing.length) return invalid(reply, [{ field: 'mapping', message: `文件里没有这些列：${missing.map(([c]) => c).join('、')}` }]);
-    const primary = res.schema.primary_field;
+    const primary = res.schema.primary_field ?? '';
     if (mode === 'upsert' && !mapping.some(([, f]) => f === primary)) return invalid(reply, [{ field: 'mapping', message: '按主字段更新时，必须导入主字段这一列' }]);
 
     const headersFwd = authHeaders(req);

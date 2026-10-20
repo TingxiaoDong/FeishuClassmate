@@ -239,7 +239,7 @@ export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { r
     await repo.saveEntity(e, 0);
     if (opts.notifications) {
       const name = await ctx.userName(r.me.sub);
-      const title = String(r.rec.fields[r.res.schema.primary_field] ?? '').slice(0, 40) || '记录';
+      const title = String(r.rec.fields[r.res.schema.primary_field ?? ''] ?? '').slice(0, 40) || '记录';
       for (const uid of new Set(content.mentions.map((m) => m.user_id))) {
         if (uid === r.me.sub) continue;
         const u = await repo.getUser(uid);
