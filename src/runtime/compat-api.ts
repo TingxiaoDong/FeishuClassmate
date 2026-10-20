@@ -13,7 +13,7 @@
  * OpenClawPluginApi with { registerTool, pluginConfig, logger, setConfig }.
  */
 
-import type { AgentRuntime, ToolCallContext } from './types.js';
+import type { AgentRuntime, ToolCallContext, ToolPolicy } from './types.js';
 import type { ClassmateConfig } from '../config.js';
 
 export interface LoggerLike {
@@ -55,6 +55,8 @@ export function createCompatApi(opts: {
   runtime: AgentRuntime;
   config: ClassmateConfig;
   logger?: LoggerLike;
+  /** 按工具名注册时带上的风险策略（物理工具必须有，见 policy.ts legacyPolicies）。 */
+  policies?: Record<string, ToolPolicy>;
 }): CompatApi {
   const { runtime, config } = opts;
   const logger = opts.logger ?? consoleLogger;
@@ -73,7 +75,7 @@ export function createCompatApi(opts: {
           const out = await def.execute(ctx.toolCallId, input);
           return out.details;
         },
-        { description: def.description ?? def.label ?? def.name },
+        { description: def.description ?? def.label ?? def.name, policy: opts.policies?.[def.name] },
       );
     },
 

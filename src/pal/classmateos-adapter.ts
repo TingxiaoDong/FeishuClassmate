@@ -8,6 +8,7 @@
 
 import type { BotEventSource } from './bot-events.js';
 import type {
+  PalChatInfo,
   AuthProvider,
   CalendarService,
   DocService,
@@ -45,11 +46,13 @@ class Http {
     path: string,
     body?: unknown,
     auth: 'user' | 'bot' | 'none' = 'user',
+    extraHeaders: Record<string, string> = {},
   ): Promise<PalResult<T>> {
     const base = this.opts.baseUrl.replace(/\/+$/, '');
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (auth === 'user' && this.opts.accessToken) headers.Authorization = `Bearer ${this.opts.accessToken}`;
     if (auth === 'bot' && this.opts.botToken) headers['X-Bot-Token'] = this.opts.botToken;
+    Object.assign(headers, extraHeaders);
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.opts.timeoutMs ?? 30_000);
@@ -142,6 +145,30 @@ class CosIm implements ImService {
       msgType: 'text',
       content: { text },
     });
+  }
+
+  async updateText(messageId: string, text: string): Promise<PalResult<void>> {
+    const r = await this.http.call('PATCH', `/bot/messages/${encodeURIComponent(messageId)}`, { content: { text } }, 'bot');
+    return r.ok ? { ok: true, value: undefined } : r;
+  }
+
+  async expireCard(cardId: string): Promise<PalResult<void>> {
+    const r = await this.http.call('POST', `/bot/cards/${encodeURIComponent(cardId)}/expire`, {}, 'bot');
+    return r.ok ? { ok: true, value: undefined } : r;
+  }
+
+  async answerCardByText(cardId: string, messageId: string): Promise<PalResult<{ action: string }>> {
+    return this.http.call<{ action: string }>('POST', `/bot/cards/${encodeURIComponent(cardId)}/answer`, { message_id: messageId }, 'bot');
+  }
+
+  async getChat(chatId: string, asUserId: string): Promise<PalResult<PalChatInfo>> {
+    const r = await this.http.call<Record<string, unknown>>('GET', `/chats/${encodeURIComponent(chatId)}`, undefined, 'bot', {
+      'X-On-Behalf-Of': asUserId,
+    });
+    if (!r.ok) return r;
+    const raw = (r.value.chat as Record<string, unknown> | undefined) ?? r.value;
+    const members = Array.isArray(raw.member_ids) ? raw.member_ids.map(String) : [];
+    return { ok: true, value: { chatType: raw.chat_type === 'group' ? 'group' : 'p2p', memberIds: members } };
   }
 
   async askUser(

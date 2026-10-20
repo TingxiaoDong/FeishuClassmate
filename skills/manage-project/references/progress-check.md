@@ -8,7 +8,7 @@ DDL当天主动提醒：先线下（temi）找人当面提醒，找不到再飞�
 
 ## 执行流程（按顺序）
 1. 调用`feishu_classmate_data_layout()`读取`tables.gantt`、`bitable.appToken`等必要配置
-2. 使用`feishu_bitable_app_table_record`读取甘特表，筛选条件：
+2. 使用`cos_table`读取甘特表，筛选条件：
    - `due_date`是今天（按Asia/Shanghai日期）
    - `status`不为已完成
 3. 将命中任务按负责人聚合：

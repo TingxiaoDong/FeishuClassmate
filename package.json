@@ -32,7 +32,8 @@
     "format": "prettier --write .",
     "classmate": "tsx src/runtime/cli-main.ts",
     "classmate:scheduler": "tsx src/runtime/cli-main.ts scheduler",
-    "classmateos": "tsx classmateos/server/main.ts"
+    "classmateos": "tsx classmateos/server/main.ts",
+    "eval": "tsx scripts/run-evals.ts"
   },
   "dependencies": {
     "@fastify/websocket": "^11.3.4",

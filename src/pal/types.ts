@@ -79,6 +79,25 @@ export interface ImService {
     options?: string[];
     timeoutMs?: number;
   }): Promise<PalResult<{ answer: string; timedOut: boolean }>>;
+
+  // ---- 可选能力（ClassmateOS 实现；飞书适配器没有时网关自动降级）----
+
+  /** 编辑机器人自己发的文本消息（进度消息）。 */
+  updateText?(messageId: string, text: string): Promise<PalResult<void>>;
+  /** 卡片不再等待回答时标记过期。 */
+  expireCard?(cardId: string): Promise<PalResult<void>>;
+  /** 同学用文字回复「确认 / 取消」：凭这条消息替卡片记下答案（服务端核验）。 */
+  answerCardByText?(cardId: string, messageId: string): Promise<PalResult<{ action: string }>>;
+  /**
+   * 查会话类型和成员（代码审查 A1：网关只回复单聊和群里 @ 机器人的消息）。
+   * 以发消息的同学身份读取（同学一定是成员）；读不到时网关不回复。
+   */
+  getChat?(chatId: string, asUserId: string): Promise<PalResult<PalChatInfo>>;
+}
+
+export interface PalChatInfo {
+  chatType: 'p2p' | 'group';
+  memberIds: string[];
 }
 
 // ---------------------------------------------------------------------------

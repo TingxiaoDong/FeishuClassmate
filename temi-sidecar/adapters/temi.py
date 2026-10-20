@@ -66,9 +66,19 @@ TEMI_LOCATION_NAMES: set[str] = {
     "Bed", "Charging Station", "Workstation 1", "Workstation 2", "Workstation 3",
 }
 
+# 只给内置默认地点补英文别名；其他地点的别名由平台地点表负责，sidecar 原样透传。
+_DEFAULT_ALIASES = {
+    "entrance": "入口",
+    "home base": "充电桩",
+    "homebase": "充电桩",
+    "dock": "充电桩",
+}
+
+
 def resolve_location(name: str) -> str:
-    """Return the location name as-is. Temi expects the exact name saved on the robot."""
-    return name
+    """Temi expects the exact name saved on the robot; only built-in English aliases are mapped."""
+    key = name.strip().lower()
+    return _DEFAULT_ALIASES.get(key, name)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +149,7 @@ class TemiWebSocketClient:
         woz_activity: str = "com.cdi.temiwoz.MainActivity",
         prelaunch_wait_s: float = 2.0,
         on_asr_completed: OnAsrCompleted | None = None,
+        on_event: OnAsrCompleted | None = None,
     ) -> None:
         self._ip = ip
         self._port = port
@@ -155,6 +166,8 @@ class TemiWebSocketClient:
         # Some WOZ callbacks do not echo id; keep a command queue fallback.
         self._pending_by_command: dict[str, list[tuple[str, asyncio.Future[dict[str, Any]]]]] = {}
         self._on_asr_completed: OnAsrCompleted | None = on_asr_completed
+        # 所有带 event 字段的回调（到达、检测到人、电量等）都转给 sidecar 的事件推送（AGENT_PLAN M4）
+        self._on_event: OnAsrCompleted | None = on_event
 
     # ------------------------------------------------------------------
     # Connection management
@@ -258,6 +271,11 @@ class TemiWebSocketClient:
                 logger.debug("[Temi] Received: %s", data)
 
                 event_type: str = data.get("event", "")
+                if event_type and self._on_event is not None:
+                    try:
+                        await self._on_event(dict(data))
+                    except Exception as exc:
+                        logger.warning("[Temi] on_event handler failed: %s", exc)
                 msg_id = data.get("id")
                 if msg_id is not None:
                     self._resolve_by_id(str(msg_id), data)
@@ -359,7 +377,7 @@ class TemiWebSocketClient:
             # Temi often completes without sending an explicit response event.
             self._remove_pending(request_id)
             if cmd_type == "goto":
-                return {"status": "ok", "event": "NavigationCompleted"}
+                return {"status": "unconfirmed", "message": f"No arrival event within {timeout}s"}
             if cmd_type == "speak":
                 return {"status": "ok", "event": "TTSCompleted"}
             if cmd_type in {"stop", "stopMovement"}:

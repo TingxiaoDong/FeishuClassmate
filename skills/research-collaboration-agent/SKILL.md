@@ -6,6 +6,18 @@ description: |
   **以 Temi sidecar 的 POST /photo 场景快照为准**，不用飞书用户在线/日历状态作空闲依据；长期记忆迭代。
   **触发**: 「预研课题」「科研脑暴」「读知识库项目再讨论」「拆研究计划」「甘特/时间线」「谁在现场方便聊」等。
 ---
+## ClassmateOS 新栈执行约定（M1）
+
+本节覆盖下文遗留的飞书平台调用说明；旧业务工具和 Temi 工具名称暂时保留。
+- 平台数据仅用 cos_table、cos_doc、cos_calendar、cos_task、cos_im、cos_drive、cos_contact、cos_notify、cos_search；不调用旧平台插件。
+- 先 cos_table(action=list_tables)，再 get_table 获取 table_key 和真实字段；旧 data_layout 中的飞书 app_token/table_id 不能当 ClassmateOS 标识使用。
+- 记录动作映射：list→list_records，create→create_records，update→update_records；参数用 table_key；新增 records=[{字段名:值}]，更新 records=[{record_id,fields:{字段名:值}}]。字段用 get_table/add_field/update_field；视图用 list_views/create_view。
+- 文档用 cos_doc(action=list/get/create/update/append)，搜索用 cos_search(query=关键词)。用户上传的普通文件不等于云文档，不能直接把文件 ID 传给 cos_doc。
+- 知识库目录移动、Wiki 和未实现视图功能暂不可用；可以创建独立云文档，但必须如实告知未归档到目标目录。
+- 收集信息和确认先用普通对话等待用户回复；M1 尚无可信确认卡片，删除默认被服务端禁用，不得绕过。
+- 调用以当前消息发送人权限执行；遇到无权访问应停止，不借用其他同学身份。
+
+
 
 # 科研协作 Agent Skill
 
@@ -18,7 +30,7 @@ feishu_classmate_data_layout()
   → { app_token, tables: { projects, gantt, research, ... }, docs: { ... } }
 ```
 
-所有 Bitable 写入使用 **`@larksuite/openclaw-lark` 原生** `feishu_bitable_app_table_record` / `feishu_bitable_app_table_field` / `feishu_bitable_app_table_view`（及同族 API），**禁止**在本 skill 内手写 Open Platform HTTP；若需理解 REST 语义，仅作背景阅读，执行时一律走 Lark 工具。
+所有 Bitable 写入使用 **`@larksuite/openclaw-lark` 原生** `cos_table` / `cos_table` / `cos_table`（及同族 API），**禁止**在本 skill 内手写 Open Platform HTTP；若需理解 REST 语义，仅作背景阅读，执行时一律走 Lark 工具。
 
 论文检索策略与学术源优先级见同仓库 **[academic-paper-search](../academic-paper-search/SKILL.md)**；本 skill 在「论文启发」场景下应加载该 skill 的 `references/`，并遵守其中 **按同学 `open_id` 加载/回写 `memory/paper-preferences/<open_id>.md`** 的闭环（见 `references/person-preferences-and-memory.md`）。
 

@@ -43,6 +43,8 @@ export interface ChatCompletionRequest {
   /** MetaClaw turn annotation: 'user' for user-initiated turns, 'tool' after tool results. */
   turnType: 'user' | 'tool';
   temperature?: number;
+  /** 会话被中断时取消正在进行的请求。 */
+  signal?: AbortSignal;
 }
 
 interface RawToolCall {
@@ -122,7 +124,7 @@ export class MetaClawLlmClient {
       method: 'POST',
       headers: this.headers(req.sessionId, req.turnType),
       body: JSON.stringify(body),
-    });
+    }, req.signal);
 
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -169,13 +171,17 @@ export class MetaClawLlmClient {
     return h;
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  private async fetchWithTimeout(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.timeoutMs);
+    const onAbort = () => ac.abort();
+    if (signal?.aborted) ac.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       return await fetch(url, { ...init, signal: ac.signal });
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 }

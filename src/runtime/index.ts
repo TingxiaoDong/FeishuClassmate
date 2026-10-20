@@ -13,7 +13,7 @@ export { ClassmateRuntime } from './agent-runtime.js';
 export { MetaClawLlmClient } from './llm-client.js';
 export { registerZodTool, zodToJsonSchema } from './zod-tool.js';
 export { loadConfig, findConfigFile, parseConfigFile } from './config-loader.js';
-export { loadSkills, selectSkills, buildSkillsPrompt } from './skills-loader.js';
+export { loadSkills, selectSkills, buildSkillsPrompt, buildSkillsIndex, searchTerms } from './skills-loader.js';
 export type { SkillDoc } from './skills-loader.js';
 export type {
   AgentRuntime,

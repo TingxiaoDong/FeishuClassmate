@@ -4,7 +4,7 @@ Agent **不**应只做「用户说什么做什么」，而要能主动提出**�
 
 ## 0. 头脑风暴前置：云文档知识库中的「各同学项目」
 
-在输出预研方向或组织脑暴**之前**，必须先基于 **`feishu_classmate_data_layout()`** 返回的 `docs`（如 `publicProjects`、`lab_knowledge_base`、导览/知识库目录等，以你环境实际字段为准），用 **`feishu_search_doc_wiki`**、**`feishu_fetch_doc`**、**`feishu_drive_file`** 等 Lark 工具：
+在输出预研方向或组织脑暴**之前**，必须先基于 **`feishu_classmate_data_layout()`** 返回的 `docs`（如 `publicProjects`、`lab_knowledge_base`、导览/知识库目录等，以你环境实际字段为准），用 **`cos_search`**、**`cos_doc（action=get）`**、**`cos_drive`** 等 Lark 工具：
 
 1. **定位知识库**中按命名约定存放的各同学项目云文档（例如「`xxx-项目`」、个人项目文件夹下的说明 Doc）。  
 2. **分批读取**摘要：研究目标、当前模块、已列问题、下一步计划。  

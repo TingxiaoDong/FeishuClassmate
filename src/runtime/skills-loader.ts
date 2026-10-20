@@ -61,28 +61,61 @@ function parseSkillFile(id: string, path: string, text: string): SkillDoc {
 }
 
 /**
- * Rank skills by keyword overlap with the query. Returns all skills when
- * `query` is empty (session start), best matches otherwise.
+ * 中英文混合的检索词：英文 / 数字按词切，中文按相邻两字切（「会议预约」→ 会议、议预、预约）。
+ */
+export function searchTerms(text: string): Set<string> {
+  const out = new Set<string>();
+  const lower = text.toLowerCase();
+  for (const w of lower.split(/[^a-z0-9_-]+/)) if (w.length >= 2) out.add(w);
+  for (const run of lower.match(/[\u4e00-\u9fff]+/g) ?? []) {
+    if (run.length === 1) continue;
+    for (let i = 0; i + 1 < run.length; i++) out.add(run.slice(i, i + 2));
+  }
+  return out;
+}
+
+/** 同学常说的话 → skill 描述里常见的词（扩展检索词，提高召回）。 */
+const SYNONYMS: Array<[RegExp, string]> = [
+  [/(开会|约会|会议|约个时间|碰一下|组会)/, '会议 预约 日程'],
+  [/(论文|文献|paper|期刊|顶会)/, '论文 检索 academic paper search'],
+  [/(参观|导览|带.*看看|来访|访客)/, '导览 参观 lab tour'],
+  [/(temi|机器人|小车)/i, 'temi 机器人'],
+  [/(项目|进度|ddl|截止|甘特)/i, '项目 进度 管理'],
+  [/(调研|研究方向|课题|前沿)/, '研究 课题 research'],
+];
+
+/**
+ * 按问题挑 skills（AGENT_PLAN M2）：名称 / 描述权重高，正文命中少量加分。
+ * query 为空时（会话开始）按原顺序取前 limit 个。
  */
 export function selectSkills(skills: SkillDoc[], query: string, limit = 3): SkillDoc[] {
   if (!query.trim()) return skills.slice(0, limit);
-  const terms = new Set(
-    query
-      .toLowerCase()
-      .split(/[^\p{L}\p{N}_-]+/u)
-      .filter((t) => t.length >= 2),
-  );
+  let expanded = query;
+  for (const [re, extra] of SYNONYMS) if (re.test(query)) expanded += ` ${extra}`;
+  const terms = searchTerms(expanded);
+  if (!terms.size) return [];
   const scored = skills.map((s) => {
-    const hay = `${s.name}\n${s.description}`.toLowerCase();
+    const head = `${s.id}\n${s.name}\n${s.description}`.toLowerCase();
+    const body = s.body.slice(0, 4000).toLowerCase();
     let score = 0;
-    for (const t of terms) if (hay.includes(t)) score += 1;
+    for (const t of terms) {
+      if (head.includes(t)) score += 3;
+      else if (body.includes(t)) score += 0.5;
+    }
     return { s, score };
   });
   return scored
-    .filter((x) => x.score > 0)
+    .filter((x) => x.score >= 3)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.s);
+}
+
+/** 没被选中的 skills 只列名字和一句话描述，模型知道有哪些能力。 */
+export function buildSkillsIndex(skills: SkillDoc[]): string {
+  if (!skills.length) return '';
+  const lines = skills.map((s) => `- ${s.name}：${s.description.replace(/\s+/g, ' ').slice(0, 80)}`);
+  return `# 其他可用技能（未展开）\n\n${lines.join('\n')}`;
 }
 
 /** Render skills into a system-prompt section (MetaClaw-style injection). */

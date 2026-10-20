@@ -4,11 +4,11 @@
 
 **多维表格（Bitable）**
 
-- 项目任务、时间规划、负责人、依赖关系：用 `feishu_bitable_app_table_record`（list/create/update）、`feishu_bitable_app_table_field`（字段定义）、`feishu_bitable_app_table_view`（视图，含时间线）。
+- 项目任务、时间规划、负责人、依赖关系：用 `cos_table`（list/create/update）、`cos_table`（字段定义）、`cos_table`（视图，含时间线）。
 
 **云文档（Doc）**
 
-- 研究计划、会议纪要、周报：`feishu_create_doc` / `feishu_update_doc` / `feishu_fetch_doc`。
+- 研究计划、会议纪要、周报：`cos_doc（action=create）` / `cos_doc（action=update）` / `cos_doc（action=get）`。
 
 **日历（Calendar）**
 
@@ -53,7 +53,7 @@ parallelizable_tasks
 在 Bitable 上创建或调整 **Timeline / 时间线视图**（Feishu Bitable Timeline View）：
 
 - 将 **开始字段**、**结束字段** 映射到表中的日期列。  
-- 按需设置分组/颜色（以 `feishu_bitable_app_table_view` 能力为准）。
+- 按需设置分组/颜色（以 `cos_table` 能力为准）。
 
 若当前表不支持某视图选项：**不得臆造成功**；应告知用户需在飞书客户端中补充的配置，并保留表格数据正确性。
 

@@ -62,7 +62,8 @@ describe('Bot 网关全链路（事件 → 大脑 → 回复）', () => {
       method: 'POST',
       url: '/api/v1/chats',
       headers: auth,
-      payload: { member_ids: ['ou_admin'] },
+      // 和机器人单聊（代码审查 A1：同学之间的私聊机器人不再回复）
+      payload: { chat_type: 'p2p', member_ids: ['bot'] },
     });
     const chatId = chat.json().chat_id as string;
     await app.inject({

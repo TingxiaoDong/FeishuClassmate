@@ -34,7 +34,7 @@
 
 ## 工位区 bitable(公开项目)
 
-- `feishu_bitable_app_table_record` `action=list`, table_id 来自 `data_layout.tables.projects`
+- `cos_table` `action=list_records`, table_key 由 cos_table(action=list_tables) 查询
 - `filter` 示例:`AND(CurrentValue.[owner_open_id]=[{id:"<ou_xxx>"}],CurrentValue.[visibility]="可公开")`
 - 仅将 **title** 用于口播,**不要**在飞书消息中暴露 `open_id` 原文
 

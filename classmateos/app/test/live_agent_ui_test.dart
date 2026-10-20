@@ -99,7 +99,10 @@ void main() {
     // 3. 点快捷问题 → 消息带上下文发出 → 等机器人回复出现在侧栏
     await t.tap(find.text('总结这篇文档'));
     await t.pump();
-    bool hasBotReply() => find.byWidgetPredicate((w) => w is SelectableText && w.data != '总结这篇文档').evaluate().isNotEmpty;
+    // 进度消息（「正在处理，请稍等：」）不算回复，要等它变成最终结果
+    bool busy() => find.byWidgetPredicate((w) => w is SelectableText && (w.data ?? '').startsWith('正在处理')).evaluate().isNotEmpty;
+    bool hasBotReply() =>
+        !busy() && find.byWidgetPredicate((w) => w is SelectableText && w.data != '总结这篇文档').evaluate().isNotEmpty;
     expect(await _waitFor(t, () => find.text('总结这篇文档').evaluate().isNotEmpty && hasBotReply(), seconds: 90), isTrue, reason: '90 秒内侧栏没有出现机器人回复');
     final reply = (find.byWidgetPredicate((w) => w is SelectableText && w.data != '总结这篇文档').evaluate().last.widget as SelectableText).data!;
     // ignore: avoid_print
@@ -124,6 +127,35 @@ void main() {
     });
     expect(chatId, isNotNull, reason: '没找到带 agent_context 的消息');
 
+    // 3b. 真实回答模式：让助手真的改一下这篇文档，等 Agent 自己发回结果卡片
+    if (_expectAnswer) {
+      // 侧栏列表只渲染看得见的几条，不能靠「卡片数量」判断；改为：平台上文档真被改了 + 进度结束 + 最新回复带卡片
+      await t.enterText(find.byType(TextField), '在这篇文档末尾追加一节「本周总结」，一两句话就行');
+      await t.tap(find.byTooltip('发送'));
+      await t.pump();
+      String md = '';
+      String lastText() {
+        final all = find.byWidgetPredicate((w) => w is SelectableText).evaluate().map((e) => (e.widget as SelectableText).data ?? '').toList();
+        return all.isEmpty ? '' : all.last;
+      }
+      var done = false;
+      for (var i = 0; i < 120 && !done; i++) {
+        await t.runAsync(() async {
+          final d = await _http('GET', '/docs/$docId', headers: {'authorization': 'Bearer ${s.api.accessToken}'});
+          md = jsonEncode(d['body']);
+          await Future<void>.delayed(const Duration(seconds: 1));
+        });
+        await t.pump();
+        done = md.contains('本周总结') && !busy() && lastText().contains('本周总结') && find.textContaining('这次处理了').evaluate().isNotEmpty;
+      }
+      // ignore: avoid_print
+      print('助手回复（改文档）：${lastText()}');
+      expect(md, contains('本周总结'), reason: '平台上的文档没有被真的改动');
+      expect(done, isTrue, reason: '文档改了，但侧栏里没出现带结果卡片的最终回复');
+      expect(find.text('当前文档：实操周报'), findsOneWidget);
+      return _finishWithMetrics(t, s, realOnly: true);
+    }
+
     // 4. 结果卡片：机器人发来带对象链接的回复 → 侧栏出卡片 → 点对象跳到文档
     await t.runAsync(() => _http('POST', '/bot/messages', headers: {'x-bot-token': _botToken}, body: {
           'receive_id': chatId,
@@ -147,13 +179,24 @@ void main() {
     expect(s.module, AppModule.docs, reason: '点结果卡片应切到文档模块');
     expect(find.text('当前文档：实操周报'), findsNothing, reason: '点开对象后侧栏应关闭');
 
-    // 5. 工作台「AI 助手」指标卡片（真实接口）
-    expect(await _waitFor(t, () => find.text('AI 助手').evaluate().isNotEmpty && find.textContaining('指标加载失败').evaluate().isEmpty, seconds: 10), isTrue);
-    expect(find.textContaining('指标加载失败'), findsNothing);
-
-    // 收尾：卸载界面、断开实时连接，让残留的计时器走完
-    await t.pumpWidget(const SizedBox());
-    s.dispose();
-    await t.pump(const Duration(minutes: 2));
+    await _finishWithMetrics(t, s);
   });
+}
+
+/// 5. 工作台「AI 助手」指标卡片（真实接口）+ 收尾。
+Future<void> _finishWithMetrics(WidgetTester t, AppState s, {bool realOnly = false}) async {
+  if (realOnly) {
+    // 关掉侧栏回到页面，看指标卡片
+    if (find.byTooltip('关闭').evaluate().isNotEmpty) await t.tap(find.byTooltip('关闭'));
+    for (var i = 0; i < 10; i++) {
+      await t.pump(const Duration(milliseconds: 50));
+    }
+  }
+  expect(await _waitFor(t, () => find.text('AI 助手').evaluate().isNotEmpty && find.textContaining('指标加载失败').evaluate().isEmpty, seconds: 10), isTrue);
+  expect(find.textContaining('指标加载失败'), findsNothing);
+
+  // 收尾：卸载界面、断开实时连接，让残留的计时器走完
+  await t.pumpWidget(const SizedBox());
+  s.dispose();
+  await t.pump(const Duration(minutes: 2));
 }

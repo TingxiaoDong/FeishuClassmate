@@ -13,9 +13,14 @@
 
 import { loadConfig } from './config-loader.js';
 import { createRuntime } from './index.js';
-import { startScheduler } from './scheduler.js';
+import { scheduledPrompt, startScheduler } from './scheduler.js';
+import { createCosJobTracker } from './job-tracker.js';
+import { createTriggerEngine } from './trigger-engine.js';
 import { createBrain } from './brain.js';
 import { createBotGateway } from './bot-gateway.js';
+import { attachPlatformMetrics } from './agent-metrics.js';
+import { bridgePlatformEstop, createVoiceChannel } from '../robot/voice-channel.js';
+import { MemorySessionStore, RemoteSessionStore, llmSummarizer } from './session-store.js';
 import { WsBotEventSource } from '../pal/bot-events.js';
 import { createClassmateOSAdapter } from '../pal/classmateos-adapter.js';
 import type { ClassmateConfig } from '../config.js';
@@ -33,8 +38,10 @@ Env:
   METACLAW_URL       MetaClaw proxy 地址，缺省 http://127.0.0.1:30000/v1
   CLASSMATE_MODEL    模型名
   CLASSMATE_OS_URL   平台 API，缺省 http://localhost:8080/api/v1
-  CLASSMATE_OS_TOKEN 平台用户态 token（gateway 需要）
+  CLASSMATE_OS_TOKEN 旧 PAL 兼容令牌（cos_* 工具不需要）
   CLASSMATE_OS_BOT_TOKEN  Bot 令牌
+  CLASSMATE_OS_AGENT_USER 定时任务使用的服务账号 user_id（scheduler 用平台工具时必填）
+  CLASSMATE_TRIGGERS      设为 0 关闭「自动化」触发器引擎
 `;
 
 export async function runCli(argv: string[]): Promise<number> {
@@ -91,7 +98,14 @@ export function statusPayload(cfg: ClassmateConfig): Record<string, unknown> {
 
 async function cmdScheduler(): Promise<number> {
   const config = loadConfig();
-  const runtime = createRuntime({ config });
+  const botToken = process.env.CLASSMATE_OS_BOT_TOKEN ?? '';
+  const agentUser = process.env.CLASSMATE_OS_AGENT_USER || undefined;
+  // 有 Bot 令牌：走新大脑（平台工具 + skills），以服务账号身份执行；否则退回旧运行时
+  const brain = botToken
+    ? createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills', cos: { baseUrl: process.env.CLASSMATE_OS_URL ?? 'http://localhost:8080/api/v1', botToken } })
+    : undefined;
+  if (brain && !agentUser) console.warn('[scheduler] CLASSMATE_OS_AGENT_USER 未设置：平台工具会拒绝执行');
+  const runtime = brain?.runtime ?? createRuntime({ config });
   const ac = new AbortController();
 
   const handle = startScheduler({
@@ -102,7 +116,9 @@ async function cmdScheduler(): Promise<number> {
       try {
         const res = await runtime.runSession({
           sessionId: `sched_${jobId}_${Date.now()}`,
-          messages: [{ role: 'user', content: task.prompt }],
+          messages: [{ role: 'user', content: brain ? scheduledPrompt(task.prompt, config, agentUser) : task.prompt }],
+          actor: agentUser ? { userId: agentUser } : undefined,
+          systemPrompt: brain?.systemPromptFor(task.prompt),
         });
         console.log(`[scheduler/${jobId}] done: ${res.output.slice(0, 200)}`);
       } catch (err) {
@@ -130,7 +146,13 @@ async function cmdGateway(): Promise<number> {
     return 2;
   }
   const config = loadConfig();
-  const { runtime } = createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills' });
+  const brain = createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills', cos: { baseUrl, botToken } });
+  const { runtime } = brain;
+  const logErr = (e: unknown) => console.error('[gateway]', e instanceof Error ? e.message : e);
+  // 会话记忆存平台（网关重启不丢）；CLASSMATE_SESSION_STORE=memory 时只放内存
+  const sessionStore =
+    process.env.CLASSMATE_SESSION_STORE === 'memory' || !brain.cos ? new MemorySessionStore() : new RemoteSessionStore(brain.cos, logErr);
+  const progressMs = Number(process.env.CLASSMATE_PROGRESS_DELAY_MS ?? 3000);
   const pal = createClassmateOSAdapter({
     baseUrl,
     accessToken: process.env.CLASSMATE_OS_TOKEN,
@@ -142,15 +164,47 @@ async function cmdGateway(): Promise<number> {
     eventSource,
     im: pal.im,
     onLog: (m) => console.log(m),
-    onError: (e) => console.error('[gateway]', e instanceof Error ? e.message : e),
+    onError: logErr,
+    sessionStore,
+    summarize: llmSummarizer(brain.llm),
+    systemPromptFor: brain.systemPromptFor,
+    progressDelayMs: progressMs > 0 ? progressMs : false,
+    jobs: brain.cos ? createCosJobTracker(brain.cos, logErr) : undefined,
   });
   await gateway.start();
   console.log(`bot gateway running against ${baseUrl}`);
+
+  // 「自动化」触发器（AGENT_PLAN M3 §2.5）：同学在平台上建的规则，事件 / 定时触发后以他的身份跑一轮
+  const triggers =
+    brain.cos && process.env.CLASSMATE_TRIGGERS !== '0'
+      ? createTriggerEngine({ client: brain.cos, runtime, im: pal.im, eventSource, systemPromptFor: brain.systemPromptFor, onLog: (m) => console.log(m), onError: logErr })
+      : undefined;
+  await triggers?.start().catch(logErr);
+
+  // 工具调用指标（AGENT_PLAN M5 §4）：只报工具名 / 成败 / 耗时，工作台「AI 助手」卡片展示
+  const metrics =
+    brain.cos && process.env.CLASSMATE_AGENT_METRICS !== '0'
+      ? attachPlatformMetrics(runtime, brain.cos, { onError: (m) => console.error(m) })
+      : undefined;
+
+  // Temi（AGENT_PLAN M4）：App 急停 → 机器人急停；访客对 Temi 说话 → 大脑 → Temi 播报
+  const robot = brain.robot;
+  const stopEstop = robot ? bridgePlatformEstop(eventSource, robot, logErr) : undefined;
+  const voice =
+    robot && process.env.CLASSMATE_TEMI_VOICE !== '0'
+      ? createVoiceChannel({ controller: robot, runtime, onLog: (m) => console.log(m), onError: logErr })
+      : undefined;
 
   await new Promise<void>((resolve) => {
     process.on('SIGINT', () => resolve());
     process.on('SIGTERM', () => resolve());
   });
+  triggers?.stop();
+  metrics?.stop();
+  await metrics?.flush().catch(logErr);
+  voice?.stop();
+  stopEstop?.();
+  robot?.close();
   gateway.stop();
   console.log('bot gateway stopped.');
   return 0;

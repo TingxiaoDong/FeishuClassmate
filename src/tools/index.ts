@@ -30,10 +30,10 @@ import { registerChatTools } from './chat/index.js';
 import { registerResearchSearchWorks } from './research/search-works.js';
 import { registerResearchArcTools } from './research/arc/index.js';
 
-export function registerAllTools(api: OpenClawPluginApi): void {
+export function registerAllTools(api: OpenClawPluginApi, opts: { legacyTemi?: boolean } = {}): void {
   registerDataLayout(api);
   registerSupervisionTools(api);
-  registerTemiTools(api);
+  if (opts.legacyTemi !== false) registerTemiTools(api);
   registerChatTools(api);
   registerResearchSearchWorks(api);
   registerResearchArcTools(api);

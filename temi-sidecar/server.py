@@ -34,7 +34,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Literal
 
 import httpx
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from adapters.temi import TemiWebSocketClient, extract_asr_text_from_woz, resolve_location
@@ -88,9 +88,82 @@ class AppState:
         self.last_command_at_monotonic: float = time.monotonic()
         self.idle_watchdog_task: asyncio.Task[None] | None = None
         self.shutdown_started: bool = False
+        # AGENT_PLAN M4：导航动作与事件回传
+        self.location: str | None = None
+        self.heading_to: str | None = None
+        self.charging: bool = False
+        self.current_action: str | None = None
+        self.nav_results: dict[str, dict[str, Any]] = {}
 
 
 _state = AppState()
+
+
+class EventHub:
+    """把机器人事件推给所有 /events/ws 订阅者（大脑）。"""
+
+    def __init__(self) -> None:
+        self.queues: set[asyncio.Queue[dict[str, Any]]] = set()
+
+    def emit(self, event: dict[str, Any]) -> None:
+        event.setdefault("at", int(time.time() * 1000))
+        for q in list(self.queues):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning("[events] subscriber queue full; dropping event %s", event.get("type"))
+
+
+_events = EventHub()
+
+
+def _finish_nav(arrived: bool, reason: str | None = None) -> None:
+    action_id = _state.current_action
+    location = _state.heading_to
+    if action_id is None and location is None:
+        return
+    if action_id:
+        _state.nav_results[action_id] = {"arrived": arrived, "reason": reason}
+        if len(_state.nav_results) > 100:
+            _state.nav_results.pop(next(iter(_state.nav_results)))
+    _state.is_moving = False
+    if arrived:
+        _state.location = location
+    _state.heading_to = None
+    _state.current_action = None
+    evt: dict[str, Any] = {"type": "nav.arrived" if arrived else "nav.failed", "location": location, "action_id": action_id}
+    if reason:
+        evt["reason"] = reason
+    _events.emit(evt)
+
+
+async def _handle_robot_event(data: dict[str, Any]) -> None:
+    """WOZ 回调 → 统一的机器人事件（字段名按 temi SDK 回调，兼容几种版本）。"""
+    ev = str(data.get("event", ""))
+    if ev == "onNavigationCompleted":
+        _finish_nav(True)
+    elif ev in {"onGoToLocationStatusChanged", "goToLocationStatusChanged"}:
+        status = str(data.get("status", "")).lower()
+        if status in {"complete", "completed"}:
+            _finish_nav(True)
+        elif status in {"abort", "aborted", "failed"}:
+            _finish_nav(False, str(data.get("description") or data.get("descriptionId") or "导航被中止"))
+    elif ev == "onDetectionStateChanged":
+        state = data.get("state")
+        detected = state in {2, "2", "DETECTED", "detected"}
+        lost = state in {1, "1", "LOST", "lost"}
+        if detected or lost:
+            _events.emit({"type": "person.detected" if detected else "person.lost"})
+    elif ev == "onBatteryStatusChanged":
+        level = data.get("level", data.get("percentage", data.get("battery")))
+        if isinstance(level, (int, float)):
+            _state.battery = int(level)
+            _state.charging = bool(data.get("isCharging", data.get("charging", False)))
+            _events.emit({"type": "battery", "battery": _state.battery, "charging": _state.charging})
+    elif ev == "onASRCompleted":
+        text = extract_asr_text_from_woz(data)
+        if text:
+            _events.emit({"type": "asr", "text": text})
 
 # ---------------------------------------------------------------------------
 # Lifespan — connect/disconnect WebSocket on startup/shutdown
@@ -121,6 +194,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             woz_activity=TEMI_WOZ_ACTIVITY,
             prelaunch_wait_s=TEMI_WOZ_PRELAUNCH_WAIT_S,
             on_asr_completed=asr_hook,
+            on_event=_handle_robot_event,
         )
         ok = await _state.client.connect()
         if ok:
@@ -275,12 +349,16 @@ def _temi_error(message: str) -> dict[str, Any]:
 
 class GotoRequest(BaseModel):
     location: str
+    action_id: str | None = None
 
 
 class GotoResponse(BaseModel):
     ok: bool
     message: str
     mock: bool = False
+    # True：收到了到达事件；False：指令已发出但没确认到达（仍可能在路上）
+    arrived: bool | None = None
+    action_id: str | None = None
 
 
 class SpeakRequest(BaseModel):
@@ -344,6 +422,10 @@ class StatusResponse(BaseModel):
     position: Position
     is_moving: bool
     mock: bool = False
+    location: str | None = None
+    heading_to: str | None = None
+    charging: bool = False
+    current_action: str | None = None
 
 
 class RfidTag(BaseModel):
@@ -468,27 +550,46 @@ async def health() -> dict[str, Any]:
 async def goto(req: GotoRequest) -> GotoResponse:
     """Navigate Temi to a saved location by name."""
     _mark_command_activity()
+    resolved = resolve_location(req.location)
+    if _state.current_action or _state.heading_to:
+        _finish_nav(False, "被新的导航指令取代")
+    _state.current_action = req.action_id
+    _state.heading_to = resolved
+    _state.is_moving = True
+    _events.emit({"type": "nav.started", "location": resolved, "action_id": req.action_id})
+
     if _is_mock():
-        resolved = resolve_location(req.location)
         logger.info("[mock] /goto location=%r → %r", req.location, resolved)
-        return GotoResponse(
-            ok=True,
-            message=f"(mock) Temi 已导航到 {resolved}",
-            mock=True,
-        )
+        _finish_nav(True)
+        return GotoResponse(ok=True, message=f"(mock) Temi 已导航到 {resolved}", mock=True, arrived=True, action_id=req.action_id)
 
     assert _state.client is not None
-    resolved = resolve_location(req.location)
     try:
         ok = await _state.client.goto(resolved)
-        _state.is_moving = False
-        return GotoResponse(
-            ok=ok,
-            message=f"Temi 已导航到 {resolved}" if ok else "Navigation failed",
-        )
+        # 到达事件可能比命令回调稍晚，最多再等 1 秒
+        result: dict[str, Any] | None = None
+        for _ in range(10):
+            result = _state.nav_results.get(req.action_id) if req.action_id else None
+            if result is not None or not req.action_id:
+                break
+            await asyncio.sleep(0.1)
+        if result is not None:
+            arrived = bool(result.get("arrived"))
+            return GotoResponse(
+                ok=arrived,
+                arrived=arrived,
+                action_id=req.action_id,
+                message=f"Temi 已到达 {resolved}" if arrived else f"导航失败：{result.get('reason') or '未知原因'}",
+            )
+        if not ok:
+            _finish_nav(False, "导航指令执行失败")
+            return GotoResponse(ok=False, arrived=False, action_id=req.action_id, message="Navigation failed")
+        # 没收到到达事件：不再假装已到达，交给事件流后续回报
+        return GotoResponse(ok=True, arrived=False, action_id=req.action_id, message="已发出导航指令，尚未收到到达确认")
     except Exception as exc:
         logger.exception("/goto failed")
-        return GotoResponse(ok=False, message=str(exc))
+        _finish_nav(False, str(exc))
+        return GotoResponse(ok=False, arrived=False, action_id=req.action_id, message=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -522,13 +623,17 @@ async def stop(req: StopRequest) -> StopResponse:
     _mark_command_activity()
     if _is_mock():
         logger.info("[mock] /stop immediate=%r", req.immediate)
+        _finish_nav(False, "已急停")
         _state.is_moving = False
+        _events.emit({"type": "estop"})
         return StopResponse(ok=True, mock=True)
 
     assert _state.client is not None
     try:
         ok = await _state.client.stop(immediate=req.immediate)
+        _finish_nav(False, "已急停")
         _state.is_moving = False
+        _events.emit({"type": "estop"})
         return StopResponse(ok=ok, error=None if ok else "Stop command failed")
     except Exception as exc:
         logger.exception("/stop failed")
@@ -619,6 +724,10 @@ async def status() -> StatusResponse:
             position=Position(x=_state.position["x"], y=_state.position["y"]),
             is_moving=_state.is_moving,
             mock=True,
+            location=_state.location,
+            heading_to=_state.heading_to,
+            charging=_state.charging,
+            current_action=_state.current_action,
         )
 
     return StatusResponse(
@@ -627,6 +736,10 @@ async def status() -> StatusResponse:
         position=Position(x=_state.position["x"], y=_state.position["y"]),
         is_moving=_state.is_moving,
         mock=False,
+        location=_state.location,
+        heading_to=_state.heading_to,
+        charging=_state.charging,
+        current_action=_state.current_action,
     )
 
 
@@ -998,6 +1111,39 @@ async def constraint_be_with() -> CommandResponse:
     except Exception as exc:
         logger.exception("/constraint-be-with failed")
         return CommandResponse(ok=False, error=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# /events/ws — 机器人事件推给大脑（AGENT_PLAN M4 §3.2）
+# ---------------------------------------------------------------------------
+
+@app.websocket("/events/ws")
+async def events_ws(ws: WebSocket) -> None:
+    await ws.accept()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
+    _events.queues.add(queue)
+    await ws.send_json({"type": "connection", "connected": _state.connected, "at": int(time.time() * 1000)})
+    try:
+        while True:
+            event = await queue.get()
+            await ws.send_json(event)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        _events.queues.discard(queue)
+
+
+class MockEventRequest(BaseModel):
+    event: dict[str, Any]
+
+
+@app.post("/mock/event")
+async def mock_event(req: MockEventRequest) -> dict[str, Any]:
+    """仅模拟模式：注入一条 WOZ 回调（开发调试事件链路用）。"""
+    if not _is_mock():
+        return {"ok": False, "error": "only available in mock mode"}
+    await _handle_robot_event(req.event)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------

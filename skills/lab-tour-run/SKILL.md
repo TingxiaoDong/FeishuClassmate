@@ -7,6 +7,18 @@ description: |
 
   **不要用于**: 仅在飞书里写稿不发机器人 —— 用 `lab-tour-prepare`。
 ---
+## ClassmateOS 新栈执行约定（M1）
+
+本节覆盖下文遗留的飞书平台调用说明；旧业务工具和 Temi 工具名称暂时保留。
+- 平台数据仅用 cos_table、cos_doc、cos_calendar、cos_task、cos_im、cos_drive、cos_contact、cos_notify、cos_search；不调用旧平台插件。
+- 先 cos_table(action=list_tables)，再 get_table 获取 table_key 和真实字段；旧 data_layout 中的飞书 app_token/table_id 不能当 ClassmateOS 标识使用。
+- 记录动作映射：list→list_records，create→create_records，update→update_records；参数用 table_key；新增 records=[{字段名:值}]，更新 records=[{record_id,fields:{字段名:值}}]。字段用 get_table/add_field/update_field；视图用 list_views/create_view。
+- 文档用 cos_doc(action=list/get/create/update/append)，搜索用 cos_search(query=关键词)。用户上传的普通文件不等于云文档，不能直接把文件 ID 传给 cos_doc。
+- 知识库目录移动、Wiki 和未实现视图功能暂不可用；可以创建独立云文档，但必须如实告知未归档到目标目录。
+- 收集信息和确认先用普通对话等待用户回复；M1 尚无可信确认卡片，删除默认被服务端禁用，不得绕过。
+- 调用以当前消息发送人权限执行；遇到无权访问应停止，不借用其他同学身份。
+
+
 
 # 导览 · 执行期
 
@@ -14,7 +26,7 @@ description: |
 
 1. `feishu_classmate_data_layout()` → `plugin_docs`、`labInfo`。
 2. `feishu_classmate_temi_status` → 若未连接且非 mock,改为**纯文字**在飞书输出各段文案。
-3. 若有当次 Doc:`feishu_fetch_doc` 拉全文,按 [doc-format](../lab-tour-prepare/references/doc-format.md) 的 `##` 分段生成执行步骤队列;无 Doc 则退回 [fallback-generic-tour](../conduct-lab-tour/references/fallback-generic-tour.md)。
+3. 若有当次 Doc:`cos_doc（action=get）` 拉全文,按 [doc-format](../lab-tour-prepare/references/doc-format.md) 的 `##` 分段生成执行步骤队列;无 Doc 则退回 [fallback-generic-tour](../conduct-lab-tour/references/fallback-generic-tour.md)。
 4. **步骤化执行引擎**：按文档顺序依次执行每个章节（文档顺序可由准备期按访客画像个性化重排，即个性化路线）：
    - 解析章节内容中的所有`【动作：XXX】`指令，按顺序执行所有动作
    - 所有动作执行完成后，提取讲解内容调用`feishu_classmate_temi_speak`朗读
