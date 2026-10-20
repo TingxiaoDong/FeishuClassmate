@@ -6,6 +6,8 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于「扫一扫」扫描电脑上的登录二维码</string>
 	<key>CFBundleDisplayName</key>
 	<string>Classmateos App</string>
 	<key>CFBundleExecutable</key>

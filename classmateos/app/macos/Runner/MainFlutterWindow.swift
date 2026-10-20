@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import desktop_multi_window
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -20,6 +21,11 @@ class MainFlutterWindow: NSWindow {
     self.backgroundColor = NSColor.white
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+
+    // 知识库「在新窗口打开」：子窗口是独立引擎，插件要再注册一遍
+    FlutterMultiWindowPlugin.setOnWindowCreatedCallback { controller in
+      RegisterGeneratedPlugins(registry: controller)
+    }
 
     super.awakeFromNib()
   }
