@@ -16,7 +16,7 @@ import {
   type FieldError,
 } from './context.js';
 import { parseAgentContext, parseAgentResult } from './agent-message.js';
-import { boundActionErrors } from './agent-principal.js';
+import { boundActionErrors, headerStr, markAgentRequest } from './agent-principal.js';
 import { nowIso, p2pKeyOf, publicMessage, type ChatRecord, type MessageRecord } from './repo.js';
 import { extractUrls, type LinkPreviewService } from './link-preview.js';
 
@@ -602,6 +602,18 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
       delete checked.content.consumed_at;
     }
 
+    // 后端待改问题 C2（方案 A）：带 X-On-Behalf-Of 时是「代某位同学发」。
+    // 代办的同学必须是这个会话的成员；机器人不在群里也可以发，消息带 sent_on_behalf_of，前端显示「某某 通过 AI 助手发送」。
+    const oboId = headerStr(req, 'x-on-behalf-of');
+    let obo: { user_id: string; name: string } | null = null;
+    if (oboId && oboId !== BOT_ID) {
+      const u = await repo.getUser(oboId);
+      if (!u || u.disabled || u.role === 'bot') return fail(reply, 403, '代办身份无效', { code: 'FORBIDDEN' });
+      obo = { user_id: u.user_id, name: u.name };
+      // 代发也记进代办审计（GET /bot/audit）
+      markAgentRequest(req, { on_behalf_of: u.user_id, session_id: headerStr(req, 'x-agent-session'), tool_call_id: headerStr(req, 'x-agent-tool-call'), confirm_card: null });
+    }
+
     let chat: ChatRecord | undefined;
     if (body.receive_id_type === 'user_id') {
       if ((await ctx.missingUsers([body.receive_id])).length) return fail(reply, 404, '用户不存在');
@@ -624,12 +636,22 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
     } else {
       chat = await repo.getChat(body.receive_id);
       if (!chat) return fail(reply, 404, '会话不存在');
-      // 代码审查 B1：机器人只能在自己所在的会话里发言
-      if (!chat.member_ids.includes(BOT_ID)) return fail(reply, 403, '机器人不在这个会话里', { code: 'BOT_NOT_IN_CHAT' });
+      if (obo) {
+        // 代发：只看代办的同学在不在会话里
+        if (!chat.member_ids.includes(obo.user_id)) return fail(reply, 403, '你不在这个会话里，不能代你发消息', { code: 'CHAT_NOT_MEMBER' });
+      } else if (!chat.member_ids.includes(BOT_ID)) {
+        // 代码审查 B1：机器人自己发言只能在它所在的会话里
+        return fail(reply, 403, '机器人不在这个会话里', { code: 'BOT_NOT_IN_CHAT' });
+      }
     }
     if (!chat) return fail(reply, 404, '会话不存在');
+    const content = { ...checked.content! };
+    delete content.sent_on_behalf_of; // 只能由服务端写
+    // 机器人和这位同学自己的单聊里不用标（就是在回他本人）
+    const selfDm = chat.chat_type === 'p2p' && obo && chat.member_ids.length === 2 && chat.member_ids.includes(obo.user_id) && chat.member_ids.includes(BOT_ID);
+    if (obo && !selfDm) content.sent_on_behalf_of = obo;
     const replyTo = body.reply_to_message_id ?? body.reply_to ?? null;
-    const res = await ctx.postMessage(chat, BOT_ID, body.msg_type, checked.content!, { replyTo });
+    const res = await ctx.postMessage(chat, BOT_ID, body.msg_type, content, { replyTo });
     return reply.code(201).send(publicMessage(res.message));
   });
 

@@ -21,7 +21,7 @@ import { z } from 'zod';
 import type { CosClient } from '../../cos-sdk/client.js';
 import type { AgentRuntime } from '../../runtime/types.js';
 import { BULK_CONFIRM, enc, fromResult, registerCosTool, type Call, type CosToolResult } from './define.js';
-import { autoFieldName, FIELD_TYPE_IDS } from './resources.js';
+import { autoFieldName, botSend as sendOnBehalf, FIELD_TYPE_IDS } from './resources.js';
 
 // ---------------------------------------------------------------- 时间（北京时间）
 
@@ -218,20 +218,11 @@ async function insertRows(call: Call, tableKey: string, records: Array<Record<st
   return { created, failed };
 }
 
-// ---------------------------------------------------------------- 发消息（机器人身份，先核对群成员）
+// ---------------------------------------------------------------- 发消息（代同学发，带代发标记）
 
-export async function botSend(client: CosClient, call: Call, ctx: { actor?: { userId?: string }; sessionId: string; toolCallId: string; signal?: AbortSignal }, target: { chat_id?: string; user_id?: string }, text: string): Promise<CosToolResult> {
-  if (!ctx.actor?.userId) return { ok: false, code: 'NO_ACTOR', error: '缺少发消息人身份' };
-  if (target.chat_id) {
-    const chk = await call('GET', `/chats/${enc(target.chat_id)}`);
-    if (!chk.ok) return { ok: false, code: 'CHAT_NOT_MEMBER', error: '你不在这个会话里，不能代你往里面发消息' };
-  }
-  const r = await client.post(
-    '/bot/messages',
-    { receive_id: target.chat_id ?? target.user_id, receive_id_type: target.chat_id ? 'chat_id' : 'user_id', msg_type: 'text', content: { text } },
-    { asBot: true, actor: { sessionId: ctx.sessionId, toolCallId: ctx.toolCallId }, signal: ctx.signal },
-  );
-  return fromResult(r, () => '消息已发送');
+/** 旧签名保留给现有调用方；实现见 resources.ts 的 botSend（C2 方案 A，成员检查交给服务端）。 */
+export async function botSend(client: CosClient, _call: Call, ctx: { actor?: { userId?: string }; sessionId: string; toolCallId: string; signal?: AbortSignal }, target: { chat_id?: string; user_id?: string }, text: string): Promise<CosToolResult> {
+  return sendOnBehalf(client, ctx, target, text);
 }
 
 // ---------------------------------------------------------------- 注册

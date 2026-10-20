@@ -30,6 +30,13 @@ const MAX_NAME = 50;
 const MAX_DESC = 500;
 const COPY_MAX_RECORDS = 10_000;
 const COMMENT = 'record_comment';
+// 同一毫秒写入的评论 created_at 相同：再按写入序号排（进程内单调递增，跨重启也大于之前的值）
+let lastCommentSeq = 0;
+const nextCommentSeq = () => (lastCommentSeq = Math.max(lastCommentSeq + 1, Date.now() * 1000));
+const commentOrder = (a: EntityRecord, b: EntityRecord) =>
+  a.created_at.localeCompare(b.created_at) ||
+  (Number(a.data.seq) || 0) - (Number(b.data.seq) || 0) ||
+  a.id.localeCompare(b.id);
 
 export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { reservedNames: Set<string>; notifications?: NotificationService }): void {
   const { app, repo, store } = ctx;
@@ -223,7 +230,7 @@ export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { r
   app.get('/api/v1/tables/:table_key/records/:record_id/comments', async (req, reply) => {
     const r = await record(req, reply);
     if (!r) return;
-    const items = (await repo.listEntities(COMMENT, r.scope)).sort((a, b) => a.created_at.localeCompare(b.created_at)).map((e) => commentJson(e, r.me.sub, r.flags.can_manage));
+    const items = (await repo.listEntities(COMMENT, r.scope)).sort(commentOrder).map((e) => commentJson(e, r.me.sub, r.flags.can_manage));
     return pageResult(items, items.length, 0);
   });
 
@@ -235,7 +242,7 @@ export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { r
     const content = parseRichText((req.body as { content?: unknown } | null)?.content, 'content', errors);
     if (errors.length || !content) return invalid(reply, errors, errors[0]?.message);
     const now = nowIso();
-    const e: EntityRecord = { kind: COMMENT, id: newId('rc'), scope: r.scope, data: { user_id: r.me.sub, content, table_key: r.res.schema.key, record_id: r.rec.record_id }, version: 0, created_at: now, updated_at: now };
+    const e: EntityRecord = { kind: COMMENT, id: newId('rc'), scope: r.scope, data: { user_id: r.me.sub, content, table_key: r.res.schema.key, record_id: r.rec.record_id, seq: nextCommentSeq() }, version: 0, created_at: now, updated_at: now };
     await repo.saveEntity(e, 0);
     if (opts.notifications) {
       const name = await ctx.userName(r.me.sub);

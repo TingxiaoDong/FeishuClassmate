@@ -58,6 +58,10 @@ export const DEFAULT_BOT_DENY: string[] = [
   'POST /api/v1/users/:user_id/logout-all',
   'POST /api/v1/users/:user_id/reset-password',
   '* /api/v1/admin/*',
+  // 后端待改问题 C2：不许代办「以同学本人名义」发消息 / 转发（群里分不出是不是 AI 发的）。
+  // 代发走 POST /bot/messages + X-On-Behalf-Of，消息带 sent_on_behalf_of 标记。
+  'POST /api/v1/chats/:chat_id/messages',
+  'POST /api/v1/messages/forward',
 ];
 
 export class BotScopePolicy {

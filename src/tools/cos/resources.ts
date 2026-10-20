@@ -495,27 +495,42 @@ function registerIm(runtime: AgentRuntime, client: CosClient) {
           const m = need(i, 'send', ['text']);
           if (m) return m;
           if (!i.chat_id && !i.user_id) return { ok: false, error: 'send 需要 chat_id 或 user_id' };
-          // 防越权：往群里发之前，确认提问的同学是这个群的成员（当前会话除外）
-          if (!ctx.actor?.userId) return { ok: false, code: 'NO_ACTOR', error: '缺少发消息人身份' };
-          if (i.chat_id) {
-            const chk = await call('GET', `/chats/${enc(i.chat_id)}`);
-            if (!chk.ok) return { ok: false, error: '你不在这个会话里，不能代你往里面发消息', code: 'CHAT_NOT_MEMBER' };
-          }
-          const r = await ctx.client.post(
-            '/bot/messages',
-            {
-              receive_id: i.chat_id ?? i.user_id,
-              receive_id_type: i.chat_id ? 'chat_id' : 'user_id',
-              msg_type: 'text',
-              content: { text: i.text },
-            },
-            { asBot: true, actor: { sessionId: ctx.sessionId, toolCallId: ctx.toolCallId }, signal: ctx.signal },
-          );
-          return fromResult(r, () => '消息已发送');
+          return botSend(ctx.client, ctx, i.chat_id ? { chat_id: i.chat_id } : { user_id: i.user_id }, i.text!);
         }
       }
     },
   });
+}
+
+// ---------------------------------------------------------------- 代同学发消息
+
+/**
+ * 以「飞书同学」身份代提问的同学发消息（后端待改问题 C2 · 方案 A）。
+ *
+ * 走 POST /bot/messages 并带 X-On-Behalf-Of（不用 asBot）：
+ *   - 发到群：服务端只看这位同学在不在群里，机器人不在群也能发，消息自动带 sent_on_behalf_of 代发标记；
+ *   - 私发某人：机器人与对方的单聊里发出，同样带代发标记（发给同学本人时不标）。
+ * 成员检查交给服务端，避免客户端先查一次再发的竞态和误报。
+ */
+export async function botSend(
+  client: CosClient,
+  ctx: { actor?: { userId?: string }; sessionId: string; toolCallId: string; signal?: AbortSignal },
+  target: { chat_id?: string; user_id?: string },
+  text: string,
+): Promise<CosToolResult> {
+  // 和其他调用一样：没有发消息人时用 defaultUserId（定时任务的服务账号），匿名一律拒绝
+  const userId = client.resolveUserId(ctx.actor);
+  if (!userId) return { ok: false, code: 'NO_ACTOR', error: '不知道代表哪位同学发消息（缺少发消息人身份）' };
+  const r = await client.post(
+    '/bot/messages',
+    { receive_id: target.chat_id ?? target.user_id, receive_id_type: target.chat_id ? 'chat_id' : 'user_id', msg_type: 'text', content: { text } },
+    { actor: { userId, sessionId: ctx.sessionId, toolCallId: ctx.toolCallId }, signal: ctx.signal },
+  );
+  if (!r.ok) {
+    if (r.code === 'CHAT_NOT_MEMBER') return { ok: false, code: 'CHAT_NOT_MEMBER', error: '你不在这个会话里，不能代你往里面发消息' };
+    if (r.status === 404) return { ok: false, code: 'NOT_FOUND', error: target.chat_id ? '找不到这个会话' : '找不到这位同学' };
+  }
+  return fromResult(r, () => '消息已发送');
 }
 
 // ---------------------------------------------------------------- cos_drive

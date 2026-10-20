@@ -215,6 +215,9 @@ export function registerDocRoutes(ctx: Ctx, notifications: NotificationService, 
       yjs_update: null,
     };
     await repo.createDoc(doc);
+    // 新建文档默认仅所有者可见（后端待改问题 C1）。没有授权记录的老文档仍按 docGrant 的默认值（组织内可读），不受影响；
+    // 进知识库的页面权限继承空间，不看这里。
+    await repo.saveResourceGrant({ resource_type: 'doc', resource_id: doc.doc_id, owner_id: me.sub, visibility: 'off', members: [], version: 0 }, 0);
     await versions.snapshot(doc, me.sub, true);
     await bindReferencedFiles(ctx, me, doc);
     if (typeof folder_id === 'string') await lib.place(me.sub, doc.doc_id, folder_id);
