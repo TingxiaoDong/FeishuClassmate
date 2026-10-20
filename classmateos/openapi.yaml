@@ -30,6 +30,12 @@ tags:
   - name: notifications
   - name: search
     description: 二期迭代 4 全局搜索与最近访问
+  - name: admin
+    description: 二期迭代 5 管理后台（成员、部门、角色、操作日志）
+  - name: workbench
+  - name: jobs
+  - name: wiki
+    description: 二期迭代 2 知识库
 
 paths:
   # ---------------------------------------------------------------------------
@@ -180,6 +186,15 @@ paths:
                   items: { type: array, items: { $ref: '#/components/schemas/User' } }
                   has_more: { type: boolean }
                   total: { type: integer }
+    post:
+      tags: [ admin ]
+      summary: '新建成员（admin.members）；返回一次性 initial_password'
+      requestBody:
+        description: '{username, name, email?, phone?, title?, department_ids?, primary_department_id?, leader_id?, role_ids?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '成员（含 initial_password）' }
+        '409': { description: 'USERNAME_EXISTS' }
 
   # ---------------------------------------------------------------------------
   # IM
@@ -987,6 +1002,10 @@ paths:
     get:
       tags: [ dashboard ]
       summary: 报表聚合（六张卡片：Tool 用量/成功率、项目甘特 KPI、器材、投稿、失败归档）
+      parameters:
+        - { name: range, in: query, schema: { type: string, enum: [ all, week, month, semester, custom ] }, description: '不传 = 全部；semester 起止取 COS_SEMESTER_START / COS_SEMESTER_END' }
+        - { name: start_at, in: query, schema: { type: string, format: date-time }, description: custom 时必填（ISO UTC） }
+        - { name: end_at, in: query, schema: { type: string, format: date-time }, description: custom 时必填，开区间 }
       responses:
         '200':
           description: 聚合结果
@@ -2151,7 +2170,9 @@ paths:
       summary: 全局搜索（按权限过滤，total 准确，<em> 高亮）
       parameters:
         - { name: q, in: query, required: true, schema: { type: string, maxLength: 100 }, description: 空格分隔多个词（最多 5 个），都要出现 }
-        - { name: types, in: query, schema: { type: string }, description: '逗号分隔：user,chat,message,doc,wiki,record,task,event；默认除 wiki 外 7 类' }
+        - { name: types, in: query, schema: { type: string }, description: '逗号分隔：user,chat,message,doc,wiki,record,task,event；默认除 wiki 外 7 类。不带 types 且 scope=wiki 时是知识库搜索，顶层另返回 items' }
+        - { name: scope, in: query, schema: { type: string, enum: [ wiki ] } }
+        - { name: space_id, in: query, schema: { type: string }, description: 限定知识空间 }
         - { name: page_size, in: query, schema: { type: integer, maximum: 50 }, description: 多类型默认 3，单类型默认 20 }
         - { name: page_token, in: query, schema: { type: string }, description: 仅单类型时生效 }
         - { name: chat_id, in: query, schema: { type: string } }
@@ -2194,6 +2215,577 @@ paths:
                         title: { type: string }
                         visited_at: { type: string, format: date-time }
                         extra: { type: object, additionalProperties: true }
+
+  # ---------------- 二期迭代 5 / 迭代 2 剩余（管理后台、扫码、工作台、导入导出、文件夹、表管理、知识库），细节见《后端对接说明》第 11 节 ----------------
+  /users/{user_id}:
+    patch:
+      tags: [ admin ]
+      summary: '修改成员 / 停用启用（admin.members；改 role_ids 还要 admin.roles）'
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name?, ..., department_ids?, role_ids?, status?: active|disabled}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成员' }
+        '400': { description: 'CANNOT_DISABLE_SELF / LAST_SUPER_ADMIN' }
+        '403': { description: 'FORBIDDEN' }
+  /users/import/template:
+    get:
+      tags: [ admin ]
+      summary: '成员导入模板（xlsx）'
+      responses:
+        '200': { description: '{file_key}' }
+  /users/import/preview:
+    post:
+      tags: [ admin ]
+      summary: '成员导入预览'
+      requestBody:
+        description: '{file_key}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '{headers, rows, total_rows, errors: [{row, message}]}' }
+  /users/import:
+    post:
+      tags: [ admin ]
+      summary: '成员批量导入（异步）'
+      requestBody:
+        description: '{file_key}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '202': { description: '{job_id}' }
+  /roles:
+    get:
+      tags: [ admin ]
+      summary: '角色列表（admin.roles 或 admin.members）'
+      responses:
+        '200': { description: '{items: [{role_id, name, description, builtin, permissions, member_ids}]}' }
+    post:
+      tags: [ admin ]
+      summary: '新建角色（admin.roles）'
+      requestBody:
+        description: '{name, description?, permissions}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '角色' }
+        '409': { description: '重名' }
+  /roles/{role_id}:
+    patch:
+      tags: [ admin ]
+      summary: '修改角色；super_admin 改权限 400'
+      parameters:
+        - { name: role_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name?, description?, permissions?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+    delete:
+      tags: [ admin ]
+      summary: '删除角色；内置角色 400'
+      parameters:
+        - { name: role_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+  /roles/{role_id}/members:
+    put:
+      tags: [ admin ]
+      summary: '整体覆盖角色成员'
+      parameters:
+        - { name: role_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{user_ids}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+  /departments:
+    get:
+      tags: [ admin ]
+      summary: '部门列表（登录即可）'
+      parameters:
+        - { name: parent_id, in: query, required: false, schema: { type: string }, description: 'root 表示最上层' }
+      responses:
+        '200': { description: '{items: [{department_id, name, parent_id, leader_id, member_count, has_children, order}]}' }
+    post:
+      tags: [ admin ]
+      summary: '新建部门（admin.departments）'
+      requestBody:
+        description: '{name, parent_id, leader_id?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '部门' }
+  /departments/{id}:
+    get:
+      tags: [ admin ]
+      summary: '单个部门'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+    patch:
+      tags: [ admin ]
+      summary: '改名 / 负责人 / 移动 / 排序；不能移到子部门下（400）'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name?, leader_id?, parent_id?, order?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+    delete:
+      tags: [ admin ]
+      summary: '删除部门；有下级或成员 409'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+        '409': { description: 'CONFLICT' }
+  /departments/{id}/path:
+    get:
+      tags: [ admin ]
+      summary: '从根到本部门'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+  /departments/{id}/members:
+    post:
+      tags: [ admin ]
+      summary: '加入部门'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{user_ids}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+  /departments/{id}/members/{user_id}:
+    delete:
+      tags: [ admin ]
+      summary: '移出部门'
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: user_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已移出' }
+  /audit-logs:
+    get:
+      tags: [ admin ]
+      summary: '操作日志（admin.audit）'
+      parameters:
+        - { name: start_at, in: query, required: false, schema: { type: string } }
+        - { name: end_at, in: query, required: false, schema: { type: string } }
+        - { name: operator_id, in: query, required: false, schema: { type: string } }
+        - { name: action, in: query, required: false, schema: { type: string } }
+        - { name: page_token, in: query, required: false, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+  /audit-logs/exports:
+    post:
+      tags: [ admin ]
+      summary: '导出操作日志 CSV（异步）'
+      requestBody:
+        description: '{format: csv, start_at?, end_at?, operator_id?, action?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '202': { description: '{job_id}' }
+  /auth/qr:
+    post:
+      tags: [ auth ]
+      summary: '桌面端申请登录二维码（无需登录，限频），有效期 2 分钟'
+      requestBody:
+        description: '{device_name}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '{qr_id, qr_content: classmateos://qr-login?qr_id=..., expires_at}' }
+        '429': { description: 'RATE_LIMITED' }
+  /auth/qr/{qr_id}:
+    get:
+      tags: [ auth ]
+      summary: '桌面端轮询（无需登录）；confirmed 时只返回一次 session'
+      parameters:
+        - { name: qr_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '{status: waiting|scanned|confirmed|expired|canceled, scanned_by_name?, device_name?, session?}' }
+        '404': { description: '不存在或已过期' }
+  /auth/qr/{qr_id}/scan:
+    post:
+      tags: [ auth ]
+      summary: '手机扫码'
+      parameters:
+        - { name: qr_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+  /auth/qr/{qr_id}/confirm:
+    post:
+      tags: [ auth ]
+      summary: '手机确认登录'
+      parameters:
+        - { name: qr_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已确认' }
+  /auth/qr/{qr_id}/cancel:
+    post:
+      tags: [ auth ]
+      summary: '手机取消'
+      parameters:
+        - { name: qr_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已取消' }
+  /workbench/apps:
+    get:
+      tags: [ workbench ]
+      summary: '内置应用（按功能开关过滤）+ 我的快捷方式'
+      responses:
+        '200': { description: '{builtin: [messages, calendar, bitable, docs, wiki, tasks, drive, contacts], shortcuts: [{id, type, target_id, name, icon?, table_key?}]}' }
+  /workbench/shortcuts:
+    put:
+      tags: [ workbench ]
+      summary: '整体覆盖我的快捷方式（最多 50 个），新项分配 id'
+      requestBody:
+        description: '{shortcuts: [{id?, type: table_view|wiki_space|doc, target_id, name, icon?, table_key?}]}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '{shortcuts}' }
+  /jobs/{job_id}:
+    get:
+      tags: [ jobs ]
+      summary: '异步任务进度（只能查自己的）；也推 WS job.updated'
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '{job_id, status: pending|running|done|failed, progress, message, result: {file_key, file_name, succeeded, failed, error_file_key}}' }
+        '404': { description: '不存在或不是自己的' }
+  /docs/{doc_id}/star:
+    post:
+      tags: [ docs ]
+      summary: '收藏文档'
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已收藏' }
+    delete:
+      tags: [ docs ]
+      summary: '取消收藏'
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已取消' }
+  /docs/{doc_id}/restore:
+    post:
+      tags: [ docs ]
+      summary: '从回收站恢复'
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+  /docs/{doc_id}/exports:
+    post:
+      tags: [ docs ]
+      summary: '导出 PDF / Word（异步，含图片）'
+      parameters:
+        - { name: doc_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{format: pdf|docx}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '202': { description: '{job_id}' }
+  /folders:
+    get:
+      tags: [ docs ]
+      summary: '我的文件夹'
+      parameters:
+        - { name: parent_id, in: query, required: false, schema: { type: string } }
+      responses:
+        '200': { description: '{items: [{folder_id, name, parent_id, updated_at}]}' }
+    post:
+      tags: [ docs ]
+      summary: '新建文件夹'
+      requestBody:
+        description: '{name, parent_id}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '文件夹' }
+        '409': { description: '同名' }
+  /folders/{folder_id}:
+    patch:
+      tags: [ docs ]
+      summary: '改名 / 移动'
+      parameters:
+        - { name: folder_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name?, parent_id?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+    delete:
+      tags: [ docs ]
+      summary: '删除文件夹（含下级），里面能删的文档进回收站'
+      parameters:
+        - { name: folder_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+  /tables/{table_key}/copy:
+    post:
+      tags: [ tables ]
+      summary: '复制表（可带记录，最多 10000 条）'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name, with_records?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '新表' }
+  /tables/{table_key}/permissions:
+    get:
+      tags: [ tables ]
+      summary: '表权限'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '{owner_id, visibility: all|members, members: [{member_type, member_id, role: viewer|editor|manager}], version}' }
+    put:
+      tags: [ tables ]
+      summary: '修改表权限（can_manage；机器人不能代办）'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{visibility, members, version?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+  /tables/{table_key}/records/{record_id}/comments:
+    get:
+      tags: [ tables ]
+      summary: '记录评论'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+    post:
+      tags: [ tables ]
+      summary: '发表评论（@ 通知 record.mention）'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{content, mentions?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '评论' }
+  /tables/{table_key}/records/{record_id}/comments/{comment_id}:
+    delete:
+      tags: [ tables ]
+      summary: '删除自己的评论'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+        - { name: comment_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+  /tables/imports/preview:
+    post:
+      tags: [ tables ]
+      summary: '导入预览（xlsx / csv，UTF-8 / GBK）'
+      requestBody:
+        description: '{file_key}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '{headers, rows（前 20 行）, total_rows, suggested_types}' }
+  /tables/{table_key}/imports:
+    post:
+      tags: [ tables ]
+      summary: '导入记录（异步；upsert 按主字段匹配）'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{file_key, mode: append|upsert, mapping: {列名: 字段名}}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '202': { description: '{job_id}' }
+  /tables/{table_key}/exports:
+    post:
+      tags: [ tables ]
+      summary: '导出（异步；按视图筛选排序隐藏列）'
+      parameters:
+        - { name: table_key, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{format: xlsx|csv, view_id?, record_ids?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '202': { description: '{job_id}' }
+  /wiki/spaces:
+    get:
+      tags: [ wiki ]
+      summary: '我能看到的知识空间'
+      responses:
+        '200': { description: '{items: [{space_id, name, description, icon, color, visibility: org|members, my_role: admin|editor|viewer, page_count, updated_at}]}' }
+    post:
+      tags: [ wiki ]
+      summary: '新建知识空间（wiki.create）'
+      requestBody:
+        description: '{name, description?, icon?, color?, visibility?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: '空间' }
+        '409': { description: '同名' }
+  /wiki/spaces/{space_id}:
+    get:
+      tags: [ wiki ]
+      summary: '单个空间'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+    patch:
+      tags: [ wiki ]
+      summary: '修改空间（空间管理员）'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{name?, description?, icon?, color?, visibility?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+    delete:
+      tags: [ wiki ]
+      summary: '删除空间（空间管理员）；页面文档进回收站'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+  /wiki/spaces/{space_id}/members:
+    get:
+      tags: [ wiki ]
+      summary: '空间成员'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '{owner_id, visibility, members: [{member_type, member_id, role: admin|editor|viewer}], version}' }
+    put:
+      tags: [ wiki ]
+      summary: '整体覆盖成员和可见范围（空间管理员；机器人不能代办）'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{visibility, members, version?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+  /wiki/spaces/{space_id}/nodes:
+    get:
+      tags: [ wiki ]
+      summary: '子节点（不传 parent_id 为第一层），按 order'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+        - { name: parent_id, in: query, required: false, schema: { type: string } }
+      responses:
+        '200': { description: '{items: [WikiNode], has_more}' }
+    post:
+      tags: [ wiki ]
+      summary: '新建页面（同时建一篇云文档）；after_node_id 为 null 放第一个，不传放最后'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{parent_id, title, obj_type: doc, after_node_id?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: 'WikiNode' }
+  /wiki/spaces/{space_id}/import:
+    post:
+      tags: [ wiki ]
+      summary: '把已有云文档移入（需要文档管理权限）'
+      parameters:
+        - { name: space_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{doc_id, parent_id}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: 'WikiNode' }
+        '409': { description: 'ALREADY_IN_WIKI / DOC_IN_TRASH' }
+  /wiki/nodes/{node_id}:
+    get:
+      tags: [ wiki ]
+      summary: '单个页面'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+    patch:
+      tags: [ wiki ]
+      summary: '重命名（同步文档标题）'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{title}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+    delete:
+      tags: [ wiki ]
+      summary: '删除页面（子页面一起，文档进回收站）'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已删除' }
+  /wiki/nodes/{node_id}/move:
+    post:
+      tags: [ wiki ]
+      summary: '移动，可跨空间（整棵子树）；after_node_id 为 null 放第一个'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{space_id, parent_id, after_node_id}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '200': { description: '成功' }
+  /wiki/nodes/{node_id}/copy:
+    post:
+      tags: [ wiki ]
+      summary: '复制（可含子页面，最多 500 个）'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        description: '{with_children?, title?}'
+        content: { application/json: { schema: { type: object, additionalProperties: true } } }
+      responses:
+        '201': { description: 'WikiNode' }
+  /wiki/nodes/{node_id}/ancestors:
+    get:
+      tags: [ wiki ]
+      summary: '面包屑（从根到父节点，不含自己）'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: '成功' }
+  /wiki/nodes/{node_id}/star:
+    post:
+      tags: [ wiki ]
+      summary: '收藏页面'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已收藏' }
+    delete:
+      tags: [ wiki ]
+      summary: '取消收藏'
+      parameters:
+        - { name: node_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: '已取消' }
+  /wiki/recent:
+    get:
+      tags: [ wiki ]
+      summary: '最近访问的页面（带 space_name、starred）'
+      responses:
+        '200': { description: '成功' }
+  /wiki/starred:
+    get:
+      tags: [ wiki ]
+      summary: '我收藏的页面'
+      responses:
+        '200': { description: '成功' }
 
 components:
   securitySchemes:
