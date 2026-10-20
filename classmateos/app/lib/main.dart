@@ -2,6 +2,7 @@
 /// 飞书风格协作客户端：消息 / 日历 / 云文档 / 多维表格 / 任务 / 云盘 / 通讯录 / 工作台。
 library;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,9 +13,13 @@ import 'app_state.dart';
 import 'dev_env.dart';
 import 'mock/mock_backend.dart';
 import 'models.dart';
+import 'pages/doc_window.dart';
 import 'pages/login_page.dart';
+import 'pages/me_page.dart' show qrScanner;
+import 'pages/qr_scanner_page.dart';
 import 'pages/required_password_page.dart';
 import 'pages/shell.dart';
+import 'services/multi_window.dart';
 import 'services/token_store.dart';
 import 'services/web_url.dart';
 import 'theme.dart';
@@ -28,10 +33,18 @@ const kBaseUrl = String.fromEnvironment(
 /// Web 版会生成可被浏览器定位、点击的元素。默认关闭，不影响正常构建。
 const kForceSemantics = bool.fromEnvironment('COS_A11Y');
 
-void main() {
-  if (kForceSemantics) {
-    WidgetsFlutterBinding.ensureInitialized();
-    SemanticsBinding.instance.ensureSemantics();
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (kForceSemantics) SemanticsBinding.instance.ensureSemantics();
+  // 桌面端「在新窗口打开」的子窗口：只显示一篇文档
+  final sub = await subWindowArgs();
+  if (sub != null) {
+    runApp(DocWindowApp(args: sub));
+    return;
+  }
+  // 手机上「扫一扫」用摄像头；电脑和网页版仍粘贴登录码
+  if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.android)) {
+    qrScanner = scanQrWithCamera;
   }
   runApp(const ClassmateApp());
 }
@@ -149,7 +162,9 @@ class _ClassmateAppState extends State<ClassmateApp> {
       api.onSession = (s) => _persist(api, s);
       _persist(api, CosSession(api.accessToken ?? '', api.refreshToken ?? '', api.expiresAt ?? DateTime.now(), me));
     }
+    if (_mock == null) serveAuthToSubWindows(api, me.userId);
     final s = AppState(api: api, me: me, onLogout: () {
+      stopServingAuth();
       TokenStore.instance.clear();
       if (mounted) setState(() => session = null);
     });

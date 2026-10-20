@@ -7,6 +7,7 @@ import 'job_dialog.dart';
 import '../api/phase2_jobs.dart';
 import 'dart:async';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,6 +17,7 @@ import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
 import '../services/collab_presence.dart';
+import '../services/doc_paste.dart';
 import '../theme.dart';
 import 'agent_sidebar.dart';
 import 'common.dart';
@@ -110,6 +112,19 @@ class _DocEditorState extends State<DocEditor> {
   CollabPresence? _presence;
   List<PresencePeer> peers = const [];
 
+  // 可见范围（联调报告问题 3：新建文档默认仅自己可见，顶栏直接显示，不用打开分享面板）
+  CosSharing? sharing;
+
+  Future<void> _loadSharing() async {
+    if (!_permsOn) return;
+    try {
+      final x = await api.docPermissions(widget.docId);
+      if (mounted) setState(() => sharing = x);
+    } catch (_) {
+      // 读不到权限（比如没有管理权）就不显示，不影响编辑
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -162,6 +177,7 @@ class _DocEditorState extends State<DocEditor> {
   }
 
   void _afterFirstLoad() {
+    _loadSharing();
     if (_commentsOn) {
       app.subscribe('doc:${widget.docId}');
       _subscribed = true;
@@ -197,6 +213,7 @@ class _DocEditorState extends State<DocEditor> {
       comments.reload();
     } else if (e.eventType == 'doc.permission_changed') {
       final affected = e.userIds.isEmpty || e.userIds.contains(app.me.userId);
+      _loadSharing();
       if (!affected) return;
       final before = doc?.permsFor(app.me).canEdit;
       _load().then((_) {
@@ -314,6 +331,88 @@ class _DocEditorState extends State<DocEditor> {
     }
     insertUpload(f.name, bytes, image: image || _isImageName(f.name));
   }
+
+  /// 一次最多粘贴 / 拖入的文件数。
+  static const _maxDropFiles = 10;
+
+  /// 有文件拖到编辑区上方。
+  bool _dragOver = false;
+
+  /// 粘贴或拖入的文件：逐个在光标处插入占位并上传；超过 20 MB 的图片跳过。
+  void insertFiles(List<PastedFile> files) {
+    if (files.isEmpty) return;
+    var skipped = 0;
+    for (final f in files.take(_maxDropFiles)) {
+      final img = _isImageName(f.name);
+      if (img && f.bytes.length > _imageLimit) {
+        skipped++;
+        continue;
+      }
+      insertUpload(f.name, f.bytes, image: img);
+    }
+    final over = files.length - _maxDropFiles;
+    final msg = [if (skipped > 0) '$skipped 张图片超过 20 MB，没有上传', if (over > 0) '一次最多上传 $_maxDropFiles 个文件，其余 $over 个没有上传'];
+    if (msg.isNotEmpty && mounted) showToast(context, msg.join('；'), error: true);
+  }
+
+  /// ⌘V / Ctrl+V：剪贴板里是文件或截图就上传，是文字就照常粘贴（替换选中的文字）。
+  Future<void> pasteSmart() async {
+    final c = await DocClipboard.read();
+    if (!mounted || c.isEmpty) return;
+    if (c.files.isNotEmpty) {
+      insertFiles(c.files);
+      return;
+    }
+    final t = c.text!;
+    final v = body.value;
+    final sel = v.selection.isValid ? v.selection : TextSelection.collapsed(offset: v.text.length);
+    body.value = TextEditingValue(
+      text: v.text.replaceRange(sel.start, sel.end, t),
+      selection: TextSelection.collapsed(offset: sel.start + t.length),
+    );
+    _changed();
+  }
+
+  /// 拖入文件上传（桌面端、Web）。
+  Widget _dropZone(Widget child) => DropTarget(
+        onDragEntered: (_) => setState(() => _dragOver = true),
+        onDragExited: (_) => setState(() => _dragOver = false),
+        onDragDone: (d) async {
+          setState(() => _dragOver = false);
+          final out = <PastedFile>[];
+          for (final f in d.files.take(_maxDropFiles + 1)) {
+            try {
+              out.add((name: f.name, bytes: await f.readAsBytes()));
+            } catch (_) {} // 文件夹或读不了的文件跳过
+          }
+          if (!mounted) return;
+          if (out.isEmpty) {
+            showToast(context, '没有可以上传的文件（不支持文件夹）', error: true);
+            return;
+          }
+          insertFiles(out);
+        },
+        child: Stack(children: [
+          child,
+          if (_dragOver)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(
+                  key: const ValueKey('doc-drop-hint'),
+                  margin: const EdgeInsets.all(8),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: const Color(0x143370FF),
+                    border: Border.all(color: Fs.primary, width: 1.5),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text('松开即可上传到文档（图片直接显示，其他文件作为附件）',
+                      style: TextStyle(color: Fs.primary, fontSize: 14, fontWeight: FontWeight.w500)),
+                ),
+              ),
+            ),
+        ]),
+      );
 
   static bool _isImageName(String n) => RegExp(r'\.(png|jpe?g|gif|webp|bmp|heic)$', caseSensitive: false).hasMatch(n);
 
@@ -842,11 +941,15 @@ class _DocEditorState extends State<DocEditor> {
           final picked = sel.isValid && !sel.isCollapsed ? sel.textInside(body.text) : null;
           return AgentContext(kind: widget.wikiPage ? 'wiki' : 'doc', id: d.docId, title: title.text.trim().isEmpty ? d.title : title.text.trim(), selection: picked);
         }),
+        if (_permsOn && sharing != null) ...[
+          const SizedBox(width: 6),
+          DocVisibilityTag(sharing: sharing!, meId: app.me.userId),
+        ],
         if (_permsOn) ...[
           const SizedBox(width: 6),
           FilledButton.icon(
             style: FilledButton.styleFrom(minimumSize: const Size(0, 32), padding: const EdgeInsets.symmetric(horizontal: 12)),
-            onPressed: () => widget.wikiPage
+            onPressed: () => (widget.wikiPage
                 ? showSharePanel(
                     context,
                     ShareConfig(
@@ -859,7 +962,8 @@ class _DocEditorState extends State<DocEditor> {
                       canManage: perms.canManage,
                     ),
                   )
-                : showDocShare(context, d, canManage: perms.canManage),
+                : showDocShare(context, d, canManage: perms.canManage))
+                .then((_) => _loadSharing()),
             icon: const Icon(Icons.lock_open_rounded, size: 16),
             label: const Text('分享'),
           ),
@@ -1037,7 +1141,7 @@ class _DocEditorState extends State<DocEditor> {
         ],
       ]);
 
-  Widget _editor(AppState s, CosDoc d, CosPermissions perms, {bool compact = false}) => SingleChildScrollView(
+  Widget _editor(AppState s, CosDoc d, CosPermissions perms, {bool compact = false}) => _dropZone(SingleChildScrollView(
         padding: EdgeInsets.symmetric(horizontal: compact ? 32 : 24, vertical: 28),
         child: Center(
           child: ConstrainedBox(
@@ -1061,7 +1165,13 @@ class _DocEditorState extends State<DocEditor> {
               const SizedBox(height: 10),
               _meta(s, d),
               const SizedBox(height: 20),
-              TextField(
+              // 接管 ⌘V / Ctrl+V：截图、复制的文件直接上传
+              CallbackShortcuts(
+                bindings: {
+                  const SingleActivator(LogicalKeyboardKey.keyV, meta: true): pasteSmart,
+                  const SingleActivator(LogicalKeyboardKey.keyV, control: true): pasteSmart,
+                },
+                child: TextField(
                 controller: body,
                 focusNode: bodyFocus,
                 onChanged: (_) => _changed(),
@@ -1088,7 +1198,7 @@ class _DocEditorState extends State<DocEditor> {
                   );
                 },
                 decoration: const InputDecoration(
-                  hintText: '开始写作…支持 Markdown：# 标题、- 列表、- [ ] 待办、**加粗**、> 引用；工具栏可插入图片和附件',
+                  hintText: '开始写作…支持 Markdown：# 标题、- 列表、- [ ] 待办、**加粗**、> 引用；可直接粘贴截图，或把文件拖进来上传',
                   filled: false,
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
@@ -1096,10 +1206,11 @@ class _DocEditorState extends State<DocEditor> {
                   contentPadding: EdgeInsets.zero,
                 ),
               ),
+              ),
             ]),
           ),
         ),
-      );
+      ));
 
   Widget _reader(AppState s, CosDoc d, CosPermissions perms, {bool compact = false}) => SingleChildScrollView(
         padding: EdgeInsets.symmetric(horizontal: compact ? 32 : 24, vertical: 28),

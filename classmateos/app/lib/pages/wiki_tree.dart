@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../api/phase2_docs.dart';
 import '../api_client.dart';
 import '../app_state.dart';
+import '../services/multi_window.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/share_panel.dart';
@@ -518,6 +519,11 @@ class WikiTreeState extends State<WikiTree> {
         } catch (e) {
           if (mounted) showToast(context, describeError(e), error: true);
         }
+      case 'window':
+        if (!await openDocWindow(app.api, userId: app.me.userId, docId: n.objId, title: n.title) && mounted) {
+          showToast(context, '新窗口打不开，已在当前窗口打开', error: true);
+          widget.onOpen(n);
+        }
       case 'star':
         try {
           await app.api.starNode(n.nodeId, !n.starred);
@@ -547,6 +553,8 @@ class WikiTreeState extends State<WikiTree> {
         if (canEdit) const PopupMenuItem(value: 'add', child: Text('新建子页面')),
         if (canEdit) const PopupMenuItem(value: 'rename', child: Text('重命名')),
         PopupMenuItem(value: 'star', child: Text(n.starred ? '取消收藏' : '收藏')),
+        if (multiWindowSupported && n.objType == 'doc' && n.objId.isNotEmpty)
+          const PopupMenuItem(value: 'window', child: Text('在新窗口打开')),
         if (canEdit) ...[
           const PopupMenuItem(value: 'move', child: Text('移动到')),
           const PopupMenuItem(value: 'copy', child: Text('创建副本')),

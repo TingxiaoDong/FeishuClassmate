@@ -519,3 +519,45 @@ String webOriginFor(CosApiClient api, String? webUrl) {
   final u = Uri.parse(api.baseUrl);
   return '${u.scheme}://${u.authority}';
 }
+
+/// 文档当前可见范围的一句话说明（顶栏标签用）。
+String docVisibilityText(CosSharing x, String meId) {
+  if (x.inheritedSpaceName != null) return '跟随知识库「${x.inheritedSpaceName}」';
+  switch (x.linkShare) {
+    case 'org_edit':
+      return '组织内可编辑';
+    case 'org_view':
+      return '组织内可阅读';
+  }
+  // 链接分享关闭：只有所有者和协作者能看
+  if (x.members.any((m) => m.memberType != 'user')) return '仅指定成员可见';
+  final ids = {?x.ownerId, for (final m in x.members) m.memberId};
+  if (ids.isEmpty || (ids.length == 1 && ids.first == meId)) return '仅自己可见';
+  return '仅 ${ids.length} 人可见';
+}
+
+/// 文档顶栏的可见范围标签：仅自己可见（灰）/ 仅协作者（蓝）/ 组织内（绿）。
+class DocVisibilityTag extends StatelessWidget {
+  final CosSharing sharing;
+  final String meId;
+  const DocVisibilityTag({super.key, required this.sharing, required this.meId});
+
+  @override
+  Widget build(BuildContext context) {
+    final text = docVisibilityText(sharing, meId);
+    final open = sharing.linkShare == 'org_view' || sharing.linkShare == 'org_edit';
+    final private = text == '仅自己可见';
+    return Tooltip(
+      message: '点「分享」修改可见范围',
+      child: Row(
+        key: const ValueKey('doc-visibility'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(open ? Icons.public_rounded : Icons.lock_outline_rounded, size: 14, color: open ? const Color(0xFF237B19) : Fs.text3),
+          const SizedBox(width: 3),
+          FsTag(text, color: open ? TagColor.green : private ? const TagColor(Color(0xFFEFF0F1), Color(0xFF646A73)) : TagColor.blue, fontSize: 11),
+        ],
+      ),
+    );
+  }
+}
