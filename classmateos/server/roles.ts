@@ -77,7 +77,7 @@ export class RoleService {
     const s = await this.read();
     const out = new Set<string>();
     for (const id of this.roleIdsOf(s, user)) for (const p of s.roles.find((r) => r.role_id === id)?.permissions ?? []) out.add(p);
-    return PERMISSION_POINTS.filter((p) => out.has(p)).concat([...out].filter((p) => !(PERMISSION_POINTS as readonly string[]).includes(p)));
+    return (PERMISSION_POINTS as readonly string[]).filter((p) => out.has(p)).concat([...out].filter((p) => !(PERMISSION_POINTS as readonly string[]).includes(p)));
   }
 
   async has(user: Pick<UserRecord, 'user_id' | 'role' | 'disabled'>, p: PermissionPoint): Promise<boolean> {

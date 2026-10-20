@@ -51,6 +51,9 @@ export type BotEventType =
   | 'job.updated'
   | 'trigger.changed'
   | 'department.changed'
+  // 二期迭代 5：成员资料变更、本人权限变更（只推用户 WS）
+  | 'user.updated'
+  | 'permissions.changed'
   // AGENT_PLAN M4：App 一键急停（只推大脑）
   | 'robot.estop';
 
