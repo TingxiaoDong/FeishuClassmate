@@ -14,10 +14,12 @@ import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets/agent_sidebar.dart';
 import '../widgets/common.dart';
 import 'bitable_field.dart';
 import 'field_editor.dart';
 import 'view_engine.dart';
+import 'table_import_export.dart';
 import 'view_panels.dart';
 
 class TableView extends StatefulWidget {
@@ -28,7 +30,10 @@ class TableView extends StatefulWidget {
 
   /// 打开后定位并打开这条记录（通知跳转）。
   final String? focusRecordId;
-  const TableView({super.key, required this.meta, this.onMetaChanged, this.focusRecordId});
+
+  /// 迭代 5：打开时切到这个视图（工作台快捷方式、可分享网址的 ?view=）。
+  final String? initialViewId;
+  const TableView({super.key, required this.meta, this.onMetaChanged, this.focusRecordId, this.initialViewId});
   @override
   State<TableView> createState() => TableViewState();
 }
@@ -175,9 +180,13 @@ class TableViewState extends State<TableView> {
     final before = view;
     final changed = views.isNotEmpty &&
         list.any((v) => v.viewId == before.viewId && v.version > before.version && jsonEncode(v.config.toJson()) != jsonEncode(before.config.toJson()));
+    final wanted = before.viewId.isEmpty || views.isEmpty ? widget.initialViewId : null;
     setState(() {
       views = list;
-      if (!list.any((v) => v.viewId == viewId)) {
+      if (wanted != null && list.any((v) => v.viewId == wanted)) {
+        viewId = wanted;
+        tempConfig = null;
+      } else if (!list.any((v) => v.viewId == viewId)) {
         viewId = list.first.viewId;
         tempConfig = null;
       }
@@ -1008,6 +1017,12 @@ class TableViewState extends State<TableView> {
                 _toolButton(Icons.segment_rounded, '分组', c.group.length,
                     () => showSortPanel(context, meta, cfg, updateConfig, group: true)),
               _toolButton(Icons.swap_vert_rounded, '排序', c.sort.length, () => showSortPanel(context, meta, cfg, updateConfig)),
+              if (_s.feature('table.export'))
+                Builder(builder: (bctx) => _toolButton(Icons.download_rounded, '导出', 0, () async {
+                  final box = bctx.findRenderObject() as RenderBox;
+                  final f = await pickExportFormat(context, box.localToGlobal(box.size.bottomLeft(Offset.zero)));
+                  if (f != null && mounted) await exportTable(context, meta, viewId: view.local ? null : view.viewId, format: f);
+                })),
               _toolButton(Icons.visibility_off_outlined, '隐藏字段',
                   c.hiddenFields.where((h) => meta.field(h) != null).length,
                   () => showFieldsPanel(context, meta, cfg, updateConfig)),
@@ -1045,6 +1060,7 @@ class TableViewState extends State<TableView> {
         ),
         const SizedBox(width: 4),
         FsIconButton(icon: Icons.refresh_rounded, tooltip: '刷新', onPressed: () => _reload(views: true)),
+        AgentSidebarButton(contextOf: () => AgentContext(kind: 'table', id: widget.meta.key, title: widget.meta.name, viewId: viewId)),
       ]),
     );
   }
@@ -1096,6 +1112,12 @@ class TableViewState extends State<TableView> {
                   label: const Text('删除'),
                 ),
               ],
+              if (_s.feature('table.export'))
+                TextButton.icon(
+                  onPressed: () => exportTable(context, meta, viewId: view.local ? null : view.viewId, recordIds: selected.toList()),
+                  icon: const Icon(Icons.download_rounded, size: 17),
+                  label: const Text('导出选中'),
+                ),
               if (lastUndo != null)
                 TextButton.icon(onPressed: undo, icon: const Icon(Icons.undo_rounded, size: 17), label: const Text('撤销上次修改')),
             ]),

@@ -2,17 +2,23 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'admin_page.dart';
 import 'bitable_page.dart';
 import 'calendar_page.dart';
 import 'contacts_page.dart';
 import 'docs_page.dart';
 import 'wiki_page.dart';
 import 'drive_page.dart';
+import 'global_search.dart';
+import 'message_extras.dart';
+import 'message_more.dart';
 import 'login_page.dart';
+import 'me_page.dart';
 import 'messages_page.dart';
 import 'notification_center.dart';
 import 'tasks_page.dart';
@@ -34,6 +40,8 @@ class ModuleMeta {
         AppModule.drive => const ModuleMeta(Icons.cloud_outlined, Icons.cloud_rounded, Fs.cyan),
         AppModule.contacts => const ModuleMeta(Icons.perm_contact_calendar_outlined, Icons.perm_contact_calendar_rounded, Fs.teal),
         AppModule.workbench => const ModuleMeta(Icons.apps_outlined, Icons.apps_rounded, Fs.violet),
+        AppModule.admin => const ModuleMeta(Icons.admin_panel_settings_outlined, Icons.admin_panel_settings_rounded, Color(0xFF646A73)),
+        AppModule.me => const ModuleMeta(Icons.person_outline_rounded, Icons.person_rounded, Fs.primary),
       };
 }
 
@@ -47,14 +55,17 @@ Widget buildModulePage(AppModule m) => switch (m) {
       AppModule.drive => const DrivePage(),
       AppModule.contacts => const ContactsPage(),
       AppModule.workbench => const WorkbenchPage(),
+      AppModule.admin => const AdminPage(),
+      AppModule.me => const MePage(),
     };
 
+/// 手机底部 5 个标签（需求文档 1.3）；其余模块从工作台的应用网格进入。
 const _mobileTabs = [
   AppModule.messages,
   AppModule.calendar,
-  AppModule.docs,
-  AppModule.contacts,
+  AppModule.bitable,
   AppModule.workbench,
+  AppModule.me,
 ];
 
 class HomeShell extends StatefulWidget {
@@ -79,15 +90,30 @@ class _HomeShellState extends State<HomeShell> {
           visited.contains(m) ? KeyedSubtree(key: ValueKey(m), child: buildModulePage(m)) : const SizedBox.shrink(),
       ],
     );
-    if (mobile) return _mobile(context, s, stack);
-    return Scaffold(
-      body: Row(
-        children: [
-          _NavRail(state: s),
-          const VerticalDivider(width: 1),
-          Expanded(child: stack),
-        ],
-      ),
+    final page = mobile
+        ? _mobile(context, s, stack)
+        : Scaffold(
+            body: Column(children: [
+              const UrgentBanner(),
+              Expanded(
+                child: Row(
+                  children: [
+                    _NavRail(state: s),
+                    const VerticalDivider(width: 1),
+                    Expanded(child: stack),
+                  ],
+                ),
+              ),
+            ]),
+          );
+    if (!s.feature('search')) return page;
+    // ⌘K / Ctrl+K 打开全局搜索（R-SR-01）
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyK, meta: true): () => showGlobalSearch(context),
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () => showGlobalSearch(context),
+      },
+      child: Focus(autofocus: true, child: page),
     );
   }
 
@@ -104,7 +130,7 @@ class _HomeShellState extends State<HomeShell> {
               ),
               title: Text(s.module.label),
             ),
-      body: SafeArea(bottom: false, child: stack),
+      body: SafeArea(bottom: false, child: Column(children: [const UrgentBanner(), Expanded(child: stack)])),
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(border: Border(top: BorderSide(color: Fs.line))),
         child: NavigationBar(
@@ -150,12 +176,21 @@ class _NavRail extends StatelessWidget {
           _AvatarMenu(state: s),
           const SizedBox(height: 6),
           const NotificationBell(),
+          if (s.feature('search'))
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: FsIconButton(
+                icon: Icons.search_rounded,
+                tooltip: '搜索（⌘K / Ctrl+K）',
+                onPressed: () => showGlobalSearch(context),
+              ),
+            ),
           const SizedBox(height: 8),
           Expanded(
             child: SingleChildScrollView(
               child: Column(children: [
                 for (final m in AppModule.values)
-                  if (s.moduleVisible(m)) _item(context, s, m),
+                  if (m != AppModule.me && s.moduleVisible(m)) _item(context, s, m),
               ]),
             ),
           ),
@@ -239,8 +274,14 @@ class _AvatarMenu extends StatelessWidget {
           if (ok) state.logout();
         } else if (v == 'notify_settings') {
           showNotificationSettings(context);
+        } else if (v == 'favorites') {
+          showFavorites(context);
         } else if (v == 'profile') {
           state.go(AppModule.contacts);
+        } else if (v == 'me') {
+          state.go(AppModule.me);
+        } else if (v == 'admin') {
+          state.go(AppModule.admin);
         }
       },
       itemBuilder: (_) => [
@@ -249,7 +290,7 @@ class _AvatarMenu extends StatelessWidget {
           child: SizedBox(
             width: 220,
             child: Row(children: [
-              FsAvatar(name: me.name, seed: me.userId, size: 44),
+              FsAvatar(name: me.name, seed: me.userId, size: 44, url: me.avatarUrl),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -276,9 +317,23 @@ class _AvatarMenu extends StatelessWidget {
           ]),
         ),
         const PopupMenuItem(
+          value: 'me',
+          child: Row(children: [Icon(Icons.manage_accounts_outlined, size: 18), SizedBox(width: 10), Text('个人设置')]),
+        ),
+        const PopupMenuItem(
           value: 'profile',
           child: Row(children: [Icon(Icons.badge_outlined, size: 18), SizedBox(width: 10), Text('通讯录')]),
         ),
+        if (state.canAdmin)
+          const PopupMenuItem(
+            value: 'admin',
+            child: Row(children: [Icon(Icons.admin_panel_settings_outlined, size: 18), SizedBox(width: 10), Text('管理后台')]),
+          ),
+        if (state.feature('message.favorite'))
+          const PopupMenuItem(
+            value: 'favorites',
+            child: Row(children: [Icon(Icons.star_outline_rounded, size: 18), SizedBox(width: 10), Text('我的收藏')]),
+          ),
         if (state.feature('notifications'))
           const PopupMenuItem(
             value: 'notify_settings',
@@ -296,7 +351,7 @@ class _AvatarMenu extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          FsAvatar(name: me.name, seed: me.userId, size: 38),
+          FsAvatar(name: me.name, seed: me.userId, size: 38, url: me.avatarUrl),
           Positioned(
             right: -1,
             bottom: -1,

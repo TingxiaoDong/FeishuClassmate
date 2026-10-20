@@ -32,6 +32,16 @@ class CosUser {
   final String? phone;
   final String? statusText;
 
+  /// 迭代 5（R-AD-03）：权限点，如 admin.members。后端没返回时为 null，按 role 兜底。
+  final List<String>? permissions;
+
+  /// 迭代 5（R-AD-02）：主部门、直属上级。旧后端没有时为 null。
+  final String? primaryDepartmentId;
+  final String? leaderId;
+
+  /// 迭代 5 批次 1：首次登录 / 被重置密码后须先改密（只有登录、刷新的返回里有）。
+  final bool mustChangePassword;
+
   const CosUser({
     required this.userId,
     required this.name,
@@ -42,9 +52,22 @@ class CosUser {
     this.title,
     this.phone,
     this.statusText,
+    this.permissions,
+    this.primaryDepartmentId,
+    this.leaderId,
+    this.mustChangePassword = false,
   });
 
+  /// 改密成功后清掉强制改密标记。
+  CosUser withoutPasswordChange() => CosUser(
+        userId: userId, name: name, email: email, role: role, avatarUrl: avatarUrl, department: department,
+        title: title, phone: phone, statusText: statusText, permissions: permissions,
+        primaryDepartmentId: primaryDepartmentId, leaderId: leaderId);
+
   bool get isAdmin => role == 'admin';
+
+  /// 是否有某个权限点；后端没返回 permissions 时，管理员视为全部都有。
+  bool can(String perm) => permissions == null ? isAdmin : permissions!.contains(perm);
   bool get isBot => role == 'bot' || userId == 'bot';
 
   factory CosUser.fromJson(Map<String, dynamic> j) => CosUser(
@@ -57,6 +80,10 @@ class CosUser {
     title: _str(j['title']),
     phone: _str(j['phone']),
     statusText: _str(j['status_text']),
+    permissions: j['permissions'] is List ? [for (final p in j['permissions'] as List) p.toString()] : null,
+    primaryDepartmentId: _str(j['primary_department_id']),
+    leaderId: _str(j['leader_id']),
+    mustChangePassword: j['must_change_password'] == true,
   );
 
   Map<String, dynamic> toJson() => {
@@ -69,6 +96,7 @@ class CosUser {
     'title': title,
     'phone': phone,
     'status_text': statusText,
+    if (permissions != null) 'permissions': permissions,
   };
 }
 
@@ -89,6 +117,15 @@ class CosChat {
   bool pinned;
   bool muted;
 
+  /// 迭代 4：话题模式群（整个群只能以话题形式发言）。
+  bool threadMode;
+
+  /// 迭代 4：参与过的话题里有新回复的数量（会话列表显示「话题」小标）。
+  int threadUnreadCount;
+
+  /// 迭代 4（R-IM-06）：群里固定的消息 ID（会话顶部「已固定 N 条」）。
+  List<String> pinnedMessageIds;
+
   CosChat({
     required this.chatId,
     required this.chatType,
@@ -104,7 +141,10 @@ class CosChat {
     this.lastReadMessageId,
     this.pinned = false,
     this.muted = false,
-  });
+    this.threadMode = false,
+    this.threadUnreadCount = 0,
+    List<String>? pinnedMessageIds,
+  }) : pinnedMessageIds = pinnedMessageIds ?? [];
 
   bool get isGroup => chatType == 'group';
   bool get isDrive => kind == 'drive';
@@ -130,6 +170,9 @@ class CosChat {
     lastReadMessageId: _str(j['last_read_message_id']),
     pinned: j['pinned'] == true,
     muted: j['muted'] == true,
+    threadMode: j['thread_mode'] == true,
+    threadUnreadCount: (j['thread_unread_count'] as num?)?.toInt() ?? 0,
+    pinnedMessageIds: _strList(j['pinned_message_ids']),
   );
 
   /// 合并只带基础字段的事件载荷（chat.updated / member_added 不含未读、置顶等个人字段）。
@@ -138,6 +181,8 @@ class CosChat {
     if (j['member_ids'] is List) memberIds = _strList(j['member_ids']);
     if (j.containsKey('owner_id')) ownerId = _str(j['owner_id']);
     if (j.containsKey('description')) description = _str(j['description']);
+    if (j.containsKey('thread_mode')) threadMode = j['thread_mode'] == true;
+    if (j['pinned_message_ids'] is List) pinnedMessageIds = _strList(j['pinned_message_ids']);
     final u = _iso(j['updated_at']);
     if (u != null) updatedAt = u;
   }
@@ -155,6 +200,9 @@ class CosMessage {
   final bool recalled;
   final String? replyToMessageId;
 
+  /// 原始 JSON（迭代 4 的新字段从这里取，旧后端缺字段时取默认值）。
+  final Map<String, dynamic> raw;
+
   const CosMessage({
     required this.messageId,
     required this.chatId,
@@ -165,6 +213,7 @@ class CosMessage {
     this.updatedAt,
     this.recalled = false,
     this.replyToMessageId,
+    this.raw = const {},
   });
 
   factory CosMessage.fromJson(Map<String, dynamic> j) => CosMessage(
@@ -177,12 +226,14 @@ class CosMessage {
     updatedAt: _iso(j['updated_at']),
     recalled: j['recalled'] == true,
     replyToMessageId: _str(j['reply_to_message_id']),
+    raw: j,
   );
 
   CosMessage copyWith({
     Map<String, dynamic>? content,
     DateTime? updatedAt,
     bool? recalled,
+    Map<String, dynamic>? raw,
   }) => CosMessage(
     messageId: messageId,
     chatId: chatId,
@@ -193,7 +244,44 @@ class CosMessage {
     updatedAt: updatedAt ?? this.updatedAt,
     recalled: recalled ?? this.recalled,
     replyToMessageId: replyToMessageId,
+    raw: raw ?? this.raw,
   );
+
+  // ---------- 迭代 4：消息增强 ----------
+
+  /// 已读回执（仅自己发的消息）：已读人数 / 应读人数（不含自己）。
+  int? get readCount => (raw['read_count'] as num?)?.toInt();
+  int? get memberCount => (raw['member_count'] as num?)?.toInt();
+
+  /// 话题回复所属的根消息；根消息自己为 null。
+  String? get threadRootId => _str(raw['thread_root_id']);
+
+  /// 话题回复同时发到了群里（主会话也显示）。
+  bool get alsoSendToChat => raw['also_send_to_chat'] == true;
+
+  /// 根消息的话题摘要；没有回复时为 null。
+  CosThreadInfo? get thread {
+    final t = _map(raw['thread']);
+    if (t == null || ((t['reply_count'] as num?)?.toInt() ?? 0) <= 0) return null;
+    return CosThreadInfo.fromJson(t);
+  }
+
+  List<CosReaction> get reactions => [
+        for (final r in (raw['reactions'] as List? ?? const []))
+          if (r is Map) CosReaction.fromJson(r.cast<String, dynamic>()),
+      ]..removeWhere((r) => r.count <= 0);
+
+  /// 单条转发来的消息：`{chat_name, sender_id}`。
+  Map<String, dynamic>? get forwardedFrom => _map(raw['forwarded_from']);
+
+  /// 加急状态（仅发送人能看到）：`{user_ids, ack_user_ids}`。
+  Map<String, dynamic>? get urgent => _map(raw['urgent']);
+  int get urgentUnacked {
+    final u = urgent;
+    if (u == null) return 0;
+    final ack = _strList(u['ack_user_ids']).toSet();
+    return _strList(u['user_ids']).where((id) => !ack.contains(id)).length;
+  }
 
   /// 文本消息的便捷访问器。
   String get text => content['text']?.toString() ?? '';
@@ -850,4 +938,51 @@ class CosMessageHit {
 
   factory CosMessageHit.fromJson(Map<String, dynamic> j) =>
       CosMessageHit(CosMessage.fromJson(j), _str(j['highlight']));
+}
+
+
+// ---------------- 迭代 4：消息增强 ----------------
+
+class CosThreadInfo {
+  final int replyCount;
+  final DateTime? lastReplyAt;
+  final List<String> participants;
+  final bool followed;
+  const CosThreadInfo({this.replyCount = 0, this.lastReplyAt, this.participants = const [], this.followed = false});
+  factory CosThreadInfo.fromJson(Map<String, dynamic> j) => CosThreadInfo(
+        replyCount: (j['reply_count'] as num?)?.toInt() ?? 0,
+        lastReplyAt: _iso(j['last_reply_at']),
+        participants: _strList(j['participants']),
+        followed: j['followed'] == true,
+      );
+}
+
+class CosReaction {
+  /// 固定英文 key，如 THUMBSUP；前端映射成表情。
+  final String emoji;
+  final int count;
+  final List<String> userIds;
+  final bool reactedByMe;
+  const CosReaction(this.emoji, this.count, this.userIds, this.reactedByMe);
+  factory CosReaction.fromJson(Map<String, dynamic> j) => CosReaction(
+        j['emoji']?.toString() ?? '',
+        (j['count'] as num?)?.toInt() ?? _strList(j['user_ids']).length,
+        _strList(j['user_ids']),
+        j['reacted_by_me'] == true,
+      );
+}
+
+/// 加急提醒（WS `message.urgent` 或 `GET /messages/urgent/pending`）。
+class CosUrgent {
+  final String messageId;
+  final String chatId;
+  final String fromUserId;
+  final String? preview;
+  const CosUrgent(this.messageId, this.chatId, this.fromUserId, [this.preview]);
+  factory CosUrgent.fromJson(Map<String, dynamic> j) => CosUrgent(
+        j['message_id']?.toString() ?? '',
+        j['chat_id']?.toString() ?? '',
+        j['from_user_id']?.toString() ?? '',
+        _str(j['preview']),
+      );
 }

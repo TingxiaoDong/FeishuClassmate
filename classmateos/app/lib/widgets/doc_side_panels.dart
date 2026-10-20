@@ -530,7 +530,7 @@ class DocHistoryPanelState extends State<DocHistoryPanel> {
                                     ),
                                     const SizedBox(height: 3),
                                     Text.rich(TextSpan(children: [
-                                      TextSpan(text: '${s.userName(v.createdBy)}  '),
+                                      TextSpan(text: '${s.operatorName(v.createdBy, viaBot: v.viaBot)}  '),
                                       if (v.name != null && v.createdAt != null) TextSpan(text: '${fmtDateTime(v.createdAt!.toLocal())}  '),
                                       TextSpan(text: '+${v.added}', style: const TextStyle(color: Fs.green)),
                                       const TextSpan(text: ' '),

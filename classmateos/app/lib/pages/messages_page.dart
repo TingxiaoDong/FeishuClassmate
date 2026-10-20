@@ -12,8 +12,14 @@ import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets/agent_sidebar.dart';
 import '../widgets/common.dart';
 import 'chat_extras.dart';
+import 'message_extras.dart';
+import 'global_search.dart';
+import 'message_more.dart';
+import '../api/phase2_im.dart';
+import '../widgets/markdown_view.dart';
 import 'shell.dart';
 
 class MessagesPage extends StatelessWidget {
@@ -125,10 +131,11 @@ class _ChatListPaneState extends State<ChatListPane> {
               children: [
                 const Text('消息', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
                 const Spacer(),
+                // 全局搜索开放后改用全局搜索（手机端的搜索入口就在这里）
                 FsIconButton(
                   icon: Icons.manage_search_rounded,
-                  tooltip: '搜索聊天记录',
-                  onPressed: () => showMessageSearch(context),
+                  tooltip: s.feature('search') ? '搜索' : '搜索聊天记录',
+                  onPressed: () => s.feature('search') ? showGlobalSearch(context) : showMessageSearch(context),
                 ),
                 FsIconButton(icon: Icons.refresh_rounded, tooltip: '刷新', onPressed: s.refreshChats),
                 PopupMenuButton<String>(
@@ -243,6 +250,7 @@ class _ChatTile extends StatelessWidget {
       preview = '${s.userName(last.senderId)}：$preview';
     }
     final otherId = chat.memberIds.firstWhere((id) => id != s.me.userId, orElse: () => s.me.userId);
+    final urgent = s.chatUrgent(chat.chatId);
     return GestureDetector(
       onSecondaryTapDown: (d) => showChatTileMenu(context, chat, d.globalPosition),
       onLongPressStart: (d) => showChatTileMenu(context, chat, d.globalPosition),
@@ -254,10 +262,10 @@ class _ChatTile extends StatelessWidget {
         child: Row(
           children: [
             Badge(
-              isLabelVisible: n > 0,
+              isLabelVisible: n > 0 || urgent,
               smallSize: 9,
-              label: chat.muted ? null : Text(n > 99 ? '99+' : '$n'),
-              backgroundColor: chat.muted ? Fs.text3 : Fs.red,
+              label: chat.muted && !urgent ? null : Text(urgent ? '急' : (n > 99 ? '99+' : '$n')),
+              backgroundColor: chat.muted && !urgent ? Fs.text3 : Fs.red,
               child: FsAvatar(
                 name: title,
                 seed: isGroup ? chat.chatId : otherId,
@@ -293,6 +301,14 @@ class _ChatTile extends StatelessWidget {
                   const SizedBox(height: 3),
                   Row(
                     children: [
+                      if (urgent) ...[
+                        const FsTag('加急', color: TagColor.red, fontSize: 10),
+                        const SizedBox(width: 4),
+                      ],
+                      if (chat.threadUnreadCount > 0 && s.feature('message.thread')) ...[
+                        FsTag('话题 ${chat.threadUnreadCount}', color: TagColor.blue, fontSize: 10),
+                        const SizedBox(width: 4),
+                      ],
                       Expanded(
                         child: Text(
                           preview.isEmpty ? '暂无消息' : preview,
@@ -340,17 +356,31 @@ class _ChatViewState extends State<ChatView> {
   String? error;
   StreamSubscription<CosEvent>? events;
   StreamSubscription<CosMessage>? sub;
+  late final AppState _s = AppScope.read(context);
+
+  // 迭代 4
+  CosMessage? threadRoot;
+  bool selecting = false;
+  final Set<String> selected = {};
+  String? highlightId;
+  final GlobalKey _highlightKey = GlobalKey();
+  Timer? _receiptDebounce, _highlightTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _s.addListener(_checkTarget);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      events = AppScope.read(context).eventStream.listen((e) {
+      events = _s.eventStream.listen((e) {
         if (e.eventType == 'resync.required') _load();
+        if (e.eventType == 'message.read' && (e.raw['chat_id'] ?? e.read?['chat_id']) == widget.chatId && e.userId != _s.me.userId) {
+          _receiptDebounce?.cancel();
+          _receiptDebounce = Timer(const Duration(milliseconds: 500), _refreshReceipts);
+        }
       });
-      sub = AppScope.read(context).messageStream.where((m) => m.chatId == widget.chatId).listen(_add);
+      sub = _s.messageStream.where((m) => m.chatId == widget.chatId).listen(_add);
     });
   }
 
@@ -358,16 +388,24 @@ class _ChatViewState extends State<ChatView> {
   void dispose() {
     sub?.cancel();
     events?.cancel();
+    _receiptDebounce?.cancel();
+    _highlightTimer?.cancel();
+    _s.removeListener(_checkTarget);
     super.dispose();
   }
 
+  /// 话题回复不出现在主会话流里（同时发到群的除外）。
+  bool _inMain(CosMessage m) => m.threadRootId == null || m.alsoSendToChat;
+
   void _add(CosMessage m) {
     if (!mounted) return;
+    if (threadRoot?.messageId == m.messageId) setState(() => threadRoot = m);
     final index = messages.indexWhere((v) => v.messageId == m.messageId);
     if (index >= 0) {
       setState(() => messages[index] = m);
       return;
     }
+    if (!_inMain(m)) return;
     setState(() {
       ids.add(m.messageId);
       messages.add(m);
@@ -383,13 +421,14 @@ class _ChatViewState extends State<ChatView> {
         messages.clear();
         ids.clear();
         for (final m in list.items.reversed) {
-          if (ids.add(m.messageId)) messages.add(m);
+          if (_inMain(m) && ids.add(m.messageId)) messages.add(m);
         }
         messages.sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
         hasMore = list.hasMore;
         loading = false;
         error = null;
       });
+      _checkTarget();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -400,21 +439,71 @@ class _ChatViewState extends State<ChatView> {
     }
   }
 
-  Future<void> _older() async {
-    if (loadingOlder || messages.isEmpty) return;
+  /// 有人读了消息（message.read 推给会话全员）：重新取最近一页的 read_count，避免前端自己累加时重复计数。
+  Future<void> _refreshReceipts() async {
+    try {
+      final p = await _s.api.listMessages(widget.chatId, pageSize: 50);
+      if (!mounted) return;
+      final byId = {for (final m in p.items) m.messageId: m};
+      setState(() {
+        for (var i = 0; i < messages.length; i++) {
+          final n = byId[messages[i].messageId];
+          if (n != null && messages[i].senderId == _s.me.userId) messages[i] = n;
+        }
+      });
+    } catch (_) {}
+  }
+
+  Future<bool> _older() async {
+    if (loadingOlder || messages.isEmpty) return false;
     setState(() => loadingOlder = true);
     try {
       final p = await AppScope.read(context).api.listMessages(widget.chatId, beforeMessageId: messages.first.messageId);
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
-        messages.insertAll(0, p.items.reversed.where((m) => ids.add(m.messageId)));
+        messages.insertAll(0, p.items.reversed.where((m) => _inMain(m) && ids.add(m.messageId)));
         hasMore = p.hasMore;
       });
+      return true;
     } catch (e) {
       if (mounted) showToast(context, describeError(e), error: true);
+      return false;
     } finally {
       if (mounted) setState(() => loadingOlder = false);
     }
+  }
+
+  /// 从全局搜索 / 加急横幅跳过来：{type: message, id: chat_id, message_id}。没加载到就往前翻页（最多 10 页）。
+  Future<void> _checkTarget() async {
+    final t = _s.pendingTarget;
+    if (!mounted || loading || t == null || t['type'] != 'message' || t['id'] != widget.chatId) return;
+    final mid = t['message_id']?.toString();
+    _s.pendingTarget = null;
+    if (mid == null) return;
+    // 话题回复（不在主会话里）：定位到话题根消息，并打开话题
+    final rootId = t['thread_root_id']?.toString();
+    final lookFor = rootId ?? mid;
+    var target = _find(lookFor);
+    for (var i = 0; target == null && hasMore && i < 10; i++) {
+      if (!await _older()) break;
+      target = _find(lookFor);
+    }
+    if (!mounted) return;
+    if (target == null) {
+      showToast(context, '这条消息太早或已被删除，无法定位');
+      return;
+    }
+    if (rootId != null) _openThread(target);
+    final hid = lookFor;
+    setState(() => highlightId = hid);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final c = _highlightKey.currentContext;
+      if (c != null) Scrollable.ensureVisible(c, alignment: 0.5, duration: const Duration(milliseconds: 300));
+    });
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && highlightId == hid) setState(() => highlightId = null);
+    });
   }
 
   CosMessage? replyTo;
@@ -428,13 +517,84 @@ class _ChatViewState extends State<ChatView> {
   }
 
   Future<void> _onAction(MsgAction a, CosMessage m) async {
-    if (a == MsgAction.reply) {
-      setState(() => replyTo = m);
+    switch (a) {
+      case MsgAction.reply:
+        setState(() => replyTo = m);
+        return;
+      case MsgAction.thread:
+        _openThread(m);
+        return;
+      case MsgAction.select:
+        setState(() {
+          selecting = true;
+          selected
+            ..clear()
+            ..add(m.messageId);
+        });
+        return;
+      default:
+        final updated = await runMessageAction(context, a, m);
+        if (updated != null) _add(updated);
+    }
+  }
+
+  Future<void> _react(CosMessage m, String emoji, bool add) async {
+    try {
+      final r = add ? await _s.api.addReaction(m.messageId, emoji) : await _s.api.removeReaction(m.messageId, emoji);
+      if (r != null) _add(r);
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
+  }
+
+  void _openThread(CosMessage root) {
+    if (MediaQuery.sizeOf(context).width >= 1100) {
+      setState(() => threadRoot = root);
       return;
     }
-    final updated = await runMessageAction(context, a, m);
-    if (updated != null) _add(updated);
+    pushScoped(context, Scaffold(body: SafeArea(child: ThreadView(root: root, showBack: true))));
   }
+
+  Future<void> _forwardSelected(String mode) async {
+    final list = messages.where((m) => selected.contains(m.messageId)).toList();
+    if (list.isEmpty) return;
+    final ok = await showForwardDialog(context, list, mode: mode);
+    if (ok && mounted) {
+      setState(() {
+        selecting = false;
+        selected.clear();
+      });
+    }
+  }
+
+  Widget _selectBar() => Container(
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Fs.line), borderRadius: BorderRadius.circular(10)),
+        child: Row(children: [
+          Text('已选 ${selected.length} 条', style: const TextStyle(fontSize: 14)),
+          const Spacer(),
+          OutlinedButton.icon(
+            onPressed: selected.isEmpty ? null : () => _forwardSelected('single'),
+            icon: const Icon(Icons.shortcut_rounded, size: 16),
+            label: const Text('逐条转发'),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: selected.isEmpty ? null : () => _forwardSelected('merge'),
+            icon: const Icon(Icons.library_books_outlined, size: 16),
+            label: const Text('合并转发'),
+          ),
+          const SizedBox(width: 8),
+          TextButton(
+            onPressed: () => setState(() {
+              selecting = false;
+              selected.clear();
+            }),
+            child: const Text('取消'),
+          ),
+        ]),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -445,7 +605,7 @@ class _ChatViewState extends State<ChatView> {
     final isGroup = chat.chatType == 'group';
     final isBot = s.isBotChat(chat);
     final otherId = chat.memberIds.firstWhere((id) => id != s.me.userId, orElse: () => s.me.userId);
-    return Container(
+    final main = Container(
       color: Colors.white,
       child: Column(
         children: [
@@ -495,6 +655,13 @@ class _ChatViewState extends State<ChatView> {
               ),
             ],
           ),
+          // R-IM-06：已固定的消息（Pin 列表变化时整条重建）
+          if (isGroup && s.feature('message.pin'))
+            PinBar(
+              key: ValueKey('pins-${chat.chatId}-${chat.pinnedMessageIds.join(',')}'),
+              chat: chat,
+              onJump: (m) => _s.openTarget({'type': 'message', 'id': chat.chatId, 'message_id': m.messageId}),
+            ),
           Expanded(
             child: Container(
               color: Colors.white,
@@ -539,10 +706,29 @@ class _ChatViewState extends State<ChatView> {
                 ),
               ),
             ),
-          _Composer(chat: chat, onSent: _add, replyTo: replyTo, onClearReply: () => setState(() => replyTo = null)),
+          if (selecting)
+            _selectBar()
+          else
+            _Composer(
+              chat: chat,
+              onSent: _add,
+              replyTo: replyTo,
+              onClearReply: () => setState(() => replyTo = null),
+              hint: chat.threadMode && s.feature('message.thread') ? '发布新话题' : null,
+            ),
         ],
       ),
     );
+    final root = threadRoot;
+    if (root == null) return main;
+    return Row(children: [
+      Expanded(child: main),
+      const VerticalDivider(width: 1),
+      SizedBox(
+        width: 400,
+        child: ThreadView(key: ValueKey(root.messageId), root: root, onClose: () => setState(() => threadRoot = null)),
+      ),
+    ]);
   }
 
   Widget _list(AppState s, bool isGroup) {
@@ -558,7 +744,7 @@ class _ChatViewState extends State<ChatView> {
               if (ri == messages.length) {
                 return Center(
                   child: TextButton(
-                    onPressed: loadingOlder ? null : _older,
+                    onPressed: loadingOlder ? null : () => _older(),
                     child: Text(loadingOlder ? '加载中…' : '加载更早消息'),
                   ),
                 );
@@ -585,12 +771,22 @@ class _ChatViewState extends State<ChatView> {
                       child: Text(fmtMessageTime(t), style: const TextStyle(fontSize: 12, color: Fs.text3)),
                     ),
                   MessageItem(
+                    key: m.messageId == highlightId ? _highlightKey : ValueKey(m.messageId),
                     message: m,
-                    compact: compact && m.replyToMessageId == null,
+                    compact: compact && m.replyToMessageId == null && m.reactions.isEmpty && prev.reactions.isEmpty && prev.thread == null,
                     showName: isGroup || m.senderId == kBotId,
                     maxWidth: maxBubble,
                     quoted: _find(m.replyToMessageId),
                     onAction: _onAction,
+                    isGroup: isGroup,
+                    onReact: _react,
+                    onOpenThread: _openThread,
+                    onUpdated: _add,
+                    threadMode: s.chat(widget.chatId)?.threadMode == true,
+                    selecting: selecting,
+                    selected: selected.contains(m.messageId),
+                    onSelect: (x) => setState(() => selected.contains(x.messageId) ? selected.remove(x.messageId) : selected.add(x.messageId)),
+                    highlighted: m.messageId == highlightId,
                   ),
                 ],
               );
@@ -611,6 +807,27 @@ class MessageItem extends StatelessWidget {
   final double maxWidth;
   final CosMessage? quoted;
   final void Function(MsgAction action, CosMessage m)? onAction;
+
+  /// 只读展示（合并转发详情）：所有消息靠左，不显示回执和工具条。
+  final bool forceLeft;
+  final bool isGroup;
+
+  /// 迭代 4：表情回应、打开话题、消息更新（回执里加急后）。
+  final void Function(CosMessage m, String emoji, bool add)? onReact;
+  final ValueChanged<CosMessage>? onOpenThread;
+  final ValueChanged<CosMessage>? onUpdated;
+
+  /// 话题模式群：根消息下面总显示「回复话题」。
+  final bool threadMode;
+
+  /// 多选模式。
+  final bool selecting;
+  final bool selected;
+  final ValueChanged<CosMessage>? onSelect;
+
+  /// 从搜索 / 加急定位过来时高亮。
+  final bool highlighted;
+
   const MessageItem({
     super.key,
     required this.message,
@@ -619,10 +836,20 @@ class MessageItem extends StatelessWidget {
     required this.maxWidth,
     this.quoted,
     this.onAction,
+    this.forceLeft = false,
+    this.isGroup = false,
+    this.onReact,
+    this.onOpenThread,
+    this.onUpdated,
+    this.threadMode = false,
+    this.selecting = false,
+    this.selected = false,
+    this.onSelect,
+    this.highlighted = false,
   });
 
   Future<void> _menu(BuildContext context, AppState s, Offset pos) async {
-    if (onAction == null) return;
+    if (onAction == null || selecting) return;
     final a = await showMessageMenu(context, pos, messageActions(s, message));
     if (a != null) onAction!(a, message);
   }
@@ -652,10 +879,15 @@ class MessageItem extends StatelessWidget {
         ),
       );
     }
-    final mine = m.senderId == s.me.userId;
+    final mine = !forceLeft && m.senderId == s.me.userId;
     final isBot = m.senderId == kBotId;
     final name = s.userName(m.senderId);
     final avatar = compact ? const SizedBox(width: 36) : FsAvatar(name: name, seed: m.senderId, size: 36, isBot: isBot);
+    final interactive = onAction != null && !selecting;
+    final canReact = interactive && onReact != null && s.feature('message.reaction') && m.msgType != 'interactive_card';
+    final canThread = interactive && onOpenThread != null && s.feature('message.thread') && m.threadRootId == null;
+    final canForward = interactive && s.feature('message.forward') && m.msgType != 'interactive_card';
+    final from = m.forwardedFrom;
     final body = GestureDetector(
       onSecondaryTapDown: (d) => _menu(context, s, d.globalPosition),
       onLongPressStart: (d) => _menu(context, s, d.globalPosition),
@@ -665,64 +897,137 @@ class MessageItem extends StatelessWidget {
           crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (from != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text(
+                  '转发自 ${from['chat_name'] ?? ''}${from['sender_id'] == null ? '' : ' · ${s.userName(from['sender_id'].toString())}'}',
+                  style: const TextStyle(fontSize: 11, color: Fs.text3),
+                ),
+              ),
             if (m.replyToMessageId != null) QuoteBox(quoted: quoted),
             _content(context, s, m, mine),
+            // R-IM-07：内部链接卡片、外部链接预览
+            if (s.feature('message.link_preview') && !m.recalled && (m.msgType == 'text' || m.msgType == 'post'))
+              MessageLinkCards(message: m),
             if (m.edited)
               const Padding(
                 padding: EdgeInsets.only(top: 2),
                 child: Text('已编辑', style: TextStyle(fontSize: 11, color: Fs.text3)),
               ),
+            if (onReact != null && s.feature('message.reaction'))
+              ReactionChips(message: m, onToggle: (e, add) => onReact!(m, e, add)),
+            if (onOpenThread != null && s.feature('message.thread') && m.threadRootId == null)
+              ThreadSummary(message: m, alwaysShow: threadMode, onOpen: () => onOpenThread!(m)),
+            if (mine && m.urgentUnacked > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text('加急 · ${m.urgentUnacked} 人未确认', style: const TextStyle(fontSize: 11, color: Fs.red)),
+              ),
+            if (mine && !forceLeft) ReadReceipt(message: m, isGroup: isGroup, onUpdated: onUpdated),
           ],
         ),
       ),
     );
-    return Padding(
-      padding: EdgeInsets.only(top: compact ? 4 : 12),
-      child: Row(
-        mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (!mine) ...[avatar, const SizedBox(width: 10)],
-          Flexible(
-            child: Column(
-              crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                if (!compact && !mine && showName)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(name, style: const TextStyle(fontSize: 12, color: Fs.text2)),
-                        if (isBot) ...[
-                          const SizedBox(width: 4),
-                          const FsTag('机器人', color: TagColor.blue, fontSize: 10),
-                        ],
-                        if (m.createdAt != null) ...[
-                          const SizedBox(width: 6),
-                          Text(fmtHm(m.createdAt!.toLocal()), style: const TextStyle(fontSize: 11, color: Fs.text3)),
-                        ],
-                      ],
-                    ),
-                  ),
-                Tooltip(
-                  message: m.createdAt != null ? fmtDateTime(m.createdAt!.toLocal()) : '',
-                  waitDuration: const Duration(milliseconds: 800),
-                  child: body,
+    Widget bar(bool hover) => SizedBox(
+          height: 30,
+          child: hover && (canReact || canThread || canForward || interactive)
+              ? MessageHoverBar(
+                  message: m,
+                  onReact: canReact ? (e) => onReact!(m, e, !m.reactions.any((r) => r.emoji == e && r.reactedByMe)) : null,
+                  onThread: canThread ? () => onOpenThread!(m) : null,
+                  onForward: canForward ? () => onAction!(MsgAction.forward, m) : null,
+                  onMore: (pos) => _menu(context, s, pos),
+                )
+              : null,
+        );
+    Widget row(bool hover) => Row(
+          mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (selecting)
+              Padding(
+                padding: const EdgeInsets.only(right: 8, top: 6),
+                child: Checkbox(
+                  key: ValueKey('select-${m.messageId}'),
+                  value: selected,
+                  onChanged: onSelect == null ? null : (_) => onSelect!(m),
                 ),
-              ],
+              ),
+            if (selecting && mine) const Spacer(),
+            if (!mine) ...[avatar, const SizedBox(width: 10)],
+            Flexible(
+              child: Column(
+                crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+                children: [
+                  if (!compact && !mine && showName)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(name, style: const TextStyle(fontSize: 12, color: Fs.text2)),
+                          if (isBot) ...[
+                            const SizedBox(width: 4),
+                            const FsTag('机器人', color: TagColor.blue, fontSize: 10),
+                          ],
+                          if (m.createdAt != null) ...[
+                            const SizedBox(width: 6),
+                            Text(fmtHm(m.createdAt!.toLocal()), style: const TextStyle(fontSize: 11, color: Fs.text3)),
+                          ],
+                        ],
+                      ),
+                    ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (mine && interactive) bar(hover),
+                      if (mine && interactive) const SizedBox(width: 6),
+                      Flexible(
+                        child: Tooltip(
+                          message: m.createdAt != null ? fmtDateTime(m.createdAt!.toLocal()) : '',
+                          waitDuration: const Duration(milliseconds: 800),
+                          child: body,
+                        ),
+                      ),
+                      if (!mine && interactive) const SizedBox(width: 6),
+                      if (!mine && interactive) bar(hover),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          if (mine) ...[const SizedBox(width: 10), avatar],
-        ],
+            if (mine) ...[const SizedBox(width: 10), avatar],
+          ],
+        );
+    final content = interactive ? HoverReveal(builder: (_, hover) => row(hover)) : row(false);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 400),
+      decoration: BoxDecoration(
+        color: highlighted ? const Color(0xFFFFF4D6) : (selected ? Fs.primaryBg : Colors.transparent),
+        borderRadius: BorderRadius.circular(6),
       ),
+      padding: EdgeInsets.only(top: compact ? 4 : 12),
+      child: selecting && onSelect != null
+          ? GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => onSelect!(m), child: content)
+          : content,
     );
   }
 
   Widget _content(BuildContext context, AppState s, CosMessage m, bool mine) {
     switch (m.msgType) {
+      case 'text' when !mine && m.content['agent_result'] is Map:
+        // M5：机器人回复带结果卡片，建好 / 改过的对象可以直接点开
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          _bubble(mine, _LinkText(m.text)),
+          AgentResultCard.maybe(m),
+        ]);
       case 'text':
         return _bubble(mine, _LinkText(m.text));
+      case 'post' when m.content['markdown'] is String:
+        // R-IM-07：富文本消息 {markdown}，渲染复用文档的 Markdown 组件
+        return _bubble(mine, MarkdownView(m.content['markdown'] as String, fontSize: 14));
       case 'post':
         final title = m.content['title']?.toString();
         final text =
@@ -742,6 +1047,8 @@ class MessageItem extends StatelessWidget {
             ],
           ),
         );
+      case 'merge_forward':
+        return MergeForwardCard(content: m.content);
       case 'image':
         return ImageMessage(file: CosFileRef.fromJson(m.content));
       case 'file':
@@ -1111,7 +1418,11 @@ class _Composer extends StatefulWidget {
   final ValueChanged<CosMessage> onSent;
   final CosMessage? replyTo;
   final VoidCallback? onClearReply;
-  const _Composer({required this.chat, required this.onSent, this.replyTo, this.onClearReply});
+
+  /// 迭代 4：输入框提示语（话题模式「发布新话题」）、话题回复的根消息。
+  final String? hint;
+  final String? threadRootId;
+  const _Composer({required this.chat, required this.onSent, this.replyTo, this.onClearReply, this.hint, this.threadRootId});
   @override
   State<_Composer> createState() => _ComposerState();
 }
@@ -1124,6 +1435,9 @@ class _ComposerState extends State<_Composer> {
   bool sending = false;
   String? uploading;
   final Map<String, String> mentions = {};
+
+  /// 话题回复「同时发送到群」。
+  bool alsoSend = false;
 
   @override
   void initState() {
@@ -1157,7 +1471,12 @@ class _ComposerState extends State<_Composer> {
     final s = AppScope.read(context);
     setState(() => sending = true);
     try {
-      final m = await s.api.sendText(
+      // R-IM-07：写了 Markdown 快捷语法（且没有 @ 人）时发成富文本 post {markdown}
+      final asPost = s.feature('message.rich_text') && mentions.isEmpty && looksLikeMarkdown(text);
+      final m = asPost
+          ? await s.api.sendMessage(widget.chat.chatId, 'post', {'markdown': text},
+              replyToMessageId: widget.replyTo?.messageId, threadRootId: widget.threadRootId, alsoSendToChat: alsoSend)
+          : await s.api.sendText(
         widget.chat.chatId,
         text,
         mentions: mentions.entries
@@ -1165,6 +1484,8 @@ class _ComposerState extends State<_Composer> {
             .map((e) => {'user_id': e.key, 'name': e.value})
             .toList(),
         replyToMessageId: widget.replyTo?.messageId,
+        threadRootId: widget.threadRootId,
+        alsoSendToChat: alsoSend,
       );
       ctrl.clear();
       mentions.clear();
@@ -1186,7 +1507,8 @@ class _ComposerState extends State<_Composer> {
       final f = await s.pickAndUpload(imageOnly: image);
       if (f == null) return;
       final isImg = image || FileTypeIcon.isImage(f.fileName);
-      final m = await s.api.sendMessage(widget.chat.chatId, isImg ? 'image' : 'file', f.toJson());
+      final m = await s.api.sendMessage(widget.chat.chatId, isImg ? 'image' : 'file', f.toJson(),
+          threadRootId: widget.threadRootId, alsoSendToChat: alsoSend);
       widget.onSent(m);
       s.addLocalMessage(m);
     } catch (e) {
@@ -1257,7 +1579,7 @@ class _ComposerState extends State<_Composer> {
             keyboardType: TextInputType.multiline,
             style: const TextStyle(fontSize: 14, height: 1.5),
             decoration: InputDecoration(
-              hintText: '发送给 $title',
+              hintText: widget.hint ?? (widget.threadRootId != null ? '回复话题' : '发送给 $title'),
               filled: false,
               border: InputBorder.none,
               enabledBorder: InputBorder.none,
@@ -1318,8 +1640,24 @@ class _ComposerState extends State<_Composer> {
                   tooltip: '发送文件',
                   onPressed: uploading != null ? null : () => _sendFile(image: false),
                 ),
+                if (widget.threadRootId != null && widget.chat.isGroup && !widget.chat.threadMode)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      SizedBox(
+                        width: 28,
+                        child: Checkbox(
+                          key: const ValueKey('also-send'),
+                          value: alsoSend,
+                          visualDensity: VisualDensity.compact,
+                          onChanged: (v) => setState(() => alsoSend = v ?? false),
+                        ),
+                      ),
+                      const Text('同时发送到群', style: TextStyle(fontSize: 12, color: Fs.text2)),
+                    ]),
+                  ),
                 const Spacer(),
-                if (MediaQuery.sizeOf(context).width > 900)
+                if (MediaQuery.sizeOf(context).width > 900 && widget.threadRootId == null)
                   Text(
                     uploading != null ? '正在上传$uploading…' : 'Enter 发送，Shift + Enter 换行',
                     style: const TextStyle(fontSize: 12, color: Fs.text3),
@@ -1343,6 +1681,169 @@ class _ComposerState extends State<_Composer> {
           ),
         ],
       ),
+    );
+  }
+}
+
+
+// ---------------- 话题面板（R-IM-02） ----------------
+
+/// 原消息 + 全部回复 + 底部输入框；宽屏在会话右侧，窄屏全屏。
+class ThreadView extends StatefulWidget {
+  final CosMessage root;
+  final bool showBack;
+  final VoidCallback? onClose;
+  const ThreadView({super.key, required this.root, this.showBack = false, this.onClose});
+  @override
+  State<ThreadView> createState() => _ThreadViewState();
+}
+
+class _ThreadViewState extends State<ThreadView> {
+  late CosMessage root = widget.root;
+  List<CosMessage> replies = [];
+  bool loading = true;
+  String? error;
+  bool? followed;
+  StreamSubscription<CosMessage>? sub;
+  late final AppState _s = AppScope.read(context);
+
+  @override
+  void initState() {
+    super.initState();
+    followed = root.thread?.followed;
+    sub = _s.messageStream.where((m) => m.chatId == root.chatId).listen((m) {
+      if (!mounted) return;
+      if (m.messageId == root.messageId) {
+        setState(() => root = m);
+      } else if (m.threadRootId == root.messageId) {
+        setState(() {
+          final i = replies.indexWhere((x) => x.messageId == m.messageId);
+          i >= 0 ? replies[i] = m : replies.add(m);
+        });
+      }
+    });
+    _load();
+  }
+
+  @override
+  void dispose() {
+    sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final l = await _s.api.allThreadReplies(root.messageId);
+      if (mounted) {
+        setState(() {
+          replies = l..sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
+          loading = false;
+          error = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          loading = false;
+          error = describeError(e);
+        });
+      }
+    }
+  }
+
+  Future<void> _toggleFollow() async {
+    final next = !(followed ?? false);
+    try {
+      await _s.api.followThread(root.messageId, next);
+      if (mounted) {
+        setState(() => followed = next);
+        showToast(context, next ? '已关注话题，有新回复会提醒你' : '已取消关注');
+      }
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
+  }
+
+  Future<void> _react(CosMessage m, String emoji, bool add) async {
+    try {
+      final r = add ? await _s.api.addReaction(m.messageId, emoji) : await _s.api.removeReaction(m.messageId, emoji);
+      if (r != null && mounted) {
+        setState(() {
+          if (r.messageId == root.messageId) root = r;
+          final i = replies.indexWhere((x) => x.messageId == r.messageId);
+          if (i >= 0) replies[i] = r;
+        });
+      }
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = AppScope.of(context);
+    final chat = s.chat(root.chatId);
+    return Container(
+      color: Colors.white,
+      child: Column(children: [
+        PaneHeader(
+          title: '话题',
+          subtitle: Text(chat == null ? '' : s.chatTitle(chat)),
+          leading: widget.showBack
+              ? IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop())
+              : null,
+          actions: [
+            TextButton.icon(
+              onPressed: _toggleFollow,
+              icon: Icon((followed ?? false) ? Icons.notifications_active_outlined : Icons.notifications_none_rounded, size: 16),
+              label: Text((followed ?? false) ? '已关注' : '关注话题'),
+            ),
+            if (widget.onClose != null) FsIconButton(icon: Icons.close_rounded, tooltip: '关闭话题', onPressed: widget.onClose),
+          ],
+        ),
+        Expanded(
+          child: LayoutBuilder(builder: (context, c) {
+            final w = (c.maxWidth - 80).clamp(160.0, 520.0);
+            return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 16), children: [
+              MessageItem(message: root, compact: false, showName: true, maxWidth: w, forceLeft: true,
+                  onReact: _react, onAction: (_, _) {}),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Row(children: [
+                  Text(loading ? '加载回复…' : '${replies.length} 条回复', style: const TextStyle(fontSize: 12, color: Fs.text3)),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Divider()),
+                ]),
+              ),
+              if (error != null)
+                Center(child: TextButton(onPressed: _load, child: Text('加载失败：$error，点击重试')))
+              else
+                for (final m in replies)
+                  MessageItem(
+                    key: ValueKey(m.messageId),
+                    message: m,
+                    compact: false,
+                    showName: true,
+                    maxWidth: w,
+                    forceLeft: true,
+                    onReact: _react,
+                    onAction: (_, _) {},
+                  ),
+            ]);
+          }),
+        ),
+        if (chat != null)
+          _Composer(
+            chat: chat,
+            threadRootId: root.messageId,
+            onSent: (m) {
+              if (!mounted) return;
+              setState(() {
+                if (!replies.any((x) => x.messageId == m.messageId)) replies.add(m);
+              });
+            },
+          ),
+      ]),
     );
   }
 }

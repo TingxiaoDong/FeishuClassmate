@@ -1,6 +1,8 @@
 /// 登录页（飞书风格：左侧品牌区 + 右侧登录卡片）。
 library;
 
+import 'qr_login_panel.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 import '../api_client.dart';
@@ -36,13 +38,23 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  late final user = TextEditingController(text: widget.initialUser ?? 'admin');
-  final pass = TextEditingController(text: 'admin');
+  // 开发账号 admin / admin 只在调试版预填；正式部署（后端 NODE_ENV=production）不再创建这两个账号（后端代码审查 B2）。
+  late final user = TextEditingController(text: widget.initialUser ?? (kDebugMode ? 'admin' : ''));
+  final pass = TextEditingController(text: kDebugMode ? 'admin' : '');
   late final server = TextEditingController(text: widget.initialBaseUrl);
   String? error;
   bool busy = false;
   bool showPass = false;
   bool showServer = false;
+
+  /// 迭代 5（R-LG-02）：扫码登录。
+  bool qrMode = false;
+
+  CosApiClient _clientForServer() {
+    var base = server.text.trim();
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    return CosApiClient(base);
+  }
 
   Future<void> _login() async {
     if (user.text.trim().isEmpty || pass.text.isEmpty) {
@@ -89,6 +101,42 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 
+  Widget _header() => Row(children: [
+        const AppLogo(size: 36),
+        const SizedBox(width: 10),
+        const Expanded(child: Text('ClassmateOS', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+        Tooltip(
+          message: qrMode ? '账号登录' : '扫码登录',
+          child: InkWell(
+            key: const ValueKey('login-mode-toggle'),
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => setState(() => qrMode = !qrMode),
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Icon(qrMode ? Icons.keyboard_alt_outlined : Icons.qr_code_2_rounded, size: 28, color: Fs.primary),
+            ),
+          ),
+        ),
+      ]);
+
+  Widget _qrBody() => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _header(),
+          const SizedBox(height: 28),
+          const Text('扫码登录', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 20),
+          QrLoginPanel(
+            key: ValueKey('qr-${server.text}'),
+            api: _clientForServer(),
+            onLoggedIn: widget.onLoggedIn,
+          ),
+          const SizedBox(height: 10),
+          TextButton(onPressed: () => setState(() => qrMode = false), child: const Text('使用账号密码登录')),
+        ],
+      );
+
   Widget _card(BuildContext context) => Container(
         width: 400,
         padding: const EdgeInsets.fromLTRB(36, 40, 36, 28),
@@ -98,15 +146,11 @@ class _LoginPageState extends State<LoginPage> {
           boxShadow: Fs.shadowL,
         ),
         child: AutofillGroup(
-          child: Column(
+          child: qrMode ? _qrBody() : Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Row(children: [
-                AppLogo(size: 36),
-                SizedBox(width: 10),
-                Text('ClassmateOS', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-              ]),
+              _header(),
               const SizedBox(height: 28),
               const Text('账号登录', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),
@@ -186,8 +230,10 @@ class _LoginPageState extends State<LoginPage> {
               Row(
                 children: [
                   const Expanded(
-                    child: Text('开发账号 admin / admin',
-                        maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Fs.text3, fontSize: 12)),
+                    child: kDebugMode
+                        ? Text('开发账号 admin / admin',
+                            maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: Fs.text3, fontSize: 12))
+                        : SizedBox.shrink(),
                   ),
                   TextButton.icon(
                     onPressed: () => setState(() => showServer = !showServer),

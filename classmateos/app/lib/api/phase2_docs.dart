@@ -207,7 +207,9 @@ class CosDocVersion {
   final DateTime? createdAt;
   final int added;
   final int removed;
-  const CosDocVersion({required this.versionId, this.name, required this.createdBy, this.createdAt, this.added = 0, this.removed = 0});
+  /// 机器人代 createdBy 写的版本。
+  final bool viaBot;
+  const CosDocVersion({required this.versionId, this.name, required this.createdBy, this.createdAt, this.added = 0, this.removed = 0, this.viaBot = false});
   factory CosDocVersion.fromJson(Map<String, dynamic> j) => CosDocVersion(
         versionId: j['version_id']?.toString() ?? '',
         name: _s(j['name']),
@@ -215,6 +217,7 @@ class CosDocVersion {
         createdAt: _t(j['created_at']),
         added: _i(j['added']),
         removed: _i(j['removed']),
+        viaBot: j['via_bot'] == true,
       );
 }
 
@@ -375,12 +378,15 @@ class CosRecordHistory {
   final DateTime? at;
   final String? action; // created | updated | deleted（可选）
   final List<CosFieldChange> changes;
-  const CosRecordHistory(this.operatorId, this.at, this.changes, {this.action});
+  /// 机器人代 operatorId 修改的。
+  final bool viaBot;
+  const CosRecordHistory(this.operatorId, this.at, this.changes, {this.action, this.viaBot = false});
   factory CosRecordHistory.fromJson(Map<String, dynamic> j) => CosRecordHistory(
         j['operator_id']?.toString() ?? '',
         _t(j['at']),
         [for (final c in _list(j['changes'])) CosFieldChange(c['field_name']?.toString() ?? '', c['before'], c['after'])],
         action: _s(j['action']),
+        viaBot: j['via_bot'] == true,
       );
 }
 
@@ -604,6 +610,10 @@ extension Phase2DocsApi on CosApiClient {
   Future<CosRecordComment> addRecordComment(String key, String recordId, CosRichText content) async =>
       CosRecordComment.fromJson(
           await request('POST', '/tables/${_q(key)}/records/${_q(recordId)}/comments', body: {'content': content.toJson()}));
+
+  /// 删除记录评论：本人或表管理者（对接说明 11.11）。
+  Future<void> deleteRecordComment(String key, String recordId, String commentId) =>
+      request('DELETE', '/tables/${_q(key)}/records/${_q(recordId)}/comments/${_q(commentId)}');
 
   Future<List<CosRecordHistory>> recordHistory(String key, String recordId) =>
       _items('/tables/${_q(key)}/records/${_q(recordId)}/history', CosRecordHistory.fromJson);

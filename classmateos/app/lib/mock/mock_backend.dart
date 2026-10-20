@@ -10,7 +10,10 @@ import 'package:http/testing.dart';
 import '../api/phase2.dart';
 import '../models.dart';
 import '../pages/view_engine.dart';
+import 'mock_admin.dart';
+import 'mock_calendar.dart';
 import 'mock_docs.dart';
+import 'mock_im.dart';
 import 'mock_tasks.dart';
 
 const kMockBaseUrl = 'http://mock.classmateos/api/v1';
@@ -34,12 +37,53 @@ class MockBackend {
     'table.permissions': true,
     'table.manage': true,
     'record.comments': true,
+    'record.history': true,
     // 迭代 3：任务扩展（审批按用户要求不做）
     'task.subtasks': true,
     'task.followers': true,
     'task.comments': true,
     'task.lists': true,
+    'calendar.recurrence': true,
+    // 迭代 4：消息增强、全局搜索
+    'message.thread': true,
+    'message.reaction': true,
+    'message.forward': true,
+    'message.urgent': true,
+    'search': true,
+    'message.favorite': true,
+    'message.pin': true,
+    'message.link_preview': true,
+    'message.rich_text': true,
+    // 迭代 5：管理后台、「我的」、工作台、导入导出、扫码登录
+    'admin': true,
+    'org.departments': true,
+    'auth.password': true,
+    'auth.sessions': true,
+    'auth.qr_login': true,
+    'user.import': true,
+    'workbench.apps': true,
+    'dashboard.range': true,
+    'table.import': true,
+    'table.export': true,
+    'doc.export': true,
   };
+
+  /// 迭代 5：管理后台、扫码登录、异步任务、工作台。
+  late final MockAdmin admin = MockAdmin(
+    me: () => currentUser,
+    emit: _emit,
+    users: users,
+    docs: docs,
+    importRecords: _importRecords,
+    exportCsv: _exportCsv,
+    docMarkdown: (id) => docs.docs[id]?['markdown']?.toString() ?? '',
+  );
+
+  /// 迭代 4：会话和消息。
+  late final MockIm im = MockIm(me: () => currentUser, emit: _emit);
+
+  /// 迭代 3：日历与重复日程。
+  late final MockCalendar calendar = MockCalendar(me: () => currentUser, emit: _emit);
 
   /// 迭代 3：任务扩展和任务清单。
   late final MockTasks taskApi = MockTasks(
@@ -238,18 +282,35 @@ class MockBackend {
     final body = upload || req.body.isEmpty ? <String, dynamic>{} : (jsonDecode(req.body) as Map).cast<String, dynamic>();
     final m = req.method;
     try {
+      // 迭代 4 全局搜索：带 types 参数（前端总会带）走这里；只搜知识库的旧调用仍交给 docs
+      if (path == '/search' && q.containsKey('types')) return _json(_search(q));
+      if (path == '/recent') return _json(_recent());
+      final ad = admin.handle(m, seg, q, body);
+      if (ad != null) return ad.$2 == null ? http.Response('', ad.$1) : _json(ad.$2!, ad.$1);
       final d = docs.handle(m, seg, q, body, rawBody: upload ? req.bodyBytes : null);
       if (d != null) return d.$2 == null ? http.Response('', d.$1) : _json(d.$2!, d.$1);
+      final imr = im.handle(m, seg, q, body);
+      if (imr != null) return imr.$2 == null ? http.Response('', imr.$1) : _json(imr.$2!, imr.$1);
+      final cal = calendar.handle(m, seg, q, body);
+      if (cal != null) return cal.$2 == null ? http.Response('', cal.$1) : _json(cal.$2!, cal.$1);
       final tk = taskApi.handle(m, seg, q, body);
       if (tk != null) return tk.$2 == null ? http.Response('', tk.$1) : _json(tk.$2!, tk.$1);
       if (path == '/auth/login' || path == '/auth/refresh') {
         final name = body['username']?.toString();
-        if (name != null) currentUser = name == 'demo' ? 'ou_demo' : 'ou_admin';
+        if (name != null) {
+          final id = name == 'admin' ? 'ou_admin' : name == 'demo' ? 'ou_demo' : name;
+          final u = users.where((u) => u['user_id'] == id || u['username'] == name).firstOrNull;
+          if (u == null) throw MockFail(401, 'INVALID_CREDENTIALS', '账号或密码不正确');
+          if (u['status'] == 'disabled') throw MockFail(403, 'USER_DISABLED', '账号已停用');
+          final saved = admin.passwords[u['user_id']];
+          if (saved != null && body['password'] != saved) throw MockFail(401, 'INVALID_CREDENTIALS', '账号或密码不正确');
+          currentUser = u['user_id'] as String;
+        }
         return _json({
           'access_token': 'mock_access',
           'refresh_token': 'mock_refresh',
           'expires_in': 7200,
-          'user': users.firstWhere((u) => u['user_id'] == currentUser),
+          'user': {...users.firstWhere((u) => u['user_id'] == currentUser), 'permissions': admin.permissionsOf(currentUser)},
         });
       }
       if (path == '/auth/logout') return http.Response('', 204);
@@ -308,6 +369,158 @@ class MockBackend {
     notifications.add(n);
     _emit({'event_type': 'notification.new', 'notification': n});
   }
+
+  // ---------------- 全局搜索（迭代 4） ----------------
+
+  /// 简单分词：按空白切开；连续中文超过 2 个字时按两字一组切（「标定流程」→「标定」「流程」），
+  /// 这样「标定流程」也能搜到「流程的标定」。
+  static List<String> searchTerms(String q) {
+    final out = <String>[];
+    for (final w in q.toLowerCase().split(RegExp(r'\s+'))) {
+      if (w.isEmpty) continue;
+      if (RegExp(r'^[\u4e00-\u9fff]{3,}$').hasMatch(w)) {
+        for (var i = 0; i < w.length; i += 2) {
+          out.add(w.substring(i, (i + 2).clamp(0, w.length)));
+        }
+      } else {
+        out.add(w);
+      }
+    }
+    return out;
+  }
+
+  static bool _hit(String text, List<String> terms) => terms.isNotEmpty && terms.every((t) => text.toLowerCase().contains(t));
+
+  static String _em(String text, List<String> terms) {
+    var out = text;
+    for (final t in terms) {
+      out = out.replaceAllMapped(RegExp(RegExp.escape(t), caseSensitive: false), (m) => '<em>${m[0]}</em>');
+    }
+    return out.replaceAll('</em><em>', '');
+  }
+
+  static String _snippet(String text, List<String> terms) {
+    final flat = text.replaceAll(RegExp(r'[#>*`\-\[\]]'), '').replaceAll('\n', ' ');
+    final i = terms.isEmpty ? 0 : flat.toLowerCase().indexOf(terms.first);
+    final from = (i - 20).clamp(0, flat.length);
+    final cut = flat.substring(from, (from + 80).clamp(0, flat.length));
+    return _em('${from > 0 ? '…' : ''}$cut', terms);
+  }
+
+  Map<String, dynamic> _search(Map<String, String> q) {
+    final terms = searchTerms(q['q'] ?? '');
+    final types = (q['types'] ?? 'user,chat,message,doc,wiki,record,task,event').split(',');
+    final size = int.tryParse(q['page_size'] ?? '') ?? 3;
+    final offset = int.tryParse(q['page_token'] ?? '') ?? 0;
+    final start = int.tryParse(q['start_ms'] ?? '');
+    bool after(String? iso) => start == null || (DateTime.tryParse(iso ?? '')?.millisecondsSinceEpoch ?? 0) >= start;
+    final u = currentUser;
+    final all = <String, List<Map<String, dynamic>>>{};
+    void add(String type, Map<String, dynamic> item) => (all[type] ??= []).add(item);
+
+    for (final t in types) {
+      switch (t) {
+        case 'user':
+          for (final x in users) {
+            final text = '${x['name']} ${x['department'] ?? ''} ${x['title'] ?? ''}';
+            if (_hit(text, terms)) add(t, {'id': x['user_id'], 'title': _em(x['name'] as String, terms), 'snippet': _em('${x['department']} · ${x['title']}', terms)});
+          }
+        case 'chat':
+          for (final c in im.chats.values) {
+            if (c['chat_type'] != 'group' || !(c['member_ids'] as List).contains(u)) continue; // 只搜我在的群
+            if (_hit(c['name']?.toString() ?? '', terms)) add(t, {'id': c['chat_id'], 'title': _em(c['name'] as String, terms), 'snippet': '${(c['member_ids'] as List).length} 位成员'});
+          }
+        case 'message':
+          for (final e in im.messages.entries) {
+            final c = im.chats[e.key]!;
+            if (!(c['member_ids'] as List).contains(u) || (q['chat_id'] != null && q['chat_id'] != e.key)) continue;
+            for (final m in e.value.reversed) {
+              final text = ((m['content'] as Map)['text'] ?? '').toString();
+              if (m['recalled'] == true || !_hit(text, terms)) continue;
+              if (q['sender_id'] != null && q['sender_id'] != m['sender_id']) continue;
+              if (!after(m['created_at'] as String?)) continue;
+              add(t, {
+                'id': m['message_id'], 'title': _em(text, terms), 'snippet': '', 'updated_at': m['created_at'],
+                'extra': {'chat_id': e.key, 'sender_id': m['sender_id'], if (m['thread_root_id'] != null && m['also_send_to_chat'] != true) 'thread_root_id': m['thread_root_id']},
+              });
+            }
+          }
+        case 'doc':
+          for (final d in docs.docs.values) {
+            if (d['deleted_at'] != null || d['wiki_space_id'] != null || docs.docRole(d['doc_id'] as String, u) == null) continue;
+            if (q['owner_id'] != null && q['owner_id'] != d['owner_id']) continue;
+            if (!after(d['updated_at'] as String?)) continue;
+            final title = d['title'].toString(), md = d['markdown'].toString();
+            if (_hit('$title $md', terms)) {
+              add(t, {'id': d['doc_id'], 'title': _em(title, terms), 'snippet': _snippet(md, terms), 'updated_at': d['updated_at'], 'extra': {'owner_id': d['owner_id']}});
+            }
+          }
+        case 'wiki':
+          for (final n in docs.nodes.values) {
+            if (n['deleted'] == true || docs.spaceRole(n['space_id'] as String, u) == null && u != 'ou_admin') continue;
+            final d = docs.docs[n['obj_id']];
+            final md = d?['markdown']?.toString() ?? '';
+            if (_hit('${n['title']} $md', terms)) {
+              add(t, {
+                'id': n['node_id'], 'title': _em(n['title'].toString(), terms), 'snippet': _snippet(md, terms), 'updated_at': n['updated_at'],
+                'extra': {'space_id': n['space_id'], 'doc_id': n['obj_id'], 'owner_id': d?['owner_id']},
+              });
+            }
+          }
+        case 'record':
+          for (final e in records.entries) {
+            if (q['table_key'] != null && q['table_key'] != e.key) continue;
+            final table = tables[e.key]!;
+            final pf = table['primary_field']?.toString() ?? 'name';
+            for (final r in e.value) {
+              final f = (r['fields'] as Map).cast<String, dynamic>();
+              final text = f.values.whereType<String>().join(' ');
+              if (_hit(text, terms)) {
+                add(t, {
+                  'id': r['record_id'], 'title': _em(f[pf]?.toString() ?? '', terms), 'snippet': _snippet(text, terms),
+                  'extra': {'table_key': e.key, 'table_name': table['name']},
+                });
+              }
+            }
+          }
+        case 'task':
+          for (final x in taskApi.tasks.values) {
+            if (_hit('${x['title']} ${x['description'] ?? ''}', terms)) {
+              add(t, {'id': x['task_id'], 'title': _em(x['title'].toString(), terms), 'snippet': _em(x['description']?.toString() ?? '', terms), 'updated_at': x['updated_at']});
+            }
+          }
+        case 'event':
+          for (final x in calendar.events.values) {
+            if (!(x['attendee_ids'] as List).contains(u)) continue;
+            if (_hit('${x['title']} ${x['location'] ?? ''}', terms)) {
+              add(t, {
+                'id': x['event_id'], 'title': _em(x['title'].toString(), terms),
+                'snippet': _em(x['location']?.toString() ?? '', terms), 'extra': {'start_ms': x['start_ms']},
+              });
+            }
+          }
+      }
+    }
+    return {
+      'groups': [
+        for (final t in types)
+          if (all[t] != null)
+            {
+              'type': t,
+              'total': all[t]!.length,
+              'items': all[t]!.skip(offset).take(size).toList(),
+              if (offset + size < all[t]!.length) 'page_token': '${offset + size}',
+            },
+      ],
+    };
+  }
+
+  Map<String, dynamic> _recent() => {
+        'items': [
+          {'type': 'doc', 'id': 'doc_1', 'title': docs.docs['doc_1']?['title'] ?? '文档', 'visited_at': DateTime.now().subtract(const Duration(hours: 1)).toUtc().toIso8601String()},
+          {'type': 'table', 'id': 'projects', 'title': '项目管理', 'visited_at': DateTime.now().subtract(const Duration(hours: 3)).toUtc().toIso8601String()},
+        ],
+      };
 
   // ---------------- 多维表格 ----------------
 
@@ -562,6 +775,86 @@ class MockBackend {
     return _json(v);
   }
 
+  /// 测试数据模式的导入：按字段类型把文字转成值；人员按姓名匹配，匹配不到进失败明细。
+  (int, List<String>) _importRecords(String key, String mode, List<Map<String, dynamic>> rows) {
+    final t = tables[key];
+    if (t == null) throw MockFail(404, 'NOT_FOUND', '数据表不存在');
+    final fields = {for (final f in (t['fields'] as List)) (f as Map)['field_name'] as String: f};
+    final primary = t['primary_field']?.toString() ?? (t['fields'] as List).first['field_name'] as String;
+    final rs = records[key]!;
+    var ok = 0;
+    final errs = <String>[];
+    for (var i = 0; i < rows.length; i++) {
+      final out = <String, dynamic>{};
+      String? err;
+      for (final e in rows[i].entries) {
+        final f = fields[e.key];
+        final v = e.value.toString().trim();
+        if (f == null || v.isEmpty) continue;
+        switch (f['type']) {
+          case 2:
+            final n = num.tryParse(v);
+            if (n == null) err = '「${f['title']}」不是数字：$v';
+            out[e.key] = n;
+          case 4:
+            out[e.key] = v.split(RegExp(r'[,，、;]')).map((x) => x.trim()).where((x) => x.isNotEmpty).toList();
+          case 5:
+            final d = DateTime.tryParse(v.replaceAll('/', '-'));
+            if (d == null) err = '「${f['title']}」日期格式不对：$v';
+            out[e.key] = d?.millisecondsSinceEpoch;
+          case 7:
+            out[e.key] = const ['是', 'true', '1', 'TRUE', '√', 'y', 'yes'].contains(v);
+          case 11:
+            final names = v.split(RegExp(r'[,，、;]')).map((x) => x.trim()).where((x) => x.isNotEmpty);
+            final ids = <Map<String, dynamic>>[];
+            for (final n in names) {
+              final u = users.where((x) => x['name'] == n).firstOrNull;
+              if (u == null) {
+                err = '「${f['title']}」找不到成员：$n';
+              } else {
+                ids.add(_u(u['user_id'] as String));
+              }
+            }
+            out[e.key] = ids;
+          default:
+            out[e.key] = v;
+        }
+      }
+      err ??= _validate(key, out)?['message']?.toString();
+      if (err != null) {
+        errs.add('${i + 2},$err');
+        continue;
+      }
+      final existing = mode == 'upsert' ? rs.where((r) => (r['fields'] as Map)[primary]?.toString() == out[primary]?.toString()).firstOrNull : null;
+      if (existing != null) {
+        (existing['fields'] as Map).addAll(out);
+        _recordEvent(key, 'updated', existing);
+      } else {
+        final r = {'record_id': _id('rec'), 'fields': out, 'created_at': DateTime.now().toUtc().toIso8601String()};
+        rs.add(r);
+        _recordEvent(key, 'created', r);
+      }
+      ok++;
+    }
+    return (ok, errs);
+  }
+
+  String _exportCsv(String key, List<String>? ids) {
+    final t = tables[key];
+    if (t == null) throw MockFail(404, 'NOT_FOUND', '数据表不存在');
+    final fs = [for (final f in (t['fields'] as List)) (f as Map).cast<String, dynamic>()];
+    String cell(dynamic v) {
+      final text = v is List ? v.map((e) => e is Map ? (e['name'] ?? e['text'] ?? '') : e).join('、') : v is Map ? (v['name'] ?? v['text'] ?? '').toString() : (v ?? '').toString();
+      return text.contains(RegExp(r'[",\n]')) ? '"${text.replaceAll('"', '""')}"' : text;
+    }
+    final b = StringBuffer('${fs.map((f) => cell(f['title'] ?? f['field_name'])).join(',')}\n');
+    for (final r in records[key]!) {
+      if (ids != null && !ids.contains(r['record_id'])) continue;
+      b.writeln(fs.map((f) => cell((r['fields'] as Map)[f['field_name']])).join(','));
+    }
+    return b.toString();
+  }
+
   Map<String, dynamic>? _validate(String key, Map<String, dynamic> fields) {
     for (final f in _fields(tables[key]!)) {
       if (f['required'] == true && fields.containsKey(f['field_name']) && isEmptyLike(fields[f['field_name']])) {
@@ -593,6 +886,14 @@ class MockBackend {
         return _json(c, 201);
       }
       return _json({'items': list, 'has_more': false});
+    }
+    if (seg.length == 6 && seg[4] == 'comments' && m == 'DELETE') {
+      final list = recordComments['$key/${seg[3]}'] ?? [];
+      final i = list.indexWhere((c) => c['comment_id'] == seg[5]);
+      if (i < 0) throw _Fail(_err(404, 'NOT_FOUND', '评论不存在'));
+      if (list[i]['user_id'] != currentUser && currentUser != 'ou_admin') throw _Fail(_err(403, 'FORBIDDEN', '只能删除自己的评论'));
+      list.removeAt(i);
+      return http.Response('', 204);
     }
     if (seg.length == 5 && seg[4] == 'history') {
       return _json({'items': (recordHistory['$key/${seg[3]}'] ?? []).reversed.toList(), 'has_more': false});

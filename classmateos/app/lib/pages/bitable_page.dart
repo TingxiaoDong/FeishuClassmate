@@ -14,6 +14,7 @@ import 'create_table_dialog.dart';
 import 'shell.dart';
 import 'table_view.dart';
 import 'table_manage.dart';
+import 'table_import_export.dart';
 
 class BitablePage extends StatefulWidget {
   const BitablePage({super.key});
@@ -33,6 +34,7 @@ class _BitablePageState extends State<BitablePage> {
 
   /// 通知跳转要打开的记录。
   String? focusRecord;
+  String? focusView;
   StreamSubscription<CosEvent>? _sub;
   late final AppState _s = AppScope.read(context);
 
@@ -64,6 +66,7 @@ class _BitablePageState extends State<BitablePage> {
     setState(() {
       selected = key;
       focusRecord = t['type'] == 'record' ? t['id']?.toString() : null;
+      focusView = t['view_id']?.toString();
     });
   }
 
@@ -114,13 +117,15 @@ class _BitablePageState extends State<BitablePage> {
     }
   }
 
-  Future<void> _createTable() async {
+  Future<void> _createTable({bool fromFile = false}) async {
     final s = AppScope.read(context);
-    final created = await showDialog<CosTableMeta>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => CreateTableDialog(api: s.api),
-    );
+    final created = fromFile
+        ? await showCreateTableFromFile(context)
+        : await showDialog<CosTableMeta>(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => CreateTableDialog(api: s.api),
+          );
     if (created == null || !mounted) return;
     setState(() {
       tables = [...tables.where((t) => t.key != created.key), created];
@@ -185,9 +190,10 @@ class _BitablePageState extends State<BitablePage> {
               child: meta == null
                   ? const BrandPlaceholder(text: '选择一张数据表')
                   : TableView(
-                      key: ValueKey('${meta.key}/$focusRecord'),
+                      key: ValueKey('${meta.key}/$focusRecord/$focusView'),
                       meta: meta,
                       focusRecordId: focusRecord,
+                      initialViewId: focusView,
                       onMetaChanged: _onMetaChanged,
                     ),
             ),
@@ -253,6 +259,13 @@ class _BitablePageState extends State<BitablePage> {
                     icon: Icons.add_rounded,
                     tooltip: '新建数据表',
                     onPressed: loading ? null : _createTable,
+                  ),
+                if (AppScope.of(context).feature('table.create') && AppScope.of(context).feature('table.import'))
+                  FsIconButton(
+                    key: const ValueKey('create-table-from-file'),
+                    icon: Icons.upload_file_rounded,
+                    tooltip: '从 Excel / CSV 新建',
+                    onPressed: loading ? null : () => _createTable(fromFile: true),
                   ),
                 FsIconButton(
                   icon: Icons.refresh_rounded,
@@ -336,6 +349,7 @@ class _BitablePageState extends State<BitablePage> {
                                   setState(() {
                                     selected = t.key;
                                     focusRecord = null;
+                                    focusView = null;
                                   });
                                 } else {
                                   pushScoped(

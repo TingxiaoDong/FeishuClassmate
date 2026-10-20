@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api/phase2.dart';
+import '../api/phase2_docs.dart';
 import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
@@ -160,6 +161,39 @@ class _NotificationPanelState extends State<NotificationPanel> {
     _s.openTarget(target);
   }
 
+  /// 文档权限申请：通知里直接同意 / 拒绝（后端只允许文档所有者处理，已处理过返回 409）。
+  final Map<String, String> _handled = {};
+
+  bool _isAccessRequest(CosNotification n) =>
+      n.type == 'doc.access_request' && n.target['doc_id'] != null && n.target['request_id'] != null;
+
+  Future<void> _handleRequest(CosNotification n, bool approve) async {
+    setState(() => _handled[n.id] = '处理中…');
+    try {
+      await _s.api.handleAccessRequest(n.target['doc_id'].toString(), n.target['request_id'].toString(), approve);
+      if (!mounted) return;
+      setState(() => _handled[n.id] = approve ? '已同意' : '已拒绝');
+      if (!n.read) {
+        setState(() => n.read = true);
+        _s.setNotifUnread(_s.notifUnread - 1);
+        unawaited(_s.api.markNotificationsRead(ids: [n.id]).catchError((_) {}));
+      }
+    } on CosApiException catch (e) {
+      if (!mounted) return;
+      if (e.statusCode == 409) {
+        setState(() => _handled[n.id] = '已处理');
+        showToast(context, '这个申请已经处理过了');
+      } else {
+        setState(() => _handled.remove(n.id));
+        showToast(context, describeError(e), error: true);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _handled.remove(n.id));
+      showToast(context, describeError(e), error: true);
+    }
+  }
+
   Future<void> _readAll() async {
     try {
       await _s.api.markNotificationsRead(all: true);
@@ -299,6 +333,27 @@ class _NotificationPanelState extends State<NotificationPanel> {
                 child: Text(n.summary,
                     maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5, color: Fs.text2)),
               ),
+            ],
+            if (_isAccessRequest(n)) ...[
+              const SizedBox(height: 8),
+              if (_handled[n.id] != null)
+                Text(_handled[n.id]!, key: ValueKey('notif-handled-${n.id}'), style: const TextStyle(fontSize: 12.5, color: Fs.text3))
+              else
+                Row(children: [
+                  FilledButton(
+                    key: ValueKey('notif-approve-${n.id}'),
+                    style: FilledButton.styleFrom(visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 14)),
+                    onPressed: () => _handleRequest(n, true),
+                    child: const Text('同意', style: TextStyle(fontSize: 12.5)),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    key: ValueKey('notif-reject-${n.id}'),
+                    style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact, padding: const EdgeInsets.symmetric(horizontal: 14)),
+                    onPressed: () => _handleRequest(n, false),
+                    child: const Text('拒绝', style: TextStyle(fontSize: 12.5)),
+                  ),
+                ]),
             ],
             const SizedBox(height: 4),
             Text(fmtRelative(n.createdAt?.toLocal()), style: const TextStyle(fontSize: 12, color: Fs.text3)),

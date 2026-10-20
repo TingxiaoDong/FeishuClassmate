@@ -258,7 +258,7 @@ class _DocsPageState extends State<DocsPage> {
         _guard(() => _s.api.updateFolder(f.folderId, parentId: to.id, toRoot: to.id == null), '已移动');
       case 'delete':
         final ok = await confirmDialog(context,
-            title: '删除文件夹', content: '「${f.name}」和里面的文档都会移到回收站，30 天内可以恢复。', ok: '删除', danger: true);
+            title: '删除文件夹', content: '「${f.name}」会被删除。里面你自己的文档会移到回收站，30 天内可以恢复；别人共享给你的文档只会移出这个文件夹。', ok: '删除', danger: true);
         if (ok) _guard(() => _s.api.deleteFolder(f.folderId), '已移到回收站');
     }
   }

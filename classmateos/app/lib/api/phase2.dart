@@ -15,17 +15,23 @@ class CosCapabilities {
 
   /// 后端没有 /capabilities（404）时为 true：只开放一期功能 + table.create。
   final bool legacy;
-  const CosCapabilities(this.features, {this.legacy = false});
+
+  /// 迭代 5（R-LG-01）：Web 端地址，用来生成可分享网址；没有时由前端推算。
+  final String? webUrl;
+  const CosCapabilities(this.features, {this.legacy = false, this.webUrl});
 
   static const legacyDefaults = CosCapabilities({'table.create': true}, legacy: true);
 
   /// 缺失的 key 当作 false。
   bool has(String key) => features[key] == true;
 
-  factory CosCapabilities.fromJson(Map<String, dynamic> j) => CosCapabilities({
-        for (final e in (_m(j['features']) ?? const {}).entries)
-          if (e.value is bool) e.key: e.value as bool,
-      });
+  factory CosCapabilities.fromJson(Map<String, dynamic> j) => CosCapabilities(
+        {
+          for (final e in (_m(j['features']) ?? const {}).entries)
+            if (e.value is bool) e.key: e.value as bool,
+        },
+        webUrl: j['web_url'] is String && (j['web_url'] as String).isNotEmpty ? j['web_url'] as String : null,
+      );
 }
 
 // ---------------- 视图 ----------------

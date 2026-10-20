@@ -49,10 +49,20 @@ class _WikiPageState extends State<WikiPage> {
   Future<void> _checkTarget() async {
     final t = _s.pendingTarget;
     if (t == null || _s.module != AppModule.wiki) return;
-    if (t['type'] != 'wiki' && t['type'] != 'wiki_node') return;
+    if (t['type'] != 'wiki' && t['type'] != 'wiki_node' && t['type'] != 'wiki_space') return;
     _s.pendingTarget = null;
     final id = t['id']?.toString();
     if (id == null) return;
+    if (t['type'] == 'wiki_space') {
+      // 迭代 5：工作台快捷方式直接打开知识空间
+      try {
+        final sp = await _s.api.getSpace(id);
+        if (mounted) _openSpace(sp);
+      } catch (e) {
+        if (mounted) showToast(context, describeError(e), error: true);
+      }
+      return;
+    }
     try {
       final n = await _s.api.getNode(id);
       final sp = await _s.api.getSpace(n.spaceId);
@@ -603,7 +613,7 @@ class _SpaceViewState extends State<SpaceView> {
         }
       case 'delete':
         final ok = await confirmDialog(context,
-            title: '删除知识空间', content: '「${sp.name}」和里面的 ${sp.pageCount} 个页面都会被删除，无法恢复。', ok: '删除', danger: true);
+            title: '删除知识空间', content: '「${sp.name}」和里面的 ${sp.pageCount} 个页面会一起移到回收站，30 天内可在回收站恢复。', ok: '删除', danger: true);
         if (!ok) return;
         try {
           await _s.api.deleteSpace(sp.spaceId);

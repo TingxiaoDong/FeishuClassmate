@@ -12,6 +12,9 @@ import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import 'message_extras.dart';
+import '../api/phase2_im.dart';
+import 'message_more.dart';
 
 /// 单行 / 多行文本输入弹窗；取消返回 null。
 Future<String?> promptText(
@@ -60,7 +63,8 @@ Future<String?> promptText(
 // ---------------- 消息右键菜单 ----------------
 
 /// 消息可执行的操作。
-enum MsgAction { reply, copy, edit, recall }
+/// 迭代 4 新增：thread（回复话题）、forward（转发）、select（多选）、urgent（加急）。
+enum MsgAction { reply, thread, copy, forward, select, favorite, pin, unpin, edit, urgent, recall }
 
 /// 当前用户能对这条消息做哪些操作。
 List<MsgAction> messageActions(AppState s, CosMessage m) {
@@ -68,10 +72,19 @@ List<MsgAction> messageActions(AppState s, CosMessage m) {
   final mine = m.senderId == s.me.userId;
   final admin = s.me.role == 'admin';
   final age = m.createdAt == null ? Duration.zero : DateTime.now().difference(m.createdAt!.toLocal());
+  final canForward = s.feature('message.forward') && m.msgType != 'interactive_card';
   return [
     MsgAction.reply,
+    if (s.feature('message.thread') && m.threadRootId == null) MsgAction.thread,
     if (m.msgType == 'text' || m.msgType == 'post') MsgAction.copy,
+    if (canForward) MsgAction.forward,
+    if (canForward) MsgAction.select,
+    if (s.feature('message.favorite')) MsgAction.favorite,
+    // Pin 只在群里；当前是否已固定由会话的 pinned_message_ids 判断（后端没给时只显示「固定」）
+    if (s.feature('message.pin') && s.chat(m.chatId)?.isGroup == true && m.threadRootId == null)
+      (s.chat(m.chatId)!.pinnedMessageIds.contains(m.messageId) ? MsgAction.unpin : MsgAction.pin),
     if (mine && m.msgType == 'text') MsgAction.edit,
+    if (mine && s.feature('message.urgent')) MsgAction.urgent,
     if ((mine && age.inSeconds < 120) || admin) MsgAction.recall,
   ];
 }
@@ -98,7 +111,14 @@ Future<MsgAction?> showMessageMenu(BuildContext context, Offset globalPos, List<
       for (final a in actions)
         switch (a) {
           MsgAction.reply => item(a, Icons.format_quote_rounded, '回复'),
+          MsgAction.thread => item(a, Icons.forum_outlined, '回复话题'),
           MsgAction.copy => item(a, Icons.copy_rounded, '复制'),
+          MsgAction.forward => item(a, Icons.shortcut_rounded, '转发'),
+          MsgAction.select => item(a, Icons.checklist_rounded, '多选'),
+          MsgAction.favorite => item(a, Icons.star_outline_rounded, '收藏'),
+          MsgAction.pin => item(a, Icons.push_pin_outlined, '固定到会话'),
+          MsgAction.unpin => item(a, Icons.push_pin_rounded, '取消固定'),
+          MsgAction.urgent => item(a, Icons.priority_high_rounded, '加急', color: Fs.red),
           MsgAction.edit => item(a, Icons.edit_outlined, '编辑'),
           MsgAction.recall => item(a, Icons.undo_rounded, '撤回', color: Fs.red),
         },
@@ -123,7 +143,24 @@ Future<CosMessage?> runMessageAction(BuildContext context, MsgAction a, CosMessa
         final ok = await confirmDialog(context, title: '撤回消息', content: '撤回后所有人都看不到这条消息。', ok: '撤回', danger: true);
         if (!ok) return null;
         return await s.api.recallMessage(m.messageId);
+      case MsgAction.forward:
+        await showForwardDialog(context, [m], mode: 'single');
+        return null;
+      case MsgAction.urgent:
+        return await showUrgentDialog(context, m);
+      case MsgAction.favorite:
+        await s.api.favoriteMessage(m.messageId, true);
+        if (context.mounted) showToast(context, '已收藏，可以在头像菜单「我的收藏」里查看');
+        return null;
+      case MsgAction.pin:
+      case MsgAction.unpin:
+        await s.api.pinMessage(m.chatId, m.messageId, a == MsgAction.pin);
+        s.notePinChanged(m.chatId, m.messageId, a == MsgAction.pin);
+        if (context.mounted) showToast(context, a == MsgAction.pin ? '已固定到会话顶部' : '已取消固定');
+        return null;
       case MsgAction.reply:
+      case MsgAction.thread:
+      case MsgAction.select:
         return null;
     }
   } catch (e) {
@@ -138,10 +175,11 @@ String messagePreview(AppState s, CosMessage m) {
   if (m.recalled) return '${m.senderId == s.me.userId ? '你' : s.userName(m.senderId)}撤回了一条消息';
   return switch (m.msgType) {
     'text' => m.text.replaceAll('\n', ' '),
-    'post' => '[富文本] ${c['title'] ?? c['text'] ?? ''}',
+    'post' => '[富文本] ${c['title'] ?? c['text'] ?? (c['markdown'] ?? '').toString().split('\n').first}',
     'image' => '[图片]',
     'file' => '[文件] ${c['file_name'] ?? ''}',
     'interactive_card' => '[卡片] ${c['question'] ?? c['title'] ?? ''}',
+    'merge_forward' => '[聊天记录] ${c['title'] ?? ''}',
     'system' => c['text']?.toString() ?? '[系统消息]',
     _ => '[${m.msgType}]',
   };
@@ -335,6 +373,19 @@ class _ChatSettingsDialogState extends State<_ChatSettingsDialog> {
                     value: chat.muted,
                     onChanged: busy ? null : (v) => _run(() => api.updateChatSettings(chat.chatId, muted: v)),
                   ),
+                  if (isGroup && s.feature('message.thread'))
+                    SwitchListTile(
+                      key: const ValueKey('thread-mode'),
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      title: const Text('话题模式', style: TextStyle(fontSize: 14)),
+                      subtitle: const Text('开启后群里只能以话题形式发言，每条消息都可以展开讨论', style: TextStyle(fontSize: 12)),
+                      value: chat.threadMode,
+                      // 只有群主和管理员能改，后端仍会校验
+                      onChanged: busy || (chat.ownerId != s.me.userId && s.me.role != 'admin')
+                          ? null
+                          : (v) => _run(() => api.setThreadMode(chat.chatId, v), ok: v ? '已开启话题模式' : '已关闭话题模式'),
+                    ),
                   if (isGroup) ...[
                     const Divider(indent: 20, endIndent: 20),
                     Padding(

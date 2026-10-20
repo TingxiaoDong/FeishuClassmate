@@ -3,6 +3,7 @@
 /// 云盘文件、表格分页、文档并发保护、日程修改与回复、任务指派与删除。
 library;
 
+import 'services/device_label.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
@@ -35,11 +36,22 @@ class CosApiException implements Exception {
     final cn = _cjk.hasMatch(message);
     if (statusCode == 0) return '连不上服务器，请检查网络或服务地址';
     if (statusCode == 401) {
-      return message == 'invalid credentials' ? '用户名或密码错误' : '登录已过期，请重新登录';
+      if (message == 'invalid credentials') return '用户名或密码错误';
+      if (code == 'SESSION_IDLE_TIMEOUT') return '长时间没有操作，请重新登录';
+      return '登录已过期，请重新登录';
     }
+    // 423 账号锁定：后端的中文提示里带了剩余分钟数，原样展示
+    if (statusCode == 423) return cn ? message : '登录失败次数过多，账号已锁定，请稍后再试';
+    if (code == 'PASSWORD_CHANGE_REQUIRED') return '请先修改初始密码';
     if (code == 'ACCOUNT_DISABLED') return '账号已被禁用，请联系管理员';
     if (errors.isNotEmpty) {
-      return errors.map((e) => '${_fieldLabel(e['field'])}${e['message']}').join('；');
+      // 后端的中文提示多数已经写明了是哪一项（如「密码最短长度必须是…」），这时不再拼英文字段名
+      return errors.map((e) {
+        final msg = e['message']?.toString() ?? '';
+        final label = _fieldLabel(e['field']);
+        final known = label.isNotEmpty && !label.startsWith('${e['field']}');
+        return known || !_cjk.hasMatch(msg) ? '$label$msg' : msg;
+      }).join('；');
     }
     if (statusCode == 403) return cn ? message : '没有权限执行这个操作';
     if (statusCode == 404) return cn ? message : '内容不存在或已被删除';
@@ -103,6 +115,12 @@ class CosApiClient {
   DateTime? expiresAt;
   final http.Client _http;
 
+  /// 当前登录的设备会话（迭代 5 批次 1）。
+  String? sessionId;
+
+  /// 后端要求先改密（403 PASSWORD_CHANGE_REQUIRED）时回调。
+  void Function()? onPasswordChangeRequired;
+
   /// 令牌更新（登录 / 刷新轮换）后回调，用于持久化。
   void Function(CosSession session)? onSession;
 
@@ -163,6 +181,7 @@ class CosApiClient {
         if (await refresh()) return _send(method, path, body: body, query: query);
         onAuthLost?.call();
       }
+      if (auth && e.statusCode == 403 && e.code == 'PASSWORD_CHANGE_REQUIRED') onPasswordChangeRequired?.call();
       rethrow;
     }
   }
@@ -175,6 +194,13 @@ class CosApiClient {
     Map<String, String>? query,
   }) =>
       _call(method, path, body: body, query: query);
+
+  /// 不带令牌的请求（扫码登录的二维码创建、轮询）。
+  Future<Map<String, dynamic>> requestPublic(String method, String path, {Map<String, dynamic>? body}) =>
+      _call(method, path, body: body, auth: false);
+
+  /// 扫码登录确认后，用后端返回的令牌建立会话（结构同 /auth/login 的返回）。
+  CosUser adoptSession(Map<String, dynamic> data) => _applySession(data).user;
 
   /// 二期分页列表的解析。
   CosPage<T> parsePage<T>(Map<String, dynamic> data, T Function(Map<String, dynamic>) f) => _page(data, f);
@@ -255,11 +281,15 @@ class CosApiClient {
     refreshToken = data['refresh_token'] as String? ?? refreshToken;
     final sec = (data['expires_in'] as num?)?.toInt() ?? 7200;
     expiresAt = DateTime.now().add(Duration(seconds: sec));
+    sessionId = data['session_id']?.toString() ?? sessionId;
+    final uj = (data['user'] as Map).cast<String, dynamic>();
+    // must_change_password 顶层和 user 里都可能有，任一为 true 即须改密
+    if (data['must_change_password'] == true) uj['must_change_password'] = true;
     final s = CosSession(
       accessToken ?? '',
       refreshToken ?? '',
       expiresAt!,
-      CosUser.fromJson((data['user'] as Map).cast<String, dynamic>()),
+      CosUser.fromJson(uj),
     );
     onSession?.call(s);
     return s;
@@ -267,7 +297,10 @@ class CosApiClient {
 
   /// 登录并缓存令牌。
   Future<CosUser> login(String username, String password) async {
-    final data = await _call('POST', '/auth/login', body: {'username': username, 'password': password}, auth: false);
+    // 带上设备名和平台，「登录设备」列表里才不会显示「未知设备」
+    final data = await _call('POST', '/auth/login',
+        body: {'username': username, 'password': password, 'device_name': localDeviceName(), 'platform': localPlatform()},
+        auth: false);
     return _applySession(data).user;
   }
 
@@ -401,20 +434,24 @@ class CosApiClient {
     Map<String, dynamic> content, {
     String? clientMsgId,
     String? replyToMessageId,
+    String? threadRootId,
+    bool alsoSendToChat = false,
   }) async {
     final data = await _call('POST', '/chats/$chatId/messages', body: {
       'msg_type': msgType,
       'content': content,
       'client_msg_id': clientMsgId ?? newClientMsgId(),
       if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+      if (threadRootId != null) 'thread_root_id': threadRootId,
+      if (threadRootId != null && alsoSendToChat) 'also_send_to_chat': true,
     });
     return CosMessage.fromJson(data);
   }
 
   Future<CosMessage> sendText(String chatId, String text,
-          {List<Map<String, String>> mentions = const [], String? replyToMessageId}) =>
+          {List<Map<String, String>> mentions = const [], String? replyToMessageId, String? threadRootId, bool alsoSendToChat = false}) =>
       sendMessage(chatId, 'text', {'text': text, if (mentions.isNotEmpty) 'mentions': mentions},
-          replyToMessageId: replyToMessageId);
+          replyToMessageId: replyToMessageId, threadRootId: threadRootId, alsoSendToChat: alsoSendToChat);
 
   /// 标记已读；[messageId] 为空表示读到最新一条。
   Future<void> markRead(String chatId, {String? messageId}) async =>

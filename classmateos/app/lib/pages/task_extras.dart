@@ -2,6 +2,8 @@
 /// 每一块都受功能开关控制；后端没开放时整块不显示。
 library;
 
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
@@ -58,14 +60,29 @@ class _TaskExtrasState extends State<TaskExtras> {
   String? error;
   CosTask get t => widget.task;
 
+  StreamSubscription<CosEvent>? _live;
+  Timer? _debounce;
+
   @override
   void initState() {
     super.initState();
+    // 详情开着时，别人发的评论、改的子任务实时显示（不重建组件，输入框里的草稿保留）
+    _live = AppScope.read(context).eventStream.listen((e) {
+      if (!mounted) return;
+      if (e.eventType != 'task.comment_changed' && e.eventType != 'task.updated' && e.eventType != 'task.created' && e.eventType != 'task.deleted') return;
+      final id = (e.raw['task_id'] ?? e.task?['task_id'] ?? e.task?['parent_id'])?.toString();
+      final parent = e.task?['parent_id']?.toString();
+      if (id != t.taskId && parent != t.taskId && !subs.any((x) => x.taskId == id)) return;
+      _debounce?.cancel();
+      _debounce = Timer(const Duration(milliseconds: 300), _load);
+    });
     _load();
   }
 
   @override
   void dispose() {
+    _live?.cancel();
+    _debounce?.cancel();
     input.dispose();
     comment.dispose();
     super.dispose();
@@ -539,7 +556,7 @@ class _TaskExtrasState extends State<TaskExtras> {
 
 /// 动态由前端按结构拼文案，不依赖后端的中文句子。
 String activityText(AppState s, Map<String, dynamic> a) {
-  final who = s.userName((a['operator_id'] ?? '').toString());
+  final who = s.operatorName((a['operator_id'] ?? '').toString(), viaBot: a['via_bot'] == true);
   final changes = [for (final c in (a['changes'] as List? ?? const [])) if (c is Map) c];
   if (changes.isEmpty) return '$who ${_actionLabels[a['action']] ?? '修改了任务'}';
   final parts = [

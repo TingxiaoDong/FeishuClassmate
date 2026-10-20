@@ -1,6 +1,7 @@
 /// 通用组件：头像、标签、搜索框、悬停项、空状态、选人弹窗、格式化工具。
 library;
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -72,6 +73,9 @@ class FsAvatar extends StatelessWidget {
   final bool isGroup;
   final IconData? icon;
   final Color? color;
+
+  /// 头像图片（http(s) 或 data: 地址）；加载失败时回退到文字头像。
+  final String? url;
   const FsAvatar({
     super.key,
     required this.name,
@@ -81,6 +85,7 @@ class FsAvatar extends StatelessWidget {
     this.isGroup = false,
     this.icon,
     this.color,
+    this.url,
   });
 
   static Color colorFor(String s) {
@@ -93,6 +98,26 @@ class FsAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final u = url;
+    if (u != null && u.isNotEmpty && !isBot && !isGroup) {
+      final fallback = FsAvatar(name: name, seed: seed, size: size, color: color, icon: icon);
+      ImageProvider? img;
+      if (u.startsWith('data:')) {
+        final i = u.indexOf('base64,');
+        if (i > 0) {
+          try {
+            img = MemoryImage(base64Decode(u.substring(i + 7)));
+          } catch (_) {}
+        }
+      } else if (u.startsWith('http')) {
+        img = NetworkImage(u);
+      }
+      if (img != null) {
+        return ClipOval(
+          child: Image(image: img, width: size, height: size, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback),
+        );
+      }
+    }
     final bg = color ?? (isBot ? Fs.primary : colorFor(seed ?? name));
     final ic = icon ?? (isBot ? Icons.smart_toy_rounded : (isGroup ? Icons.groups_rounded : null));
     final trimmed = name.trim();

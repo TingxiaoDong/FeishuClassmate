@@ -419,7 +419,7 @@ class _RecordDialogState extends State<RecordDialog> {
         !isNew &&
         !narrow &&
         size.width >= 1000 &&
-        AppScope.of(context).feature('record.comments');
+        hasRecordActivity(AppScope.of(context));
     return Dialog(
       insetPadding: EdgeInsets.all(narrow ? 12 : 40),
       child: SizedBox(
@@ -569,11 +569,11 @@ class _RecordDialogState extends State<RecordDialog> {
                       icon: const Icon(Icons.delete_outline_rounded, size: 18),
                       label: const Text('删除记录'),
                     ),
-                  if (!isNew && !showActivity && AppScope.of(context).feature('record.comments'))
+                  if (!isNew && !showActivity && hasRecordActivity(AppScope.of(context)))
                     TextButton.icon(
                       onPressed: () => showRecordActivitySheet(context, widget.table, widget.record!.recordId),
                       icon: const Icon(Icons.forum_outlined, size: 18),
-                      label: const Text('评论与修改记录'),
+                      label: Text(recordActivityLabel(AppScope.of(context))),
                     ),
                   const Spacer(),
                   if (!isNew && dirty.isNotEmpty)

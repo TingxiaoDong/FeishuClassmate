@@ -12,6 +12,7 @@ import '../widgets/common.dart';
 import '../widgets/doc_side_panels.dart';
 import '../widgets/share_panel.dart';
 import 'bitable_field.dart';
+import 'table_import_export.dart';
 
 const kTableVisibility = {'all': '组织内所有人可查看', 'members': '仅协作者可访问'};
 
@@ -29,6 +30,7 @@ List<PopupMenuEntry<String>> tableMenuItems(AppState s, CosTableMeta t) {
       PopupMenuItem(value: 'rename', child: _mi(Icons.edit_outlined, '重命名与描述')),
     ],
     if (manage) PopupMenuItem(value: 'copy', child: _mi(Icons.copy_all_rounded, '创建副本')),
+    if (s.feature('table.import') && p.canEdit) PopupMenuItem(value: 'import', child: _mi(Icons.upload_file_rounded, '导入数据')),
     if (manage && !t.builtin && (p.canDelete || p.canManage)) ...[
       const PopupMenuDivider(),
       PopupMenuItem(value: 'delete', child: _mi(Icons.delete_outline_rounded, '删除数据表', danger: true)),
@@ -47,6 +49,8 @@ Future<(TableMenuResult, CosTableMeta?)?> runTableAction(BuildContext context, C
   final s = AppScope.read(context);
   final api = s.api;
   switch (action) {
+    case 'import':
+      return await showTableImport(context, t) ? (TableMenuResult.changed, t) : null;
     case 'perm':
       await showSharePanel(
         context,
@@ -131,6 +135,16 @@ class _DeleteTableState extends State<_DeleteTable> {
 }
 
 /// 手机端：记录动态放在底部抽屉。
+/// 记录动态面板：`record.comments` 或 `record.history` 任一打开就显示（代码审查 F2）。
+bool hasRecordActivity(AppState s) => s.feature('record.comments') || s.feature('record.history');
+
+/// 面板入口按钮的文字，按打开的开关显示。
+String recordActivityLabel(AppState s) => switch ((s.feature('record.comments'), s.feature('record.history'))) {
+      (true, true) => '评论与修改记录',
+      (true, false) => '评论',
+      _ => '修改记录',
+    };
+
 Future<void> showRecordActivitySheet(BuildContext context, CosTableMeta table, String recordId) {
   final s = AppScope.read(context);
   return showModalBottomSheet<void>(
@@ -295,23 +309,30 @@ class RecordActivity extends StatefulWidget {
 }
 
 class _RecordActivityState extends State<RecordActivity> {
+  /// 0 = 评论，1 = 修改记录；只开了其中一个开关时固定为那一个。
   int tab = 0;
   List<CosRecordComment>? comments;
   List<CosRecordHistory>? history;
   String? error;
 
+  /// 评论页签和输入框只看 `record.comments`；修改记录页签只看 `record.history`（代码审查 F2）。
+  bool get _hasComments => AppScope.read(context).feature('record.comments');
+  bool get _hasHistory => AppScope.read(context).feature('record.history');
+
   @override
   void initState() {
     super.initState();
+    if (!_hasComments) tab = 1;
     _load();
   }
 
   Future<void> _load() async {
     final api = AppScope.read(context).api;
+    final wantComments = _hasComments, wantHistory = _hasHistory;
     try {
       final r = await Future.wait([
-        api.recordComments(widget.table.key, widget.recordId),
-        api.recordHistory(widget.table.key, widget.recordId),
+        wantComments ? api.recordComments(widget.table.key, widget.recordId) : Future.value(<CosRecordComment>[]),
+        wantHistory ? api.recordHistory(widget.table.key, widget.recordId) : Future.value(<CosRecordHistory>[]),
       ]);
       if (!mounted) return;
       setState(() {
@@ -343,8 +364,8 @@ class _RecordActivityState extends State<RecordActivity> {
         Padding(
           padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
           child: Row(children: [
-            tabBtn(0, '评论', comments?.length),
-            tabBtn(1, '修改记录', null),
+            if (s.feature('record.comments')) tabBtn(0, '评论', comments?.length),
+            if (s.feature('record.history')) tabBtn(1, '修改记录', null),
             const Spacer(),
             FsIconButton(icon: Icons.refresh_rounded, size: 16, tooltip: '刷新', onPressed: _load),
           ]),
@@ -364,7 +385,7 @@ class _RecordActivityState extends State<RecordActivity> {
                       ? _comments(s)
                       : _history(s),
         ),
-        if (tab == 0 && widget.table.permsFor(s.me).canComment || tab == 0 && widget.table.permissions == null)
+        if (tab == 0 && s.feature('record.comments') && (widget.table.permsFor(s.me).canComment || widget.table.permissions == null))
           Container(
             padding: const EdgeInsets.all(10),
             decoration: const BoxDecoration(border: Border(top: BorderSide(color: Fs.lineLight))),
@@ -406,6 +427,16 @@ class _RecordActivityState extends State<RecordActivity> {
                 Text(s.userName(c.userId), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
                 const SizedBox(width: 6),
                 Text(fmtRelative(c.createdAt), style: const TextStyle(fontSize: 11, color: Fs.text3)),
+                const Spacer(),
+                // 本人或表管理者可以删除（对接说明 11.11）
+                if (c.userId == s.me.userId || widget.table.permsFor(s.me).canManage)
+                  FsIconButton(
+                    key: ValueKey('rc_del_${c.commentId}'),
+                    icon: Icons.delete_outline_rounded,
+                    size: 15,
+                    tooltip: '删除评论',
+                    onPressed: () => _deleteComment(s, c),
+                  ),
               ]),
               const SizedBox(height: 3),
               Text.rich(richTextSpan(c.content, style: const TextStyle(fontSize: 13, color: Fs.text1, height: 1.5))),
@@ -414,6 +445,17 @@ class _RecordActivityState extends State<RecordActivity> {
         ]);
       },
     );
+  }
+
+  Future<void> _deleteComment(AppState s, CosRecordComment c) async {
+    final ok = await confirmDialog(context, title: '删除评论', content: '删除后无法恢复。', ok: '删除', danger: true);
+    if (!ok || !mounted) return;
+    try {
+      await s.api.deleteRecordComment(widget.table.key, widget.recordId, c.commentId);
+      if (mounted) setState(() => comments = [...?comments?.where((x) => x.commentId != c.commentId)]);
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
   }
 
   String _val(CosFieldMeta? f, dynamic v) {
@@ -456,7 +498,7 @@ class _RecordActivityState extends State<RecordActivity> {
                 padding: const EdgeInsets.only(bottom: 16),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text.rich(TextSpan(children: [
-                    TextSpan(text: s.userName(h.operatorId), style: const TextStyle(fontWeight: FontWeight.w500)),
+                    TextSpan(text: s.operatorName(h.operatorId, viaBot: h.viaBot), style: const TextStyle(fontWeight: FontWeight.w500)),
                     TextSpan(text: ' $verb', style: const TextStyle(color: Fs.text2)),
                   ]), style: const TextStyle(fontSize: 13)),
                   Text(h.at == null ? '' : fmtDateTime(h.at!.toLocal()), style: const TextStyle(fontSize: 11, color: Fs.text3)),

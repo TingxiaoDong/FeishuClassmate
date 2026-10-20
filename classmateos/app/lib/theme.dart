@@ -23,6 +23,10 @@ class Fs {
   static const bgNav = Color(0xFFEEF0F3);
   static const hover = Color(0xFFF2F3F5);
   static const selected = Color(0xFFE1EAFF);
+  static const bgSide = Color(0xFFF7F8FA);
+  static const orangeLight = Color(0xFFFFF3E5);
+  static const redLight = Color(0xFFFDEDED);
+  static const greenLight = Color(0xFFE9F7EA);
   // 功能色
   static const red = Color(0xFFF54A45);
   static const green = Color(0xFF34C724);

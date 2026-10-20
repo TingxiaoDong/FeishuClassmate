@@ -6,11 +6,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'notification_center.dart';
+import 'workbench_apps.dart';
+import '../api/phase2_jobs.dart';
+import 'message_more.dart';
 import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/agent_sidebar.dart';
+import '../widgets/robot_card.dart';
 import 'shell.dart';
 import 'tasks_page.dart' show fmtDue;
 
@@ -27,6 +32,9 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
   List<CosTask> tasks = [];
   List<CosCalendarEvent> todayEvents = [];
   bool loading = true;
+
+  /// 迭代 5（R-WB-02）：报表时间范围。
+  CosReportRange range = CosReportRange.week;
 
   @override
   void initState() {
@@ -48,7 +56,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     setState(() => loading = true);
     final today = dayStart(DateTime.now());
     await Future.wait([
-      s.api.dashboardSummary().then((v) {
+      (s.feature('dashboard.range') ? s.api.dashboardSummaryRange(range) : s.api.dashboardSummary()).then((v) {
         summary = v;
         summaryError = null;
       }).catchError((Object e) {
@@ -81,11 +89,16 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
             children: [
               if (MediaQuery.sizeOf(context).width < 720 && s.feature('notifications'))
                 const Align(alignment: Alignment.centerRight, child: NotificationBell()),
+              if (MediaQuery.sizeOf(context).width < 720 && s.feature('message.favorite'))
+                Align(alignment: Alignment.centerRight, child: TextButton.icon(onPressed: () => showFavorites(context), icon: const Icon(Icons.star_outline_rounded), label: const Text('我的收藏'))),
               _banner(s, myTodo.length),
+              const SizedBox(height: 16),
+              const RobotCard(),
+              if (s.feature('agent.metrics')) ...[const SizedBox(height: 16), const AgentMetricsCard()],
               const SizedBox(height: 20),
               _sectionTitle('常用应用'),
               const SizedBox(height: 10),
-              _apps(s),
+              if (s.feature('workbench.apps')) const WorkbenchApps() else _apps(s),
               const SizedBox(height: 24),
               Wrap(spacing: 16, runSpacing: 16, children: [
                 SizedBox(width: cols == 1 ? w : (w - 16) / 2, child: _todoCard(s, myTodo)),
@@ -99,6 +112,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
                   Text('更新于 ${fmtHm(DateTime.parse(summary!['generated_at'] as String).toLocal())}',
                       style: const TextStyle(fontSize: 12, color: Fs.text3)),
                 const Spacer(),
+                if (s.feature('dashboard.range')) _rangePicker(),
                 TextButton.icon(
                   onPressed: loading ? null : _load,
                   icon: loading
@@ -125,6 +139,50 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
           );
         }),
       ),
+    );
+  }
+
+  Widget _rangePicker() {
+    Future<void> pick(String r) async {
+      var next = CosReportRange(r);
+      if (r == 'custom') {
+        final now = DateTime.now();
+        final d = await showDateRangePicker(
+          context: context,
+          firstDate: DateTime(now.year - 2),
+          lastDate: now,
+          initialDateRange: range.start == null ? null : DateTimeRange(start: range.start!, end: range.end!.subtract(const Duration(days: 1))),
+        );
+        if (d == null) return;
+        next = CosReportRange('custom', d.start, d.end.add(const Duration(days: 1)));
+      }
+      setState(() {
+        range = next;
+        summary = null;
+      });
+      _load();
+    }
+
+    return SegmentedButton<String>(
+      key: const ValueKey('report-range'),
+      showSelectedIcon: false,
+      style: SegmentedButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        selectedBackgroundColor: Fs.primaryLight,
+        selectedForegroundColor: Fs.primary,
+        side: const BorderSide(color: Fs.line),
+        textStyle: const TextStyle(fontSize: 12),
+      ),
+      segments: [
+        const ButtonSegment(value: 'week', label: Text('本周')),
+        const ButtonSegment(value: 'month', label: Text('本月')),
+        const ButtonSegment(value: 'semester', label: Text('本学期')),
+        ButtonSegment(value: 'custom', label: Text(range.range == 'custom' ? range.label : '自定义')),
+      ],
+      selected: {range.range},
+      // 再点一次「自定义」可以重新选日期
+      onSelectionChanged: (v) => pick(v.first),
+      emptySelectionAllowed: false,
     );
   }
 
@@ -187,7 +245,7 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
       AppModule.contacts: '组织成员',
     };
     return Wrap(spacing: 12, runSpacing: 12, children: [
-      for (final m in AppModule.values.where((m) => m != AppModule.workbench && s.moduleVisible(m)))
+      for (final m in AppModule.values.where((m) => m != AppModule.workbench && m != AppModule.me && s.moduleVisible(m)))
         HoverBox(
           onTap: () => s.go(m),
           hoverColor: Colors.white,
@@ -286,7 +344,13 @@ class _WorkbenchPageState extends State<WorkbenchPage> {
     final success = ((d['tool_success'] as Map?)?['by_tool'] as Map?) ?? const {};
     final equip = (d['equipment'] as Map?) ?? const {};
     final subs = (d['submissions'] as Map?) ?? const {};
-    final failures = (d['failures'] as List?) ?? const [];
+    // 正式格式是数组；兼容对象写法 {recent: [...]} / {items: [...]}，避免格式不符时整页报错
+    final rawFailures = d['failures'];
+    final failures = rawFailures is List
+        ? rawFailures
+        : rawFailures is Map
+            ? ((rawFailures['recent'] ?? rawFailures['items']) is List ? (rawFailures['recent'] ?? rawFailures['items']) as List : const [])
+            : const [];
     final overdue = (kpi['gantt_overdue'] as num?) ?? 0;
 
     return [

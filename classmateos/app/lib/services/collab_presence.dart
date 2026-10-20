@@ -117,7 +117,10 @@ class CollabPresence {
   final String color;
   final void Function(List<PresencePeer> peers) onChanged;
 
-  CollabPresence({required this.api, required this.docId, required this.userId, required this.name, required this.color, required this.onChanged});
+  /// 被收回查看权限（4410 后查文档返回 403 / 404）时调用；之后不再重连。
+  final void Function()? onRevoked;
+
+  CollabPresence({required this.api, required this.docId, required this.userId, required this.name, required this.color, required this.onChanged, this.onRevoked});
 
   final int clientId = Random().nextInt(0x3fffffff);
   int _clock = 0;
@@ -148,11 +151,35 @@ class CollabPresence {
         final entries = decodeAwarenessMessage(Uint8List.fromList(raw));
         if (entries != null) _apply(entries);
       }, onDone: () {
-        // 4409：正文被整体替换（保存 / 还原）；4410：权限变化。都重连。
+        // 4409：正文被整体替换（保存 / 还原），重连。
+        // 4410：权限变化。先查一次文档：没权限（403 / 404）就停，避免每秒被断开一次。
+        if (ch.closeCode == 4410) {
+          _recheckAccess();
+          return;
+        }
         _scheduleRetry(ch.closeCode == 4404 || ch.closeCode == 4401 || ch.closeCode == 4403 ? null : 1);
       }, onError: (_) => _scheduleRetry(5), cancelOnError: true);
     } catch (_) {
       _scheduleRetry(10);
+    }
+  }
+
+  Future<void> _recheckAccess() async {
+    _renew?.cancel();
+    if (_closed) return;
+    try {
+      await api.getDoc(docId);
+      _scheduleRetry(1);
+    } on CosApiException catch (e) {
+      if (e.statusCode == 403 || e.statusCode == 404) {
+        _peers.clear();
+        _emit();
+        onRevoked?.call();
+        return;
+      }
+      _scheduleRetry(5);
+    } catch (_) {
+      _scheduleRetry(5);
     }
   }
 

@@ -3,6 +3,8 @@
 /// 历史版本（R-DC-03）、插入图片和附件（R-DC-04）、在线协作者头像（R-DC-09）。
 library;
 
+import 'job_dialog.dart';
+import '../api/phase2_jobs.dart';
 import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
@@ -15,6 +17,7 @@ import '../app_state.dart';
 import '../models.dart';
 import '../services/collab_presence.dart';
 import '../theme.dart';
+import 'agent_sidebar.dart';
 import 'common.dart';
 import 'cos_file_view.dart';
 import 'doc_side_panels.dart';
@@ -179,6 +182,10 @@ class _DocEditorState extends State<DocEditor> {
         color: '#${(FsAvatar.colorFor(app.me.userId).toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}',
         onChanged: (p) {
           if (mounted) setState(() => peers = p);
+        },
+        // 查看权限被收回：重新载入，页面会显示无权限状态
+        onRevoked: () {
+          if (mounted) _load();
         },
       )..start();
     }
@@ -830,6 +837,11 @@ class _DocEditorState extends State<DocEditor> {
               }
             },
           ),
+        AgentSidebarButton(contextOf: () {
+          final sel = body.selection;
+          final picked = sel.isValid && !sel.isCollapsed ? sel.textInside(body.text) : null;
+          return AgentContext(kind: widget.wikiPage ? 'wiki' : 'doc', id: d.docId, title: title.text.trim().isEmpty ? d.title : title.text.trim(), selection: picked);
+        }),
         if (_permsOn) ...[
           const SizedBox(width: 6),
           FilledButton.icon(
@@ -887,6 +899,21 @@ class _DocEditorState extends State<DocEditor> {
           } catch (e) {
             if (context.mounted) showToast(context, describeError(e), error: true);
           }
+        } else if (v.startsWith('dl:')) {
+          final fmt = v.substring(3);
+          final base = (title.text.trim().isEmpty ? '未命名文档' : title.text.trim()).replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+          if (fmt == 'md') {
+            // Markdown 前端直接生成，不走后端
+            await saveTextLocally(context, '$base.md', '# ${title.text.trim()}\n\n${body.text}', mime: 'text/markdown');
+          } else {
+            if (dirty) await _save(silent: true);
+            if (!context.mounted) return;
+            if (dirty || saveError != null) {
+              showToast(context, '请先保存成功再导出，避免下载旧版本', error: true);
+              return;
+            }
+            await runJobDialog(context, title: '导出为 ${fmt == 'pdf' ? 'PDF' : 'Word'}', start: () => api.startDocExport(d.docId, fmt));
+          }
         } else if (v == 'history') {
           _openSide(_Side.history);
         } else if (v == 'reload') {
@@ -922,6 +949,13 @@ class _DocEditorState extends State<DocEditor> {
         if (starOn) item('star', d.starred ? Icons.star_rounded : Icons.star_outline_rounded, d.starred ? '取消收藏' : '收藏'),
         if (_versionsOn) item('history', Icons.history_rounded, '历史记录'),
         item('copy', Icons.copy_rounded, '复制 Markdown'),
+        if (app.feature('doc.export')) ...[
+          const PopupMenuDivider(),
+          item('dl:md', Icons.download_rounded, '下载为 Markdown'),
+          item('dl:pdf', Icons.picture_as_pdf_outlined, '下载为 PDF'),
+          item('dl:docx', Icons.article_outlined, '下载为 Word'),
+        ] else
+          item('dl:md', Icons.download_rounded, '下载为 Markdown'),
         item('reload', Icons.refresh_rounded, '重新载入'),
         if (canDelete) ...[
           const PopupMenuDivider(),

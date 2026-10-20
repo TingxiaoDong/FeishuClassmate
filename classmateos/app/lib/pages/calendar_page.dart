@@ -1,6 +1,7 @@
 /// 日历：迷你月历 + 周视图 / 日视图时间轴，点击空白处快速创建日程。
 library;
 
+import '../services/rrule.dart';
 import '../widgets/recurrence_picker.dart';
 import 'dart:async';
 
@@ -37,6 +38,8 @@ class _CalendarPageState extends State<CalendarPage> {
   @override
   void initState() {
     super.initState();
+    _s.addListener(_checkTarget);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkTarget());
     _liveEvents = AppScope.read(context).eventStream.listen((e) {
       if (mounted && (e.eventType.startsWith('calendar.') || e.eventType.startsWith('task.') || e.eventType == 'resync.required')) _load();
     });
@@ -47,8 +50,30 @@ class _CalendarPageState extends State<CalendarPage> {
     });
   }
 
+  late final AppState _s = AppScope.read(context);
+
+  /// 从全局搜索 / 通知跳过来：{type: calendar | event, id, start_ms?}，翻到日程所在的那一周并打开详情。
+  Future<void> _checkTarget() async {
+    final t = _s.pendingTarget;
+    if (!mounted || t == null || _s.module != AppModule.calendar) return;
+    if (t['type'] != 'calendar' && t['type'] != 'event') return;
+    _s.pendingTarget = null;
+    final ms = t['start_ms'] is num ? (t['start_ms'] as num).toInt() : int.tryParse('${t['start_ms'] ?? ''}');
+    if (ms == null) return;
+    final d = dayStart(DateTime.fromMillisecondsSinceEpoch(ms));
+    setState(() {
+      focus = d;
+      miniMonth = DateTime(d.year, d.month);
+    });
+    await _load();
+    if (!mounted) return;
+    final e = events.where((x) => x.eventId == t['id']).firstOrNull;
+    if (e != null) _detail(e);
+  }
+
   @override
   void dispose() {
+    _s.removeListener(_checkTarget);
     _liveEvents?.cancel();
     clock?.cancel();
     vCtrl.dispose();
@@ -529,18 +554,20 @@ class _CalendarPageState extends State<CalendarPage> {
           radius: 4,
           hoverColor: bg,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(6, 3, 4, 2),
+            // 不到半小时的日程卡片很矮：单行、无上下内边距，避免文字溢出
+            padding: h < 30 ? const EdgeInsets.fromLTRB(6, 0, 4, 0) : const EdgeInsets.fromLTRB(6, 3, 4, 2),
+            alignment: h < 30 ? Alignment.centerLeft : Alignment.topLeft,
             decoration: BoxDecoration(
               color: bg,
               borderRadius: BorderRadius.circular(4),
               border: Border(left: BorderSide(color: color, width: 3)),
             ),
             child: ClipRect(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('${e.isRecurring ? '↻ ' : ''}${e.title}',
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('${e.isRecurring ? '↻ ' : ''}${e.title}${h < 30 ? '  ${fmtHm(e.start)}' : ''}',
                     maxLines: h > 44 ? 2 : 1,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: color == Fs.primary ? Fs.primaryPressed : const Color(0xFF237B19))),
+                    style: TextStyle(fontSize: h < 30 ? 11 : 12, height: h < 30 ? 1.1 : null, fontWeight: FontWeight.w600, color: color == Fs.primary ? Fs.primaryPressed : const Color(0xFF237B19))),
                 if (h > 34)
                   Text('${fmtHm(e.start)} - ${fmtHm(e.end)}',
                       maxLines: 1, style: TextStyle(fontSize: 11, color: color.withValues(alpha: 0.85))),
@@ -608,7 +635,13 @@ class _EventDetail extends StatelessWidget {
                         Navigator.pop(context, 'deleted');
                       }
                     } catch (err) {
-                      if (context.mounted) showToast(context, describeError(err), error: true);
+                      if (!context.mounted) return;
+                      if (err is CosApiException && err.code == 'EVENT_CONFLICT') {
+                        showToast(context, '这个日程刚被别人改过，已刷新，请重新打开后再操作', error: true);
+                        Navigator.pop(context, 'conflict');
+                      } else {
+                        showToast(context, describeError(err), error: true);
+                      }
                     }
                   },
                 ),
@@ -619,6 +652,8 @@ class _EventDetail extends StatelessWidget {
                 sameDate
                     ? '${fmtDateCn(e.start)} ${weekdayCn(e.start)}  ${fmtHm(e.start)} - ${fmtHm(e.end)}'
                     : '${fmtDateCn(e.start)} ${fmtHm(e.start)} - ${fmtDateCn(e.end)} ${fmtHm(e.end)}'),
+            if (e.recurrence != null)
+              _row(Icons.repeat_rounded, '${RRule.tryParse(e.recurrence)?.describe() ?? '自定义重复'}${e.isException ? '（这一次单独改过）' : ''}'),
             if (e.location != null && e.location!.isNotEmpty) _row(Icons.place_outlined, e.location!),
             _row(Icons.person_outline_rounded, '组织者：${s.userName(e.createdBy)}'),
             Padding(
@@ -814,11 +849,13 @@ class _EventEditorState extends State<EventEditor> {
     });
     try {
       if (editing) {
+        // 只改这一次时不能改重复规则；规则没变时不发送，避免后端重算整个系列
+        final ruleChanged = recurringEnabled && scope != 'this' && recurrence != widget.event!.recurrence;
         await s.api.updateEvent(
           widget.event!.eventId,
           scope: scope,
-          recurrence: recurringEnabled ? recurrence : null,
-          clearRecurrence: recurringEnabled && recurrence == null,
+          recurrence: ruleChanged ? recurrence : null,
+          clearRecurrence: ruleChanged && recurrence == null,
           title: title.text.trim(),
           start: date.add(Duration(minutes: startMin)),
           end: endDate.add(Duration(minutes: endMin)),
@@ -844,6 +881,14 @@ class _EventEditorState extends State<EventEditor> {
         Navigator.pop(context, true);
       }
     } catch (e) {
+      // 重复日程的主日程被别人改过：关掉编辑框并刷新，让用户在最新数据上重改
+      if (e is CosApiException && e.code == 'EVENT_CONFLICT') {
+        if (mounted) {
+          showToast(context, '这个日程刚被别人改过，已刷新，请重新打开后再修改', error: true);
+          Navigator.pop(context, true);
+        }
+        return;
+      }
       if (mounted) {
         setState(() {
           saving = false;
@@ -886,6 +931,11 @@ class _EventEditorState extends State<EventEditor> {
             if (s.feature('calendar.recurrence')) ...[
               const SizedBox(height: 12),
               RecurrencePicker(date: date, value: recurrence, onChanged: (v) => setState(() => recurrence = v)),
+              if (editing && widget.event!.isRecurring)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text('保存时选「仅此日程」不会修改重复规则。', style: TextStyle(fontSize: 12, color: Fs.text3)),
+                ),
             ],
             const SizedBox(height: 16),
             TextField(

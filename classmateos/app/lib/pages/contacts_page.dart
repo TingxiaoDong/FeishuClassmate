@@ -9,6 +9,7 @@ import '../models.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'calendar_page.dart' show EventEditor;
+import 'contacts_org.dart';
 import 'shell.dart';
 
 enum _Section {
@@ -102,6 +103,9 @@ class _ContactsPageState extends State<ContactsPage> {
     final k = keyword.toLowerCase();
     final children = <Widget>[];
     switch (section) {
+      case _Section.org when s.feature('org.departments') && k.isEmpty:
+        // 迭代 5：按组织架构逐级浏览；有搜索词时仍按姓名过滤全员
+        children.add(ContactsOrgBrowser(selectedUser: selectedUser, onOpenUser: openUser));
       case _Section.org:
         final users = s.users
             .where((u) => k.isEmpty || u.name.toLowerCase().contains(k) || u.userId.toLowerCase().contains(k) || (u.department ?? '').toLowerCase().contains(k))
@@ -314,7 +318,23 @@ class _ProfileCard extends StatelessWidget {
                     _info(Icons.badge_outlined, '用户 ID', userId),
                     if (u?.email != null) _info(Icons.mail_outline_rounded, '邮箱', u!.email!),
                     _info(Icons.shield_outlined, '角色', role),
-                    _info(Icons.apartment_rounded, '部门', isBot ? '系统服务' : (u?.department ?? '未设置')),
+                    if (!isBot && u?.primaryDepartmentId != null && s.feature('org.departments'))
+                      _infoWidget(Icons.apartment_rounded, '部门', DepartmentPathText(departmentId: u!.primaryDepartmentId!, fallback: u.department))
+                    else
+                      _info(Icons.apartment_rounded, '部门', isBot ? '系统服务' : (u?.department ?? '未设置')),
+                    if (!isBot && u?.leaderId != null)
+                      _infoWidget(
+                        Icons.supervisor_account_outlined,
+                        '直属上级',
+                        InkWell(
+                          onTap: () => onMessage(u.leaderId!),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            FsAvatar(name: s.userName(u!.leaderId!), seed: u.leaderId, size: 20),
+                            const SizedBox(width: 6),
+                            Text(s.userName(u.leaderId!), style: const TextStyle(fontSize: 14, color: Fs.primary)),
+                          ]),
+                        ),
+                      ),
                     if (u?.title != null) _info(Icons.work_outline, '职位', u!.title!),
                     if (u?.phone != null) _info(Icons.phone_outlined, '电话', u!.phone!),
                   ]),
@@ -326,6 +346,16 @@ class _ProfileCard extends StatelessWidget {
       ),
     );
   }
+
+  Widget _infoWidget(IconData icon, String label, Widget value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(children: [
+          Icon(icon, size: 17, color: Fs.text3),
+          const SizedBox(width: 10),
+          SizedBox(width: 64, child: Text(label, style: const TextStyle(fontSize: 13, color: Fs.text3))),
+          Expanded(child: Align(alignment: Alignment.centerLeft, child: value)),
+        ]),
+      );
 
   Widget _info(IconData icon, String label, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),

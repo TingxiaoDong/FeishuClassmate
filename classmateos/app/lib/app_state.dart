@@ -10,8 +10,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'api/phase2.dart';
+import 'api/phase2_admin.dart';
+import 'api/phase2_im.dart';
 import 'api_client.dart';
 import 'models.dart';
+import 'services/app_links.dart';
+import 'widgets/share_panel.dart' show webOriginFor;
 
 /// 导航模块（顺序即左侧导航栏顺序）。
 enum AppModule {
@@ -23,7 +27,9 @@ enum AppModule {
   tasks('任务'),
   drive('云盘'),
   contacts('通讯录'),
-  workbench('工作台');
+  workbench('工作台'),
+  admin('管理后台'),
+  me('我的');
 
   final String label;
   const AppModule(this.label);
@@ -39,7 +45,8 @@ Future<({String platform, String token})?> Function()? pushTokenProvider;
 
 class AppState extends ChangeNotifier {
   final CosApiClient api;
-  final CosUser me;
+  /// 当前用户；资料或权限变化后由 [refreshMe] 更新。
+  CosUser me;
   final VoidCallback onLogout;
 
   AppState({required this.api, required this.me, required this.onLogout});
@@ -73,14 +80,88 @@ class AppState extends ChangeNotifier {
   CosCapabilities caps = CosCapabilities.legacyDefaults;
   bool feature(String key) => caps.has(key);
 
+  /// 可分享网址（R-LG-01）。
+  String shareLinkFor(AppModule m, [Map<String, dynamic>? target]) => shareUrl(webOriginFor(api, caps.webUrl), m, target);
+
   /// 导航里显示的模块（二期模块按功能开关显示）。
   bool moduleVisible(AppModule m) => switch (m) {
         AppModule.wiki => feature('wiki'),
+        AppModule.admin => canAdmin,
         _ => true,
       };
 
+  /// 迭代 5（R-AD-03）：按权限点判断；后端没返回权限点时按 role == admin。
+  bool can(String perm) => me.can(perm);
+
+  /// 管理后台入口：功能开关打开，且至少有一个 admin.* 权限点。
+  bool get canAdmin => feature('admin') && kAdminPermissions.any(can);
+
+  /// 重新拉取当前用户（资料修改、权限 / 部门变化后）。
+  Future<void> refreshMe() async {
+    try {
+      me = await api.me();
+      _userById[me.userId] = me;
+      final i = users.indexWhere((u) => u.userId == me.userId);
+      if (i >= 0) users[i] = me;
+      if (module == AppModule.admin && !canAdmin) module = AppModule.workbench;
+      _notify();
+    } catch (_) {}
+  }
+
+  /// 本地更新当前用户（PATCH /users/me 的返回）。
+  void setMe(CosUser u) {
+    me = CosUser(
+      userId: u.userId,
+      name: u.name,
+      email: u.email,
+      role: u.role,
+      avatarUrl: u.avatarUrl,
+      department: u.department,
+      title: u.title,
+      phone: u.phone,
+      statusText: u.statusText,
+      permissions: u.permissions ?? me.permissions,
+      primaryDepartmentId: u.primaryDepartmentId ?? me.primaryDepartmentId,
+      leaderId: u.leaderId ?? me.leaderId,
+    );
+    _userById[me.userId] = me;
+    final i = users.indexWhere((x) => x.userId == me.userId);
+    if (i >= 0) users[i] = me;
+    _notify();
+  }
+
+  /// 成员目录（管理后台改了成员、部门后刷新）。
+  Future<void> refreshUsers() async {
+    try {
+      users = await api.listUsers();
+      _userById..clear()..addEntries(users.map((u) => MapEntry(u.userId, u)));
+      _notify();
+    } catch (_) {}
+  }
+
   /// 通知中心未读数。
   int notifUnread = 0;
+
+  /// 迭代 4：别人发给我、我还没点「知道了」的加急（顶部红色横幅、会话列表标红）。
+  final List<CosUrgent> urgents = [];
+  bool chatUrgent(String chatId) => urgents.any((u) => u.chatId == chatId);
+
+  Future<void> refreshUrgents() async {
+    if (!feature('message.urgent')) return;
+    try {
+      final l = await api.pendingUrgents();
+      urgents
+        ..clear()
+        ..addAll(l.where((u) => u.fromUserId != me.userId));
+      _notify();
+    } catch (_) {/* 后端还没有补拉接口时，只靠实时事件 */}
+  }
+
+  Future<void> ackUrgent(String messageId) async {
+    await api.ackUrgent(messageId);
+    urgents.removeWhere((u) => u.messageId == messageId);
+    _notify();
+  }
 
   /// 已订阅的 WS 主题（table:xxx）→ 引用计数；重连后自动重新订阅。
   final Map<String, int> _topics = {};
@@ -96,6 +177,7 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
     await Future.wait([refreshChats(), loadCapabilities()]);
     unawaited(refreshNotifUnread());
+    unawaited(refreshUrgents());
     unawaited(registerPush());
     if (realtime) _connectWs();
   }
@@ -196,7 +278,9 @@ class AppState extends ChangeNotifier {
           ch.sink.add(jsonEncode({'type': 'subscribe', 'topic': t}));
         }
         unawaited(loadCapabilities());
+        unawaited(refreshMe()); // 断线期间可能错过权限变化
         unawaited(refreshNotifUnread());
+        unawaited(refreshUrgents());
         _notify();
         _heartbeat?.cancel();
         _heartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
@@ -231,7 +315,7 @@ class AppState extends ChangeNotifier {
   void _handleEvent(CosEvent e) {
     if (e.eventType == 'resync.required') {
       _since = null;
-      refreshChats();
+      scheduleRefreshChats();
     } else if (e.eventType == 'message.receive' && e.message != null) {
       _onMessage(e.message!);
     } else if (e.eventType == 'message.updated' && e.message != null) {
@@ -244,13 +328,107 @@ class AppState extends ChangeNotifier {
       _notify();
     } else if (e.eventType == 'notification.read') {
       unawaited(refreshNotifUnread());
+    } else if (e.eventType == 'message.urgent') {
+      final u = CosUrgent.fromJson(e.raw);
+      if (u.messageId.isNotEmpty && u.fromUserId != me.userId && !urgents.any((x) => x.messageId == u.messageId)) {
+        urgents.add(u);
+        _notify();
+      }
+    } else if (e.eventType == 'message.urgent_acked') {
+      // 我在另一台设备上点了「知道了」
+      urgents.removeWhere((x) => x.messageId == e.raw['message_id']);
+      _notify();
     } else if (e.eventType == 'capabilities.changed') {
       unawaited(loadCapabilities());
-    } else if (e.eventType == 'message.read' || e.eventType.startsWith('chat.')) {
+    } else if (e.eventType == 'permissions.changed') {
+      // 迭代 5：角色 / 权限点变化，重新拉 /users/me
+      unawaited(refreshMe());
+    } else if (e.eventType == 'department.changed' || e.eventType == 'user.updated') {
+      unawaited(refreshUsers());
+    } else if (e.eventType == 'message.read') {
+      _onRead(e);
+    } else if (e.eventType == 'chat.updated' && _applyChatUpdate(e.chat)) {
+      // 会话资料 / 固定消息变化：本地已更新，不必全量刷新
+    } else if (e.eventType.startsWith('chat.')) {
+      // chat.created / member_added / member_removed 等结构变化：合并后刷新一次
       if (e.eventType == 'chat.member_removed' && e.userId == me.userId && e.chat?['chat_id'] == currentChatId) currentChatId = null;
-      refreshChats();
+      scheduleRefreshChats();
     }
     _events.add(e);
+  }
+
+  // ---------------- 会话列表的增量更新（代码审查 F1） ----------------
+
+  /// 全量刷新会话列表的防抖间隔：短时间内多次触发只请求一次。
+  static const chatsRefreshDebounce = Duration(milliseconds: 400);
+  Timer? _chatsRefreshTimer;
+
+  /// 合并短时间内的多次全量刷新请求（结构变化、新会话、话题回复等）。
+  void scheduleRefreshChats() {
+    if (_disposed || _stopped) return;
+    _chatsRefreshTimer?.cancel();
+    _chatsRefreshTimer = Timer(chatsRefreshDebounce, () {
+      _chatsRefreshTimer = null;
+      refreshChats();
+    });
+  }
+
+  /// `message.read`：只处理自己（其他设备）已读，把该会话未读清零；
+  /// 别人的已读只影响消息上的已读数，由会话页从 [eventStream] 处理。
+  void _onRead(CosEvent e) {
+    final r = e.read ?? const {};
+    final uid = (r['user_id'] ?? e.raw['user_id'] ?? e.userId)?.toString();
+    final chatId = (r['chat_id'] ?? e.raw['chat_id'])?.toString();
+    if (uid != me.userId || chatId == null) return;
+    if ((unread[chatId] ?? 0) == 0 && (chat(chatId)?.unreadCount ?? 0) == 0) return;
+    unread[chatId] = 0;
+    chat(chatId)?.unreadCount = 0;
+    _notify();
+  }
+
+  /// `chat.updated`：会话存在时直接覆盖资料字段；返回 false 表示本地没有，需要全量刷新。
+  bool _applyChatUpdate(Map<String, dynamic>? j) {
+    final id = j?['chat_id']?.toString();
+    final c = id == null ? null : chat(id);
+    if (c == null || j == null) return false;
+    if (j.containsKey('name')) c.name = j['name']?.toString();
+    if (j.containsKey('description')) c.description = j['description']?.toString();
+    if (j.containsKey('owner_id')) c.ownerId = j['owner_id']?.toString();
+    if (j['member_ids'] is List) c.memberIds = [for (final x in j['member_ids'] as List) x.toString()];
+    if (j['pinned_message_ids'] is List) c.pinnedMessageIds = [for (final x in j['pinned_message_ids'] as List) x.toString()];
+    if (j['thread_mode'] is bool) c.threadMode = j['thread_mode'] as bool;
+    final u = j['updated_at'] == null ? null : DateTime.tryParse(j['updated_at'].toString());
+    if (u != null) c.updatedAt = u;
+    if (!c.memberIds.contains(me.userId) && c.memberIds.isNotEmpty) {
+      // 自己已不在群里：以后端为准
+      return false;
+    }
+    _sortChats();
+    _notify();
+    return true;
+  }
+
+  /// 本地应用一条新消息到会话列表；本地没有这个会话时返回 false。
+  bool _applyMessageToList(CosMessage m, {required bool countUnread}) {
+    final c = chat(m.chatId);
+    if (c == null) return false;
+    final threadOnly = m.threadRootId != null && !m.alsoSendToChat;
+    if (threadOnly) {
+      // 话题回复不改主会话的最后一条和未读，话题未读数以后端为准（防抖合并刷新）
+      if (m.senderId != me.userId) scheduleRefreshChats();
+      return true;
+    }
+    lastMessage[m.chatId] = m;
+    c.lastMessage = m;
+    if (m.createdAt != null) c.updatedAt = m.createdAt;
+    if (countUnread) {
+      final n = (unread[m.chatId] ?? c.unreadCount) + 1;
+      unread[m.chatId] = n;
+      c.unreadCount = n;
+    }
+    _sortChats();
+    _notify();
+    return true;
   }
 
   void _scheduleReconnect() {
@@ -270,17 +448,22 @@ class AppState extends ChangeNotifier {
     });
   }
 
+  /// `message.receive`：只在本地更新最后一条、未读和排序；本地没有这个会话（新会话）时才全量刷新。
   void _onMessage(CosMessage m) {
-    lastMessage[m.chatId] = m;
     _messages.add(m);
-    if (module == AppModule.messages && currentChatId == m.chatId) markRead(m.chatId);
-    refreshChats();
+    final viewing = module == AppModule.messages && currentChatId == m.chatId;
+    final mine = m.senderId == me.userId;
+    if (!_applyMessageToList(m, countUnread: !viewing && !mine)) {
+      scheduleRefreshChats();
+      return;
+    }
+    if (viewing && !mine && (m.threadRootId == null || m.alsoSendToChat)) markRead(m.chatId);
   }
 
+  /// 自己刚发出的消息（接口返回）：本地更新会话列表，不计未读。
   void addLocalMessage(CosMessage m) {
-    lastMessage[m.chatId] = m;
     _messages.add(m);
-    refreshChats();
+    if (!_applyMessageToList(m, countUnread: false)) scheduleRefreshChats();
   }
 
   Future<void> refreshChats() async {
@@ -311,6 +494,10 @@ class AppState extends ChangeNotifier {
     return _userById[id]?.name ?? id;
   }
 
+  /// 修改记录里的操作人：机器人代办时显示「飞书同学 代 张三」（AGENT_PLAN M2）。
+  String operatorName(String id, {bool viaBot = false}) =>
+      viaBot && id != kBotId ? '$kBotName 代 ${userName(id)}' : userName(id);
+
   bool isDriveChat(CosChat c) =>
       c.isDrive;
 
@@ -338,14 +525,23 @@ class AppState extends ChangeNotifier {
       .where((e) => chats.any((c) => c.chatId == e.key && !isDriveChat(c) && !c.muted))
       .fold(0, (a, e) => a + e.value);
 
+  /// Pin 变化后本地先改（后端随后推 chat.updated 带 pinned_message_ids）。
+  void notePinChanged(String chatId, String messageId, bool pinned) {
+    final c = chat(chatId);
+    if (c == null) return;
+    c.pinnedMessageIds = [...c.pinnedMessageIds.where((x) => x != messageId), if (pinned) messageId];
+    _notify();
+  }
+
   // ---------------- 导航 ----------------
 
   /// 打开通知指向的位置：doc / record / task / calendar / approval …
   void openTarget(Map<String, dynamic> target) {
+    lastTarget = target;
     final type = target['type']?.toString() ?? '';
     final m = switch (type) {
       'doc' => AppModule.docs,
-      'wiki' || 'wiki_node' => feature('wiki') ? AppModule.wiki : AppModule.docs,
+      'wiki' || 'wiki_node' || 'wiki_space' => feature('wiki') ? AppModule.wiki : AppModule.docs,
       'record' || 'table' => AppModule.bitable,
       'task' => AppModule.tasks,
       'calendar' || 'event' => AppModule.calendar,
@@ -359,9 +555,46 @@ class AppState extends ChangeNotifier {
       return;
     }
     go(m);
+    lastTarget = target;
+    _notify();
+  }
+
+  /// 最近一次 openTarget 的目标，用于地址栏显示具体对象（只在 Web 端用）。
+  Map<String, dynamic>? lastTarget;
+
+  /// 当前页面对应的路径（Web 端写进地址栏）。
+  String get currentPath {
+    final t = lastTarget;
+    if (module == AppModule.messages && currentChatId != null) return appPathFor(module, {'type': 'chat', 'id': currentChatId});
+    if (t != null && _targetModule(t) == module) return appPathFor(module, t);
+    return appPathFor(module);
+  }
+
+  AppModule? _targetModule(Map<String, dynamic> t) => switch (t['type']?.toString() ?? '') {
+        'doc' => AppModule.docs,
+        'wiki' || 'wiki_node' || 'wiki_space' => feature('wiki') ? AppModule.wiki : AppModule.docs,
+        'record' || 'table' => AppModule.bitable,
+        'task' => AppModule.tasks,
+        'calendar' || 'event' => AppModule.calendar,
+        'chat' || 'message' => AppModule.messages,
+        _ => null,
+      };
+
+  /// 打开一个网址路径（Web 地址栏、桌面端粘贴的分享链接）。认不出时返回 false。
+  bool openPath(String path) {
+    final l = parseAppPath(path);
+    if (l == null || !moduleVisible(l.module)) return false;
+    if (l.target != null) {
+      openTarget(l.target!);
+    } else {
+      lastTarget = null;
+      go(l.module);
+    }
+    return true;
   }
 
   void go(AppModule m) {
+    if (m != module) lastTarget = null;
     module = m;
     if (m == AppModule.messages && currentChatId != null) markRead(currentChatId!);
     _notify();
@@ -449,6 +682,7 @@ class AppState extends ChangeNotifier {
     }());
     _heartbeat?.cancel();
     _reconnectTimer?.cancel();
+    _chatsRefreshTimer?.cancel();
     _wsSub?.cancel();
     _ws?.sink.close();
     onLogout();
@@ -467,6 +701,7 @@ class AppState extends ChangeNotifier {
     _heartbeat?.cancel();
     _events.close();
     _reconnectTimer?.cancel();
+    _chatsRefreshTimer?.cancel();
     _wsSub?.cancel();
     _ws?.sink.close();
     _messages.close();

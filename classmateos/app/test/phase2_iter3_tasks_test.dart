@@ -138,6 +138,36 @@ void main() {
       await settle(tester);
     }
 
+    testWidgets('点通知直接打开子任务详情（GET /tasks/:id）', (tester) async {
+      await boot(tester);
+      state.openTarget({'type': 'task', 'id': 'task_1b'});
+      await settle(tester);
+      expect(mock.requests.any((r) => r.method == 'GET' && r.url.path.endsWith('/tasks/task_1b')), isTrue);
+      expect(find.text('统计滑落类失败'), findsOneWidget, reason: '详情里显示这个子任务自己的子任务');
+      expect(state.pendingTarget, isNull);
+    });
+
+    testWidgets('详情开着时别人发的评论实时出现，输入框草稿保留', (tester) async {
+      await boot(tester);
+      await tester.tap(find.text('我关注的').first);
+      await settle(tester);
+      await tester.tap(find.text('整理机械臂抓取实验数据'));
+      await settle(tester);
+      expect(find.text('评论 2'), findsOneWidget);
+      final box = find.widgetWithText(TextField, '发表评论，输入 @姓名 提及成员');
+      await tester.ensureVisible(box);
+      await tester.enterText(box, '我写到一半');
+      mock.taskApi.comments['task_1']!.add({
+        'comment_id': 'tc_remote', 'user_id': 'ou_zhang', 'created_at': DateTime.now().toUtc().toIso8601String(),
+        'attachments': [], 'content': {'text': '图已经传到云盘了', 'mentions': []},
+      });
+      mock.taskApi.emit({'event_type': 'task.comment_changed', 'task_id': 'task_1'});
+      await settle(tester);
+      expect(find.text('评论 3'), findsOneWidget);
+      expect(find.text('图已经传到云盘了'), findsOneWidget);
+      expect(find.text('我写到一半'), findsOneWidget);
+    });
+
     testWidgets('开关关闭时：没有「我关注的」和任务清单', (tester) async {
       await boot(tester, tasksOff: true);
       expect(find.text('我负责的'), findsWidgets);

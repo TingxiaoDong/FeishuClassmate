@@ -68,6 +68,10 @@ class _TasksPageState extends State<TasksPage> {
   CosTask? listSel;
   final _listKey = GlobalKey<TaskListViewState>();
 
+  /// 从通知 / 搜索打开的任务（可能是子任务或不在当前列表里）。
+  CosTask? targetTask;
+  late final AppState _s = AppScope.read(context);
+
   List<_TaskFilter> _filters(AppState s) =>
       [for (final f in _TaskFilter.values) if (f != _TaskFilter.followed || s.feature('task.followers')) f];
 
@@ -81,13 +85,48 @@ class _TasksPageState extends State<TasksPage> {
         _listKey.currentState?.reload();
       }
     });
+    _s.addListener(_checkTarget);
     _load();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkTarget());
   }
 
   @override
   void dispose() {
     _liveEvents?.cancel();
+    _s.removeListener(_checkTarget);
     super.dispose();
+  }
+
+  /// 通知中心 / 全局搜索跳转：{type: task, id}。用 GET /tasks/:id 取任务后直接打开详情。
+  Future<void> _checkTarget() async {
+    final t = _s.pendingTarget;
+    if (!mounted || t == null || _s.module != AppModule.tasks || t['type'] != 'task') return;
+    _s.pendingTarget = null;
+    final id = (t['task_id'] ?? t['id'])?.toString();
+    if (id == null || id.isEmpty) return;
+    CosTask? task;
+    try {
+      task = await _s.api.getTask(id);
+    } catch (e) {
+      // 后端还没有 GET /tasks/:id 时，退回在已加载的列表里找
+      task = [...tasks, ...followed].where((x) => x.taskId == id).firstOrNull;
+      if (task == null) {
+        if (mounted) showToast(context, e is CosApiException && e.statusCode == 404 ? '任务不存在或已被删除' : describeError(e), error: true);
+        return;
+      }
+    }
+    if (!mounted) return;
+    if (inlineDetail) {
+      setState(() {
+        openList = null;
+        listSel = null;
+        targetTask = task;
+        selectedId = task!.taskId;
+      });
+    } else {
+      setState(() => openList = null);
+      _openTask(task);
+    }
   }
 
   Future<void> _load() async {
@@ -184,7 +223,8 @@ class _TasksPageState extends State<TasksPage> {
       inlineDetail = detailW;
       final sel = openList != null
           ? listSel
-          : [...tasks, ...followed].where((t) => t.taskId == selectedId).firstOrNull;
+          : [...tasks, ...followed].where((t) => t.taskId == selectedId).firstOrNull ??
+              (targetTask?.taskId == selectedId ? targetTask : null);
       return Row(children: [
         if (wide) SizedBox(width: 220, child: _sidebar(s)),
         if (wide) const VerticalDivider(width: 1),
@@ -798,7 +838,11 @@ class _TaskDetailState extends State<TaskDetail> {
   }
 
   Future<void> _delete() async {
-    final ok = await confirmDialog(context, title: '删除任务', content: '确定删除「${t.title}」吗？', ok: '删除', danger: true);
+    final ok = await confirmDialog(context,
+        title: '删除任务',
+        content: t.subtaskCount > 0 ? '确定删除「${t.title}」吗？它的 ${t.subtaskCount} 个子任务会一起删除。' : '确定删除「${t.title}」吗？',
+        ok: '删除',
+        danger: true);
     if (!ok || !mounted) return;
     try {
       await AppScope.read(context).api.deleteTask(t.taskId);

@@ -2,6 +2,7 @@
 /// 角色修改与移除、链接分享（或可见范围）、转移所有者。每次修改立即整体保存。
 library;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -9,6 +10,7 @@ import '../api/phase2_docs.dart';
 import '../api_client.dart';
 import '../app_state.dart';
 import '../models.dart';
+import '../services/app_links.dart';
 import '../theme.dart';
 import 'common.dart';
 
@@ -506,7 +508,14 @@ Future<void> showDocShare(BuildContext context, CosDoc d, {required bool canMana
 }
 
 /// 文档链接：服务器地址 + /docs/:id（Web 端上线后可直接打开；客户端用来定位）。
-String docLink(CosApiClient api, String docId) {
+/// 文档的可分享网址（Web 端 hash 路由，见 services/app_links.dart）。
+String docLink(CosApiClient api, String docId, {String? webUrl}) =>
+    shareUrl(webOriginFor(api, webUrl), AppModule.docs, {'type': 'doc', 'id': docId});
+
+/// Web 端地址：后端给的 web_url → Web 端当前页面 → API 服务器根地址。
+String webOriginFor(CosApiClient api, String? webUrl) {
+  if (webUrl != null && webUrl.isNotEmpty) return webUrl;
+  if (kIsWeb) return '${Uri.base.scheme}://${Uri.base.authority}${Uri.base.path == '/' ? '' : Uri.base.path}';
   final u = Uri.parse(api.baseUrl);
-  return '${u.scheme}://${u.authority}/docs/$docId';
+  return '${u.scheme}://${u.authority}';
 }
