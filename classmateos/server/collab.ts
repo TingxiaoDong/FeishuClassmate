@@ -3,7 +3,8 @@
  *
  * y-websocket v3 已移除服务端工具，这里用 y-protocols 实现最小同步协议：
  *   message type 0 = sync（step1/step2/update，readSyncMessage 处理）
- *   message type 1 = awareness（不解析，原样转发给其他连接，提供在线状态）
+ *   message type 1 = awareness（在线状态）：转发前把每条状态里的 user_id / name
+ *   改写成连接本人（防冒充）；连接断开时替它广播 null 状态（离开）。
  *
  * 房间模型：按 doc_id 懒建 Y.Doc（首次无持久化状态时用 markdown 播种），
  * 最后一个连接断开时经 onPersist 回调把 encodeStateAsUpdate 的 base64
@@ -22,6 +23,48 @@ import type { WebSocket } from 'ws';
 
 const MSG_SYNC = 0;
 const MSG_AWARENESS = 1;
+/** awareness 单条消息上限，超过直接丢弃。 */
+const MAX_AWARENESS_BYTES = 16 * 1024;
+
+export interface CollabIdentity {
+  user_id: string;
+  name: string;
+}
+
+interface ConnInfo {
+  identity?: CollabIdentity;
+  /** 这个连接用过的 awareness clientID → 最后的 clock。 */
+  clients: Map<number, number>;
+}
+
+/** 解析 awareness 消息体（不含类型前缀）。格式错返回 undefined。 */
+function decodeAwareness(decoder: decoding.Decoder): Array<{ clientId: number; clock: number; state: unknown }> | undefined {
+  const update = decoding.readVarUint8Array(decoder);
+  const d = decoding.createDecoder(update);
+  const n = decoding.readVarUint(d);
+  if (n > 64) return undefined;
+  const out: Array<{ clientId: number; clock: number; state: unknown }> = [];
+  for (let i = 0; i < n; i++) {
+    const clientId = decoding.readVarUint(d);
+    const clock = decoding.readVarUint(d);
+    out.push({ clientId, clock, state: JSON.parse(decoding.readVarString(d)) });
+  }
+  return out;
+}
+
+function encodeAwareness(entries: Array<{ clientId: number; clock: number; state: unknown }>): Uint8Array {
+  const u = encoding.createEncoder();
+  encoding.writeVarUint(u, entries.length);
+  for (const e of entries) {
+    encoding.writeVarUint(u, e.clientId);
+    encoding.writeVarUint(u, e.clock);
+    encoding.writeVarString(u, JSON.stringify(e.state ?? null));
+  }
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, MSG_AWARENESS);
+  encoding.writeVarUint8Array(enc, encoding.toUint8Array(u));
+  return encoding.toUint8Array(enc);
+}
 
 export interface CollabSeed {
   markdown: string;
@@ -45,6 +88,7 @@ interface Room {
 export class CollabHub {
   private readonly rooms = new Map<string, Room>();
   private readonly pendingRooms = new Map<string, Promise<Room | undefined>>();
+  private readonly connInfo = new WeakMap<WebSocket, ConnInfo>();
 
   constructor(private readonly hooks: CollabHooks) {}
 
@@ -108,9 +152,34 @@ export class CollabHub {
       syncProtocol.readSyncMessage(decoder, reply, room.doc, socket);
       if (encoding.length(reply) > 1) socket.send(encoding.toUint8Array(reply));
     } else if (msgType === MSG_AWARENESS) {
-      for (const conn of room.conns) {
-        if (conn !== socket && conn.readyState === conn.OPEN) conn.send(buf);
+      if (buf.length > MAX_AWARENESS_BYTES) return;
+      const info = this.connInfo.get(socket);
+      const entries = decodeAwareness(decoder);
+      if (!entries || !info) return;
+      for (const e of entries) {
+        // 其他连接的 clientID 不能被这个连接改写
+        if (!info.clients.has(e.clientId) && this.clientOwnedElsewhere(room, socket, e.clientId)) return;
+        info.clients.set(e.clientId, e.clock);
+        if (e.state && typeof e.state === 'object' && !Array.isArray(e.state) && info.identity) {
+          e.state = { ...(e.state as Record<string, unknown>), user_id: info.identity.user_id, name: info.identity.name };
+        } else if (e.state !== null) {
+          e.state = null;
+        }
       }
+      this.broadcast(room, socket, encodeAwareness(entries));
+    }
+  }
+
+  private clientOwnedElsewhere(room: Room, socket: WebSocket, clientId: number): boolean {
+    for (const conn of room.conns) {
+      if (conn !== socket && this.connInfo.get(conn)?.clients.has(clientId)) return true;
+    }
+    return false;
+  }
+
+  private broadcast(room: Room, from: WebSocket, msg: Uint8Array) {
+    for (const conn of room.conns) {
+      if (conn !== from && conn.readyState === conn.OPEN) conn.send(msg);
     }
   }
 
@@ -121,8 +190,11 @@ export class CollabHub {
   handleConnection(
     docId: string,
     socket: WebSocket,
-    opts: { readOnly?: boolean | Promise<boolean> } = {},
+    opts: { readOnly?: boolean | Promise<boolean>; identity?: CollabIdentity | Promise<CollabIdentity | undefined> } = {},
   ): Promise<boolean> {
+    const info: ConnInfo = { clients: new Map() };
+    this.connInfo.set(socket, info);
+    void Promise.resolve(opts.identity).then((id) => { info.identity = id; }, () => undefined);
     let readOnly = true; // 权限确定前按只读处理（消息此时只会排队）
     const queue: Buffer[] = [];
     let room: Room | undefined;
@@ -144,6 +216,9 @@ export class CollabHub {
       closedEarly = true;
       if (!room) return;
       room.conns.delete(socket);
+      if (info.clients.size > 0 && room.conns.size > 0) {
+        this.broadcast(room, socket, encodeAwareness([...info.clients].map(([clientId, clock]) => ({ clientId, clock: clock + 1, state: null }))));
+      }
       if (room.conns.size === 0 && this.rooms.get(docId) === room) {
         this.rooms.delete(docId);
         if (!room.closed) {
@@ -154,8 +229,9 @@ export class CollabHub {
       }
     });
 
-    return Promise.all([this.roomFor(docId), Promise.resolve(opts.readOnly ?? false)]).then(([r, ro]) => {
+    return Promise.all([this.roomFor(docId), Promise.resolve(opts.readOnly ?? false), Promise.resolve(opts.identity)]).then(([r, ro, id]) => {
       readOnly = ro;
+      info.identity = id;
       if (!r) {
         socket.close(4404, 'doc not found');
         return false;

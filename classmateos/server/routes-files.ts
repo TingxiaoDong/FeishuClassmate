@@ -2,6 +2,9 @@
  * 文件与云盘（《前端接口需求文档》第 7 节）。
  */
 
+import { TaskAccess, taskPermissions } from './task-access.js';
+import { docAccess } from './doc-access.js';
+import { bindDocFile } from './doc-extras.js';
 import { fail, invalid, pageOffset, pageResult, pageSize, type Ctx } from './context.js';
 import { fileKindOf, guessContentType, nowIso, type FileKind, type FileListEntry, type FileRecord } from './repo.js';
 
@@ -36,11 +39,37 @@ export function registerFileRoutes(ctx: Ctx): void {
   app.post('/api/v1/files/upload-url', async (req, reply) => {
     const me = await ctx.requireUser(req, reply);
     if (!me) return;
-    const { file_name, size, content_type } = (req.body ?? {}) as {
+    const { file_name, size, content_type, ref } = (req.body ?? {}) as {
       file_name?: unknown;
       size?: unknown;
       content_type?: unknown;
+      ref?: unknown;
     };
+    // 二期 R-DC-04：ref = { type: "doc", id } 把文件绑定到文档（需要文档的编辑权限）
+    let refDocId: string | undefined;
+    let refTaskId: string | undefined;
+    if (ref !== undefined && ref !== null) {
+      const r = ref as { type?: unknown; id?: unknown };
+      if (typeof ref !== 'object' || (r.type !== 'doc' && r.type !== 'task') || typeof r.id !== 'string') {
+        return invalid(reply, [{ field: 'ref', message: '只支持 { type: "doc" | "task", id }' }]);
+      }
+    }
+    // 二期 R-TK-03：ref = { type: "task", id } 任务评论附件（需要任务的评论权限）
+    if (ref && (ref as { type: string }).type === 'task') {
+      const id = (ref as { id: string }).id;
+      const ta = new TaskAccess(ctx, me.sub);
+      const task = await ta.task(id);
+      const role = task ? await ta.role(task) : null;
+      if (!task || !role) return invalid(reply, [{ field: 'ref.id', message: '任务不存在' }]);
+      if (!taskPermissions(role).can_comment) return fail(reply, 403, '没有这个任务的评论权限', { code: 'FORBIDDEN' });
+      refTaskId = task.task_id;
+    } else if (ref) {
+      const r = ref as { type: string; id: string };
+      const doc = await repo.getDoc(r.id);
+      if (!doc) return invalid(reply, [{ field: 'ref.id', message: '文档不存在' }]);
+      if (!(await docAccess(ctx, doc, me.sub)).permissions.can_edit) return fail(reply, 403, '没有这篇文档的编辑权限', { code: 'FORBIDDEN' });
+      refDocId = doc.doc_id;
+    }
     if (typeof file_name !== 'string' || !file_name.trim() || typeof size !== 'number') {
       return fail(reply, 400, '缺少 file_name 或 size');
     }
@@ -65,6 +94,11 @@ export function registerFileRoutes(ctx: Ctx): void {
       in_drive: false,
       drive_added_at: null,
     });
+    if (refDocId) await bindDocFile(ctx, g.fileKey, refDocId);
+    if (refTaskId) {
+      const now = nowIso();
+      await repo.saveEntity({ kind: 'task_file', id: `${g.fileKey}|${refTaskId}`, scope: g.fileKey, data: { task_id: refTaskId }, version: 0, created_at: now, updated_at: now }, 0);
+    }
     return { file_key: g.fileKey, upload_url: g.uploadUrl, expires_in: g.expiresIn };
   });
 

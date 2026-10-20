@@ -1,8 +1,11 @@
+import type { NotificationService } from './notifications.js';
+import { bindReferencedFiles, registerDocExtraRoutes, type DocVersions } from './doc-extras.js';
 /**
  * 云文档（《前端接口需求文档》第 9 节）+ Yjs 协同 WS。
  */
 
 import { verifyToken } from './auth.js';
+import { docAccess, registerDocAccessRoutes } from './doc-access.js';
 import { fail, invalid, newId, pageOffset, pageResult, pageSize, type AuthedUser, type Ctx, type FieldError } from './context.js';
 import { nowIso, type DocRecord } from './repo.js';
 
@@ -25,7 +28,7 @@ export function canEditDoc(user: { sub: string }, doc: DocRecord): boolean {
   return doc.created_by === user.sub;
 }
 
-function docJson(doc: DocRecord, me: AuthedUser, withMarkdown: boolean) {
+function docJson(doc: DocRecord, me: AuthedUser, withMarkdown: boolean, access?: Awaited<ReturnType<typeof docAccess>>) {
   return {
     doc_id: doc.doc_id,
     title: doc.title,
@@ -35,16 +38,20 @@ function docJson(doc: DocRecord, me: AuthedUser, withMarkdown: boolean) {
     created_at: doc.created_at,
     updated_at: doc.updated_at,
     updated_by: doc.updated_by,
-    can_edit: canEditDoc(me, doc),
+    can_edit: access?.can_edit ?? canEditDoc(me, doc),
+    ...(access ? { owner_id: access.owner_id, my_role: access.my_role, permissions: access.permissions } : {}),
     url: `/api/v1/docs/${doc.doc_id}`,
   };
 }
 
-export function registerDocRoutes(ctx: Ctx): void {
+export function registerDocRoutes(ctx: Ctx, notifications: NotificationService, versions: DocVersions): void {
   const { app, repo, collabHub } = ctx;
+  registerDocAccessRoutes(ctx, notifications);
+  registerDocExtraRoutes(ctx, notifications, versions);
+  const shaped = async (doc: DocRecord, me: AuthedUser, withMarkdown: boolean) => docJson(doc, me, withMarkdown, await docAccess(ctx, doc, me.sub));
 
   // 协同编辑 WS：/api/v1/docs/:doc_id/collab?token=<access_token>
-  // 正文共享类型：Y.Text，key = "markdown"；非创建者只读（能收不能发）。
+  // 正文共享类型：Y.Text，key = "markdown"；无编辑权限的连接只读（能收不能发），awareness 照常转发（doc.presence）。
   app.get('/api/v1/docs/:doc_id/collab', { websocket: true }, (socket, req) => {
     const { doc_id } = req.params as { doc_id: string };
     const { token } = req.query as { token?: string };
@@ -53,19 +60,23 @@ export function registerDocRoutes(ctx: Ctx): void {
       socket.close(4401, 'invalid token');
       return;
     }
+    const authP = ctx.verifyWsToken(token);
+    const userP = authP.then((r) => ('user' in r ? r.user : undefined));
+    const identity = userP.then((u) => (u ? { user_id: u.user_id, name: u.name } : undefined));
+    const offRevoke = ctx.auth.onRevoke(p.sid, () => socket.close(4401, 'session revoked'));
+    socket.on('close', offRevoke);
     const readOnly = (async () => {
-      const [user, doc] = await Promise.all([repo.getUser(p.sub), repo.getDoc(doc_id)]);
-      if (!user) {
-        socket.close(4401, 'invalid token');
+      const [r, doc] = await Promise.all([authP, repo.getDoc(doc_id)]);
+      if ('close' in r) {
+        socket.close(r.close, r.close === 4403 ? 'account disabled' : 'invalid token');
         return true;
       }
-      if (user.disabled) {
-        socket.close(4403, 'account disabled');
-        return true;
-      }
-      return !doc || !canEditDoc(p, doc);
+      if (!doc) { socket.close(4404, 'doc not found'); return true; }
+      const access = await docAccess(ctx, doc, p.sub);
+      if (!access.permissions.can_view) { socket.close(4410, 'permission revoked'); return true; }
+      return !access.permissions.can_edit;
     })();
-    void collabHub.handleConnection(doc_id, socket, { readOnly }).catch(() => socket.close(1011, 'server error'));
+    void collabHub.handleConnection(doc_id, socket, { readOnly, identity }).catch(() => socket.close(1011, 'server error'));
   });
 
   app.get('/api/v1/docs', async (req, reply) => {
@@ -75,8 +86,13 @@ export function registerDocRoutes(ctx: Ctx): void {
     const scope = q.scope === 'mine' || q.scope === 'shared' ? q.scope : 'all';
     const limit = pageSize(q.page_size, 50, 200);
     const offset = pageOffset(q.page_token);
-    const page = await repo.listDocs({ userId: me.sub, scope, keyword: q.keyword, limit, offset });
-    return pageResult(page.items.map((d) => docJson(d, me, false)), page.total, offset);
+    const visible = [];
+    for (let at = 0; ; at += 200) {
+      const page = await repo.listDocs({ userId: me.sub, scope, keyword: q.keyword, limit: 200, offset: at });
+      for (const d of page.items) { const access = await docAccess(ctx, d, me.sub); if (access.permissions.can_view) visible.push(docJson(d, me, false, access)); }
+      if (at + page.items.length >= page.total || page.items.length === 0) break;
+    }
+    return pageResult(visible.slice(offset, offset + limit), visible.length, offset);
   });
 
   app.get('/api/v1/docs/:doc_id', async (req, reply) => {
@@ -85,7 +101,9 @@ export function registerDocRoutes(ctx: Ctx): void {
     const { doc_id } = req.params as { doc_id: string };
     const doc = await repo.getDoc(doc_id);
     if (!doc) return fail(reply, 404, '文档不存在');
-    return docJson(doc, me, true);
+    const access = await docAccess(ctx, doc, me.sub);
+    if (!access.permissions.can_view) return fail(reply, 403, '没有权限访问，申请权限', { code: 'FORBIDDEN' });
+    return docJson(doc, me, true, access);
   });
 
   app.post('/api/v1/docs', async (req, reply) => {
@@ -114,7 +132,9 @@ export function registerDocRoutes(ctx: Ctx): void {
       yjs_update: null,
     };
     await repo.createDoc(doc);
-    return reply.code(201).send(docJson(doc, me, true));
+    await versions.snapshot(doc, me.sub, true);
+    await bindReferencedFiles(ctx, me, doc);
+    return reply.code(201).send(await shaped(doc, me, true));
   });
 
   app.patch('/api/v1/docs/:doc_id', async (req, reply) => {
@@ -123,7 +143,9 @@ export function registerDocRoutes(ctx: Ctx): void {
     const { doc_id } = req.params as { doc_id: string };
     const doc = await repo.getDoc(doc_id);
     if (!doc) return fail(reply, 404, '文档不存在');
-    if (!canEditDoc(me, doc)) return fail(reply, 403, '只有创建者可以编辑');
+    const access = await docAccess(ctx, doc, me.sub);
+    if (!access.permissions.can_view) return fail(reply, 403, '没有权限访问', { code: 'FORBIDDEN' });
+    if (!access.permissions.can_edit) return fail(reply, 403, '没有编辑权限', { code: 'FORBIDDEN' });
     const { title, markdown, base_updated_at } = (req.body ?? {}) as {
       title?: unknown;
       markdown?: unknown;
@@ -143,7 +165,7 @@ export function registerDocRoutes(ctx: Ctx): void {
 
     const base = typeof base_updated_at === 'string' ? normalizeIso(base_updated_at) : undefined;
     if (base !== undefined && base !== doc.updated_at) {
-      return fail(reply, 409, '文档已被他人修改', { code: 'DOC_CONFLICT', doc: docJson(doc, me, true) });
+      return fail(reply, 409, '文档已被他人修改', { code: 'DOC_CONFLICT', doc: docJson(doc, me, true, access) });
     }
     const next: DocRecord = {
       ...doc,
@@ -162,10 +184,14 @@ export function registerDocRoutes(ctx: Ctx): void {
     if (!ok) {
       const latest = await repo.getDoc(doc_id);
       if (!latest) return fail(reply, 404, '文档不存在');
-      return fail(reply, 409, '文档已被他人修改', { code: 'DOC_CONFLICT', doc: docJson(latest, me, true) });
+      return fail(reply, 409, '文档已被他人修改', { code: 'DOC_CONFLICT', doc: await shaped(latest, me, true) });
     }
-    if (typeof markdown === 'string') collabHub.closeRoom(doc_id, 4409, 'doc replaced');
-    return docJson(next, me, true);
+    if (typeof markdown === 'string') {
+      collabHub.closeRoom(doc_id, 4409, 'doc replaced');
+      await bindReferencedFiles(ctx, me, next);
+      versions.touch(doc_id, me.sub);
+    }
+    return docJson(next, me, true, access);
   });
 
   app.delete('/api/v1/docs/:doc_id', async (req, reply) => {
@@ -174,7 +200,7 @@ export function registerDocRoutes(ctx: Ctx): void {
     const { doc_id } = req.params as { doc_id: string };
     const doc = await repo.getDoc(doc_id);
     if (!doc) return fail(reply, 404, '文档不存在');
-    if (doc.created_by !== me.sub && me.role !== 'admin') return fail(reply, 403, '只有创建者或管理员可以删除');
+    if (!(await docAccess(ctx, doc, me.sub)).permissions.can_delete) return fail(reply, 403, '没有删除权限', { code: 'FORBIDDEN' });
     await repo.deleteDoc(doc_id);
     collabHub.closeRoom(doc_id, 4404, 'doc deleted');
     return reply.code(204).send();
