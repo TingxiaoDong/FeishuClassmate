@@ -11,6 +11,7 @@
  * 都返回整张表的最新定义（同 GET /tables 单项），并推送 table.schema_changed。
  */
 
+import { tableAccessOf } from './table-access.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { fail, invalid, type AuthedUser, type Ctx, type FieldError } from './context.js';
 import { nowIso } from './repo.js';
@@ -66,7 +67,7 @@ export function registerTableFieldRoutes(ctx: Ctx, svc: TableService): void {
       return await svc.withLock(table_key, async () => {
         const res = await svc.load(table_key, true);
         if (!res) throw new OpError(404, `数据表不存在：${table_key}`, { code: 'TABLE_NOT_FOUND' });
-        if (!tablePermissions(me, res.schema).can_manage) {
+        if (!(await tableAccessOf(ctx).flags(me, res.schema)).can_manage) {
           throw new OpError(403, '只有管理员或数据表创建者可以管理字段', { code: 'FORBIDDEN' });
         }
         if (opts.checkVersion) {

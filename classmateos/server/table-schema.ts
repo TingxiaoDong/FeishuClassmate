@@ -195,7 +195,7 @@ export function tablePermissions(me: { sub: string; role: string }, schema: Tabl
 }
 
 /** 与 GET /tables 单项结构一致。 */
-export function describeSchema(schema: TableSchema, me: { sub: string; role: string }) {
+export function describeSchema(schema: TableSchema, me: { sub: string; role: string }, flags?: Permissions) {
   return {
     key: schema.key,
     name: schema.name,
@@ -207,7 +207,7 @@ export function describeSchema(schema: TableSchema, me: { sub: string; role: str
     created_at: schema.created_at,
     updated_at: schema.updated_at,
     version: schema.version,
-    permissions: tablePermissions(me, schema),
+    permissions: flags ?? tablePermissions(me, schema),
     fields: schema.fields.map((f) => ({
       field_name: f.field_name,
       title: f.title,

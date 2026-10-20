@@ -16,6 +16,9 @@ import { nowIso, type CustomTableRecord } from './repo.js';
 import { canAccessRecord, filterAccessible, hasRowAccessRule } from './row-access.js';
 import { registerTableFieldRoutes } from './routes-table-fields.js';
 import { registerTableViewRoutes } from './routes-table-views.js';
+import { registerTableManageRoutes } from './routes-table-manage.js';
+import { tableAccessOf } from './table-access.js';
+import type { NotificationService } from './notifications.js';
 import type { StoredRecord } from './store.js';
 import { recordJson, TableService, type ResolvedTable } from './table-service.js';
 import { customSchema, describeSchema, schemaToDef, tablePermissions } from './table-schema.js';
@@ -26,12 +29,19 @@ import { applyView, groupCounts, groupPath, type Clock, type ViewConfig } from '
 const BATCH_MAX = 500;
 const VIEW_DELETE_MAX = 10_000;
 
-export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableService {
+export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock; notifications?: NotificationService }): TableService {
   const { app, store, repo } = ctx;
   const svc = new TableService(ctx, opts.clock);
+  const access = tableAccessOf(ctx);
+  // 表级权限：统一挡在 /tables/:table_key/** 前面（R-BT-09）
+  access.install((key) => svc.load(key));
 
   // WS 订阅 table:<key>：表存在即可订阅（R-BT-09 表权限上线前，所有成员都能看所有表）
-  ctx.topicAuthorizers.set('table', async (_user, key) => ((await svc.load(key)) ? null : 'NOT_FOUND'));
+  ctx.topicAuthorizers.set('table', async (user, key) => {
+    const res = await svc.load(key);
+    if (!res) return 'NOT_FOUND';
+    return (await access.canView(user, res.schema)) ? null : 'FORBIDDEN';
+  });
 
   const resolve = async (key: string, reply: FastifyReply): Promise<ResolvedTable | undefined> => {
     const res = await svc.load(key);
@@ -162,8 +172,12 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableServ
   app.get('/api/v1/tables', async (req, reply) => {
     const me = await ctx.requireUser(req, reply);
     if (!me) return;
-    const all = await svc.listAll();
-    return { items: all.map((r) => describeSchema(r.schema, me)) };
+    const items = [];
+    for (const r of await svc.listAll()) {
+      const flags = await access.flags(me, r.schema);
+      if (flags.can_view) items.push(describeSchema(r.schema, me, flags));
+    }
+    return { items };
   });
 
   app.get('/api/v1/tables/:table_key', async (req, reply) => {
@@ -171,13 +185,14 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableServ
     if (!me) return;
     const res = await resolve((req.params as { table_key: string }).table_key, reply);
     if (!res) return;
-    return describeSchema(res.schema, me);
+    return describeSchema(res.schema, me, await access.flags(me, res.schema));
   });
 
   // 新建数据表：所有已登录、未禁用的用户都可以
   app.post('/api/v1/tables', async (req, reply) => {
     const me = await ctx.requireUser(req, reply);
     if (!me) return;
+    if (!(await ctx.roles.has(me.user, 'table.create'))) return fail(reply, 403, '没有新建数据表的权限', { code: 'FORBIDDEN' });
     const { value: input, errors } = parseCreateTable(req.body);
     if (!input) return invalid(reply, errors, '字段校验失败');
 
@@ -188,13 +203,16 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableServ
         const hit = await repo.findCustomTableByRequest(me.sub, input.client_request_id, since);
         if (hit) {
           const res = await svc.load(hit.key, true);
-          return reply.code(200).send(describeSchema(res?.schema ?? customSchema(hit), me));
+          const sch = res?.schema ?? customSchema(hit);
+          return reply.code(200).send(describeSchema(sch, me, await access.flags(me, sch)));
         }
       }
 
       const nameTaken = () =>
         fail(reply, 409, `已经有名为「${input.name}」的数据表了，请换一个名称`, { code: 'TABLE_NAME_EXISTS' });
       if (builtinNames.has(input.name.toLowerCase()) || (await repo.findCustomTableByName(input.name))) return nameTaken();
+      // 改过名的表（PATCH /tables/:key）按当前名称查重
+      if ((await svc.listAll()).some((r) => r.schema.name.trim().toLowerCase() === input.name.toLowerCase())) return nameTaken();
 
       let key = '';
       for (let i = 0; i < 10 && !key; i++) {
@@ -232,7 +250,7 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableServ
         throw err;
       }
       ctx.publish('table.created', { table_key: key }, undefined, { all: true, user_only: true });
-      return reply.code(201).send(describeSchema(schema, me));
+      return reply.code(201).send(describeSchema(schema, me, await access.flags(me, schema)));
     });
   });
 
@@ -547,6 +565,7 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock }): TableServ
 
   registerTableFieldRoutes(ctx, svc);
   registerTableViewRoutes(ctx, svc);
+  registerTableManageRoutes(ctx, svc, { reservedNames: builtinNames, notifications: opts.notifications });
   void tablePermissions;
   return svc;
 }

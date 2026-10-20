@@ -14,7 +14,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { fail, invalid, newId, type AuthedUser, type Ctx, type FieldError } from './context.js';
 import { nowIso, type TableViewRecord, type ViewType } from './repo.js';
 import type { ResolvedTable, TableService } from './table-service.js';
-import { tablePermissions } from './table-schema.js';
+import { tableAccessOf } from './table-access.js';
 import { parseViewConfig, VIEW_TYPES } from './view-engine.js';
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -32,7 +32,7 @@ export function registerTableViewRoutes(ctx: Ctx, svc: TableService): void {
       fail(reply, 404, `数据表不存在：${table_key}`, { code: 'TABLE_NOT_FOUND' });
       return undefined;
     }
-    return { me, res, canEdit: tablePermissions(me, res.schema).can_edit };
+    return { me, res, canEdit: (await tableAccessOf(ctx).flags(me, res.schema)).can_edit };
   };
 
   const json = (v: TableViewRecord, res: ResolvedTable, me: AuthedUser, canEdit: boolean) => svc.viewJson(v, res, me, canEdit);

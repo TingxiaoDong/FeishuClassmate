@@ -13,6 +13,9 @@ import { builtinSchema, customSchema, schemaToDef, type TableSchema } from './ta
 import { defaultViewConfig, sanitizeViewConfig, type Clock } from './view-engine.js';
 import { personIdsOf } from './validation.js';
 
+/** 表名 / 描述 / 图标覆盖层（通用实体表，id = 表 key）。 */
+export const TABLE_META_KIND = 'table_meta';
+
 export interface ResolvedTable {
   schema: TableSchema;
   def: TableDef;
@@ -87,6 +90,16 @@ export class TableService {
     if (!res) {
       this.cache.delete(key);
       return undefined;
+    }
+    // 表名 / 描述 / 图标的修改（PATCH /tables/:key）单独存，内置表和自定义表都适用
+    const meta = await repo.getEntity(TABLE_META_KIND, key);
+    if (meta) {
+      const m = meta.data as { name?: string; description?: string | null; icon?: string };
+      res = {
+        ...res,
+        schema: { ...res.schema, ...(m.name ? { name: m.name } : {}), ...(m.description !== undefined ? { description: m.description } : {}), ...(m.icon ? { icon: m.icon } : {}) },
+        def: m.name ? { ...res.def, name: m.name } : res.def,
+      };
     }
     await this.apply(res, hit?.res.schema.version !== res.schema.version || !hit);
     return res;
