@@ -14,8 +14,8 @@ import '../widgets/common.dart';
 import 'message_more.dart' show showFavorites;
 import 'notification_center.dart';
 
-/// 摄像头扫码的接入点：接入扫码插件后在 main() 里赋值，返回扫到的文字；
-/// 为 null 时「扫一扫」改为粘贴二维码内容（桌面端、还没接扫码插件时）。
+/// 摄像头扫码的接入点：iOS / Android 在 main() 里赋值为 [scanQrWithCamera]，返回扫到的文字；
+/// 为 null 时（电脑、网页版）「扫一扫」改为粘贴二维码内容。
 Future<String?> Function(BuildContext context)? qrScanner;
 
 class MePage extends StatelessWidget {
@@ -462,39 +462,43 @@ class _LoginDevicesPageState extends State<LoginDevicesPage> {
 
 // ---------------- 扫码登录（手机确认） ----------------
 
-/// 「扫一扫」：有摄像头扫码插件时扫码，否则粘贴二维码内容；识别出登录二维码后进入确认页。
-Future<void> scanToLogin(BuildContext context) async {
-  String? content;
-  if (qrScanner != null) {
-    content = await qrScanner!(context);
-  } else {
-    final c = TextEditingController();
-    content = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('扫一扫'),
-        content: SizedBox(
-          width: 380,
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('这台设备还不能用摄像头扫码。可以把二维码下方的「复制登录码」内容粘贴到这里。',
-                style: TextStyle(fontSize: 13, color: Fs.text2, height: 1.5)),
-            const SizedBox(height: 10),
-            TextField(
-              key: const ValueKey('qr-paste'),
-              controller: c,
-              autofocus: true,
-              decoration: const InputDecoration(hintText: 'classmateos://qr-login?…'),
-            ),
-          ]),
-        ),
-        actions: [
-          OutlinedButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('下一步')),
-        ],
+/// 手动输入（粘贴）登录码：电脑端、网页版，或手机没有相机权限时用。
+Future<String?> askLoginCode(BuildContext context, {bool noCamera = false}) async {
+  final c = TextEditingController();
+  final v = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(noCamera ? '扫一扫' : '输入登录码'),
+      content: SizedBox(
+        width: 380,
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(
+              noCamera
+                  ? '这台设备还不能用摄像头扫码。可以把二维码下方的「复制登录码」内容粘贴到这里。'
+                  : '在电脑登录页的二维码下方点「复制登录码」，把内容粘贴到这里。',
+              style: const TextStyle(fontSize: 13, color: Fs.text2, height: 1.5)),
+          const SizedBox(height: 10),
+          TextField(
+            key: const ValueKey('qr-paste'),
+            controller: c,
+            autofocus: true,
+            decoration: const InputDecoration(hintText: 'classmateos://qr-login?…'),
+          ),
+        ]),
       ),
-    );
-    c.dispose();
-  }
+      actions: [
+        OutlinedButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('下一步')),
+      ],
+    ),
+  );
+  c.dispose();
+  return v;
+}
+
+/// 「扫一扫」：手机上用摄像头扫码，其他设备粘贴二维码内容；识别出登录二维码后进入确认页。
+Future<void> scanToLogin(BuildContext context) async {
+  final String? content = qrScanner != null ? await qrScanner!(context) : await askLoginCode(context, noCamera: true);
   if (content == null || content.trim().isEmpty || !context.mounted) return;
   final id = parseQrLogin(content);
   if (id == null) {

@@ -194,10 +194,10 @@ class _QrLoginPanelState extends State<QrLoginPanel> {
           textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: Fs.text2)),
       if (t != null && status == 'waiting')
         TextButton.icon(
-          // 手机暂时没接摄像头扫码，可以把登录码粘贴到「扫一扫」里
+          // 手机相机不能用时（没给权限、模拟器），可以把登录码粘贴到「扫一扫」→「输入登录码」里
           onPressed: () async {
             await Clipboard.setData(ClipboardData(text: t.content));
-            if (context.mounted) showToast(context, '已复制登录码，在手机「扫一扫」里粘贴即可');
+            if (context.mounted) showToast(context, '已复制登录码，在手机「扫一扫」→「输入登录码」里粘贴即可');
           },
           icon: const Icon(Icons.copy_rounded, size: 15),
           label: const Text('复制登录码', style: TextStyle(fontSize: 12)),
