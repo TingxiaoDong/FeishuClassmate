@@ -180,22 +180,93 @@ export function confirmWordOf(text: string): typeof CONFIRM_YES | typeof CONFIRM
 }
 
 /**
- * 核验确认卡片：机器人发的 kind=confirm 卡片、由被代办的同学本人点了「确认」、在有效期内。
- * 通过才允许删除类代办（不需要打开 CLASSMATE_OS_BOT_ALLOW_DELETE）。
+ * 这次请求「要做的操作」，和确认卡片上的 bound_action 比对（代码审查 B3）。
+ * targets：body 里的 record_ids / ids / file_keys（批量删除），否则是路由最后一个参数；和 agent 的 boundActionOf 规则一致。
  */
-export function isValidConfirmCard(msg: MessageRecord | undefined, userId: string, botId: string, now = Date.now()): boolean {
-  if (!msg || msg.sender_id !== botId || msg.msg_type !== 'interactive_card') return false;
+export interface RequestAction {
+  method: string;
+  route: string;
+  path: string;
+  targets: string[];
+}
+
+export function requestActionOf(req: FastifyRequest): RequestAction {
+  const route = routeOf(req);
+  const path = req.url.split('?')[0];
+  const b = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+  const ids = [b.record_ids, b.ids, b.file_keys].find((x) => Array.isArray(x) && x.length && x.every((y) => typeof y === 'string')) as string[] | undefined;
+  let targets: string[] = [];
+  if (ids) targets = [...ids];
+  else {
+    const names = [...route.matchAll(/:([A-Za-z0-9_]+)/g)].map((m) => m[1]);
+    const last = names[names.length - 1];
+    const v = last ? (req.params as Record<string, unknown> | undefined)?.[last] : undefined;
+    if (typeof v === 'string') targets = [v];
+  }
+  return { method: req.method.toUpperCase(), route, path, targets };
+}
+
+export type ConfirmCardStatus = 'ok' | 'invalid' | 'unbound' | 'mismatch' | 'consumed';
+
+function sameSet(a: string[], b: string[]): boolean {
+  const sa = new Set(a), sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
+}
+
+/**
+ * 核验确认卡片：机器人发的 kind=confirm 卡片、由被代办的同学本人点了「确认」、在有效期内，
+ * 卡片上的 bound_action 和这次请求一致（方法、路由、对象），且还没被用过（consumed_at）。
+ * 「只用一次」的原子占用在 context.ts 里做（confirm_card_use 实体，不存在才插入）。
+ */
+export function confirmCardStatus(
+  msg: MessageRecord | undefined,
+  userId: string,
+  botId: string,
+  action?: RequestAction,
+  now = Date.now(),
+): ConfirmCardStatus {
+  if (!msg || msg.sender_id !== botId || msg.msg_type !== 'interactive_card') return 'invalid';
   const c = msg.content as {
     kind?: unknown;
     answerable_by?: unknown;
     expired?: unknown;
+    consumed_at?: unknown;
+    bound_action?: { method?: unknown; route?: unknown; path?: unknown; target_id?: unknown } | null;
     answer?: { user_id?: unknown; action?: unknown; answered_at?: unknown } | null;
   };
-  if (c.kind !== 'confirm' || c.expired === true || !c.answer) return false;
-  if (Array.isArray(c.answerable_by) && !c.answerable_by.includes(userId)) return false;
-  if (c.answer.user_id !== userId || c.answer.action !== CONFIRM_YES) return false;
+  if (c.kind !== 'confirm' || c.expired === true || !c.answer) return 'invalid';
+  if (Array.isArray(c.answerable_by) && !c.answerable_by.includes(userId)) return 'invalid';
+  if (c.answer.user_id !== userId || c.answer.action !== CONFIRM_YES) return 'invalid';
   const at = Date.parse(String(c.answer.answered_at ?? ''));
-  return Number.isFinite(at) && now - at <= CONFIRM_TTL_MS;
+  if (!(Number.isFinite(at) && now - at <= CONFIRM_TTL_MS)) return 'invalid';
+  if (c.consumed_at) return 'consumed';
+  const b = c.bound_action;
+  if (!b || typeof b !== 'object' || typeof b.method !== 'string') return 'unbound';
+  if (!action) return 'mismatch';
+  if (b.method.toUpperCase() !== action.method) return 'mismatch';
+  if (b.route !== action.route && b.path !== action.path) return 'mismatch';
+  const bound = typeof b.target_id === 'string' ? [b.target_id] : Array.isArray(b.target_id) ? b.target_id.filter((x): x is string => typeof x === 'string') : [];
+  if (!sameSet(bound, action.targets)) return 'mismatch';
+  return 'ok';
+}
+
+/** 兼容旧调用：只有完全通过（含操作绑定）才算有效。 */
+export function isValidConfirmCard(msg: MessageRecord | undefined, userId: string, botId: string, action?: RequestAction, now = Date.now()): boolean {
+  return confirmCardStatus(msg, userId, botId, action, now) === 'ok';
+}
+
+/** POST /bot/messages 发确认卡片时检查 bound_action 的格式（有就必须合法；没有的卡片不能用来放行服务端操作）。 */
+export function boundActionErrors(v: unknown): string[] {
+  if (v === undefined || v === null) return [];
+  if (typeof v !== 'object' || Array.isArray(v)) return ['bound_action 必须是对象'];
+  const b = v as Record<string, unknown>;
+  const errs: string[] = [];
+  if (typeof b.method !== 'string' || !/^(GET|POST|PUT|PATCH|DELETE)$/i.test(b.method)) errs.push('bound_action.method 不合法');
+  if (typeof b.route !== 'string' || !b.route.startsWith('/api/v1/')) errs.push('bound_action.route 必须以 /api/v1/ 开头');
+  if (b.path !== undefined && typeof b.path !== 'string') errs.push('bound_action.path 必须是字符串');
+  const t = b.target_id;
+  if (t !== undefined && typeof t !== 'string' && !(Array.isArray(t) && t.every((x) => typeof x === 'string'))) errs.push('bound_action.target_id 必须是字符串或字符串数组');
+  return errs;
 }
 
 const MARK = Symbol.for('cos.agentMark');

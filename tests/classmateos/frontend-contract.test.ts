@@ -213,7 +213,8 @@ describe.each(backends)('前端接口验收清单（$name）', ({ usePg }) => {
   it('P0 卡片回答写回 content.answer；重复回答 409；成员收到 message.updated', async () => {
     const { tok, call, bot, userWs } = await makeApp();
     const [a, z, l] = [await tok('admin'), await tok('u_zhang'), await tok('u_li')];
-    const chat = (await call(a, 'POST', '/chats', { chat_type: 'p2p', member_ids: ['u_zhang'] })).json();
+    // 机器人要在会话里才能发卡片（代码审查 B1）
+    const chat = (await call(a, 'POST', '/chats', { chat_type: 'group', name: '组会', member_ids: ['u_zhang', 'bot'] })).json();
     const sent = await bot({
       receive_id: chat.chat_id,
       msg_type: 'interactive_card',

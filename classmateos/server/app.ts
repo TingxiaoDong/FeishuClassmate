@@ -73,6 +73,8 @@ export interface PlatformUser {
   department?: string;
   title?: string;
   avatar_url?: string;
+  /** 首次登录必须改密（生产环境的种子账号，代码审查 B2）。只在新建账号时生效。 */
+  must_change_password?: boolean;
 }
 
 export interface AppOptions {
@@ -276,8 +278,10 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
       ? []
       : [{ user_id: BOT_ID, name: '飞书同学', password: randomBytes(24).toString('hex'), role: 'bot' as Role }]),
   ];
+  const mustChange: string[] = [];
   for (const u of seeds) {
     if (await repo.getUser(u.user_id)) continue;
+    if ('must_change_password' in u && u.must_change_password) mustChange.push(u.user_id);
     await repo.insertUserIfMissing({
       user_id: u.user_id,
       name: u.name,
@@ -295,6 +299,9 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
     });
   }
 
+  const authService = new AuthService(repo);
+  for (const uid of mustChange) await authService.updateState(uid, (st) => ({ ...st, must_change_password: true }));
+
   // 自定义数据表（POST /tables 建的）：启动时注册到表格存储（PG 模式会补建缺失的物理表）
   const customTables = new Map<string, CustomTableRecord>();
   for (const t of await repo.listCustomTables()) {
@@ -307,7 +314,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   const ctx: Ctx = createCtx({
     app,
     repo,
-    auth: new AuthService(repo),
+    auth: authService,
     roles: new RoleService(repo),
     org: new OrganizationService(repo),
     auditLog: new AuditLogService(repo),

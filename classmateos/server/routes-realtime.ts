@@ -9,7 +9,7 @@
 import type { WebSocket } from 'ws';
 import { verifyToken } from './auth.js';
 import { fail, newId, type Ctx } from './context.js';
-import { AGENT_SUBSCRIBED_EVENTS, eventVisibleTo, serializeEvent, serializeEventForBot, type BotEvent } from './events.js';
+import { eventVisibleTo, eventVisibleToBot, serializeEvent, serializeEventForBot, type BotEvent } from './events.js';
 import { nowIso } from './repo.js';
 import type { PushProvider } from './push.js';
 import type { Presence, PushDispatcher } from './notifications.js';
@@ -186,7 +186,8 @@ export function registerRealtimeRoutes(
     (socket, req) => {
       const { since } = req.query as { since?: string };
       // 二期新增的界面事件只给用户端；触发器需要的几类（AGENT_SUBSCRIBED_EVENTS）给大脑，但只带 id
-      const forBot = (e: BotEvent) => !e.scope?.user_only || AGENT_SUBSCRIBED_EVENTS.has(e.event_type);
+      // 和会话有关、但机器人不在会话里的事件不发（代码审查 B1）
+      const forBot = (e: BotEvent) => eventVisibleToBot(e);
       const ok = eventBus.replay(since, (e) => {
         if (forBot(e)) safeSend(socket, serializeEventForBot(e));
       });

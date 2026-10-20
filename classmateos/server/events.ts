@@ -76,6 +76,7 @@ export const AGENT_SUBSCRIBED_EVENTS: ReadonlySet<BotEventType> = new Set<BotEve
  *   - audience：只给这些用户；admins：管理员也能收；
  *   - deny / deny_admins：排除这些用户 / 管理员（优先级最高）；
  *   - user_only：不发给大脑 WS。
+ *   - no_bot：和会话有关、但机器人不在这个会话里（代码审查 B1），一律不发给大脑 WS（优先于 AGENT_SUBSCRIBED_EVENTS）。
  */
 export interface EventScope {
   topic?: string;
@@ -84,6 +85,7 @@ export interface EventScope {
   deny?: string[];
   deny_admins?: boolean;
   user_only?: boolean;
+  no_bot?: boolean;
 }
 
 export interface BotEvent {
@@ -180,6 +182,20 @@ export function serializeEvent(e: BotEvent): string {
  * 发给大脑 WS 的界面事件（AGENT_SUBSCRIBED_EVENTS）只留 id 和动作：
  * 内容由触发器以「建规则的同学」身份重新读取，避免保密记录经事件流到大脑。
  */
+/**
+ * 和会话有关的事件（消息、会话、已读、加急等）：给了会话成员当 audience、但机器人不在里面时，
+ * 不能推给大脑 WS（同学之间的私聊、机器人不在的群）。
+ */
+export function isChatEvent(type: string, payload: Record<string, unknown>): boolean {
+  return type.startsWith('message.') || type.startsWith('chat.') || type.startsWith('reaction.') || 'chat_id' in payload || 'chat' in payload || 'read' in payload;
+}
+
+/** 大脑 WS 是否该收到这条事件。 */
+export function eventVisibleToBot(e: BotEvent): boolean {
+  if (e.scope?.no_bot) return false;
+  return !e.scope?.user_only || AGENT_SUBSCRIBED_EVENTS.has(e.event_type);
+}
+
 export function serializeEventForBot(e: BotEvent): string {
   if (!e.scope?.user_only) return serializeEvent(e);
   const { audience: _a, scope: _s, record: _r, ...rest } = e as BotEvent & { record?: unknown };

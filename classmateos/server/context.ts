@@ -6,15 +6,15 @@ import type { AuditLogService } from './audit-log.js';
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { TableDef } from '../../src/bitable/schema.js';
 import { verifyToken, type TokenPayload } from './auth.js';
 import type { AuthService } from './auth-service.js';
-import type { BotEventBus, BotEventType, EventScope } from './events.js';
+import { isChatEvent, type BotEventBus, type BotEventType, type EventScope } from './events.js';
 import type { LocalFileStore } from './files.js';
 import type { CollabHub } from './collab.js';
 import { canAccessRecord } from './row-access.js';
-import { headerStr, isValidConfirmCard, markAgentRequest, routeOf, type AgentAuditLog, type BotScopePolicy } from './agent-principal.js';
+import { agentMarkOf, confirmCardStatus, headerStr, markAgentRequest, requestActionOf, routeOf, type AgentAuditLog, type BotScopePolicy } from './agent-principal.js';
 import { agentState } from './agent-context.js';
 import type { TableStore } from './store.js';
 import {
@@ -31,6 +31,8 @@ import {
 } from './repo.js';
 
 export const BOT_ID = 'bot';
+/** 确认卡片使用记录（一张卡只能放行一次，代码审查 B3）。 */
+export const CONFIRM_USE_KIND = 'confirm_card_use';
 export const SYSTEM_SENDER = 'system';
 
 export interface AuthedUser extends TokenPayload {
@@ -218,8 +220,35 @@ export function createCtx(base: Omit<Ctx, keyof CtxHelpers>): Ctx {
         // 删除类规则：同学在确认卡片上点过「确认」就放行（AGENT_PLAN M2）
         const confirmCard = headerStr(req, 'x-agent-confirm');
         let confirmedBy: string | null = null;
-        if (denied && confirmCard && base.botPolicy.isDestructiveRule(denied) && obo !== BOT_ID) {
-          if (isValidConfirmCard(await repo.findMessageByCardId(confirmCard), obo, BOT_ID)) confirmedBy = confirmCard;
+        // 同一个请求里鉴权可能走两次（权限钩子 + 处理函数）：这次请求已经占用过这张卡就直接放行
+        const prevMark = agentMarkOf(req);
+        if (denied && confirmCard && prevMark?.confirm_card === confirmCard && prevMark.on_behalf_of === obo) {
+          confirmedBy = confirmCard;
+        } else if (denied && confirmCard && base.botPolicy.isDestructiveRule(denied) && obo !== BOT_ID) {
+          // 代码审查 B3：卡片必须绑定的就是这次请求（方法 + 路由 + 对象），且只能用一次
+          const cardMsg = await repo.findMessageByCardId(confirmCard);
+          const st = confirmCardStatus(cardMsg, obo, BOT_ID, requestActionOf(req));
+          if (st === 'mismatch' || st === 'unbound') {
+            fail(reply, 403, '确认卡片确认的不是这个操作，请重新确认', { code: 'BOT_CONFIRM_MISMATCH', rule: denied });
+            return undefined;
+          }
+          if (st === 'ok') {
+            const now = nowIso();
+            const claimed = await repo.saveEntity(
+              { kind: CONFIRM_USE_KIND, id: confirmCard, scope: obo, data: { card_id: confirmCard, user_id: obo, method: req.method, url: req.url.slice(0, 500), used_at: now }, version: 0, created_at: now, updated_at: now },
+              0,
+            );
+            if (!claimed) {
+              fail(reply, 409, '这张确认卡片已经用过了，请重新确认', { code: 'CARD_CONSUMED' });
+              return undefined;
+            }
+            // 卡片上也标记一下（前端可显示「已执行」）；失败不影响放行
+            if (cardMsg) await repo.updateMessage(cardMsg.message_id, { content: { ...cardMsg.content, consumed_at: now }, updated_at: now }).catch(() => undefined);
+            confirmedBy = confirmCard;
+          } else if (st === 'consumed') {
+            fail(reply, 409, '这张确认卡片已经用过了，请重新确认', { code: 'CARD_CONSUMED' });
+            return undefined;
+          }
         }
         if (denied && !confirmedBy) {
           const destructive = base.botPolicy.isDestructiveRule(denied);
@@ -313,7 +342,11 @@ export function createCtx(base: Omit<Ctx, keyof CtxHelpers>): Ctx {
     },
 
     isBot(req) {
-      return !!base.botToken && req.headers['x-bot-token'] === base.botToken;
+      // 代码审查 B2：定长比较，避免按耗时猜令牌
+      const got = req.headers['x-bot-token'];
+      if (!base.botToken || typeof got !== 'string') return false;
+      const a = Buffer.from(got), b = Buffer.from(base.botToken);
+      return a.length === b.length && timingSafeEqual(a, b);
     },
 
     async missingUsers(ids) {
@@ -370,6 +403,10 @@ export function createCtx(base: Omit<Ctx, keyof CtxHelpers>): Ctx {
     },
 
     publish(type, payload, audience, scope) {
+      // 代码审查 B1：会话事件的接收人不含机器人 → 大脑 WS 不收（audience 为 [] 的大脑专用副本由 publishMessage 自己标）
+      if (Array.isArray(audience) && audience.length && !audience.includes(BOT_ID) && !scope?.no_bot && isChatEvent(type, payload)) {
+        scope = { ...scope, no_bot: true };
+      }
       eventBus.publish({ event_type: type, ...payload, ...(agentState()?.via_bot ? { via_bot: true } : {}), audience, ...(scope ? { scope } : {}) });
     },
 
@@ -438,8 +475,8 @@ export function createCtx(base: Omit<Ctx, keyof CtxHelpers>): Ctx {
         ctx.publish(type, { message: publicMessage(msg) }, audience);
         return;
       }
-      // 大脑 WS：原始消息（audience 为空，用户端不会收到这一份）
-      ctx.publish(type, { message: publicMessage(msg) }, []);
+      // 大脑 WS：原始消息（audience 为空，用户端不会收到这一份）；机器人不在会话里就不发
+      if (audience.includes(BOT_ID)) ctx.publish(type, { message: publicMessage(msg) }, []);
       for (const uid of new Set(audience)) {
         if (uid === BOT_ID || uid === SYSTEM_SENDER) continue;
         const [m] = await ctx.decorateMessages([msg], uid);

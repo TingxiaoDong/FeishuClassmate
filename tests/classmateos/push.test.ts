@@ -93,7 +93,7 @@ describe('push 推送通知骨架', () => {
 
     const chat = await app.inject({
       method: 'POST', url: '/api/v1/chats', headers: auth(alice),
-      payload: { member_ids: ['ou_bob'] },
+      payload: { member_ids: ['ou_bob', 'bot'] }, // 机器人要在会话里（代码审查 B1）
     });
     const chatId = chat.json().chat_id;
 

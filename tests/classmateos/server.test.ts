@@ -166,7 +166,7 @@ describe('ClassmateOS server (P1 MVP)', () => {
       method: 'POST',
       url: '/api/v1/chats',
       headers: auth,
-      payload: { name: '项目组', member_ids: ['ou_bob'] },
+      payload: { name: '项目组', member_ids: ['ou_bob', 'bot'] }, // 机器人要在群里（代码审查 B1）
     });
     expect(chat.statusCode).toBe(201);
     const chatId = chat.json().chat_id;
@@ -198,7 +198,8 @@ describe('ClassmateOS server (P1 MVP)', () => {
     expect(botMsg.json().sender_id).toBe('bot');
 
     const history = await app.inject({ method: 'GET', url: `/api/v1/chats/${chatId}/messages`, headers: auth });
-    expect(history.json().items).toHaveLength(2);
+    // 另有一条「创建了群聊」系统消息
+    expect(history.json().items.filter((m: { sender_id: string }) => m.sender_id !== 'system')).toHaveLength(2);
     await app.close();
   });
 

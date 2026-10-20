@@ -54,7 +54,7 @@ describe('用户态 WS（/api/v1/events/ws）', () => {
       method: 'POST',
       url: '/api/v1/chats',
       headers: auth,
-      payload: { member_ids: ['ou_bob'] },
+      payload: { member_ids: ['ou_bob', 'bot'] }, // 机器人要在会话里（代码审查 B1）
     });
     const chatId = chat.json().chat_id as string;
 
@@ -80,7 +80,8 @@ describe('用户态 WS（/api/v1/events/ws）', () => {
 
     // alice 收到 2 条消息（自己发的 + bot 的），另有新会话的 chat.created；eve 一条没有
     expect(aliceEvents.some((e) => e.event_type === 'chat.created')).toBe(true);
-    const aliceMsgs = aliceEvents.filter((e) => e.event_type === 'message.receive');
+    // 不算「创建了群聊」系统消息
+    const aliceMsgs = aliceEvents.filter((e) => e.event_type === 'message.receive' && (e.message as { sender_id: string }).sender_id !== 'system');
     expect(aliceMsgs).toHaveLength(2);
     expect(aliceMsgs.map((e) => (e.message as { sender_id: string }).sender_id)).toEqual([
       'ou_alice',

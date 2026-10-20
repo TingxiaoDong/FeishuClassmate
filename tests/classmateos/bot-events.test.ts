@@ -57,7 +57,7 @@ describe('Bot 事件 WS + askUser 回流', () => {
       method: 'POST',
       url: '/api/v1/chats',
       headers: { authorization: `Bearer ${token}` },
-      payload: { member_ids: ['ou_bob'] },
+      payload: { member_ids: ['ou_bob', 'bot'] }, // 机器人要在会话里（代码审查 B1）
     });
     const chatId = chat.json().chat_id;
     await app.inject({
@@ -68,7 +68,8 @@ describe('Bot 事件 WS + askUser 回流', () => {
     });
 
     await new Promise((r) => setTimeout(r, 200));
-    const msgs = events.filter((e) => e.event_type === 'message.receive');
+    // 不算「创建了群聊」系统消息
+    const msgs = events.filter((e) => e.event_type === 'message.receive' && e.message?.sender_id !== 'system');
     expect(msgs).toHaveLength(1);
     expect(msgs[0].message?.content).toMatchObject({ text: '今天进展如何' });
     expect(msgs[0].event_id).toMatch(/^evt_/);

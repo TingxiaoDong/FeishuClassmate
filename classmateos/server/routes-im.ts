@@ -16,6 +16,7 @@ import {
   type FieldError,
 } from './context.js';
 import { parseAgentContext, parseAgentResult } from './agent-message.js';
+import { boundActionErrors } from './agent-principal.js';
 import { nowIso, p2pKeyOf, publicMessage, type ChatRecord, type MessageRecord } from './repo.js';
 import { extractUrls, type LinkPreviewService } from './link-preview.js';
 
@@ -590,6 +591,16 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
     }
     const checked = await checkContent(body.msg_type, body.content, 'bot');
     if (checked.errors.length) return invalid(reply, checked.errors, '消息内容不合法');
+    // 代码审查 B3：确认卡片的 bound_action 格式（没带的卡片不能用来放行服务端删除操作）
+    if (body.msg_type === 'interactive_card' && checked.content) {
+      if (checked.content.kind === 'confirm') {
+        const errs = boundActionErrors(checked.content.bound_action);
+        if (errs.length) return invalid(reply, errs.map((message) => ({ field: 'content.bound_action', message })), '确认卡片内容不合法');
+      }
+      // 应答、使用记录只能由同学点按钮 / 服务端写入，发卡时带了一律丢掉（防止伪造「已确认」）
+      delete checked.content.answer;
+      delete checked.content.consumed_at;
+    }
 
     let chat: ChatRecord | undefined;
     if (body.receive_id_type === 'user_id') {
@@ -612,6 +623,9 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
       if (res.created) ctx.publish('chat.created', { chat: ctx.chatBaseJson(chat) }, chat.member_ids);
     } else {
       chat = await repo.getChat(body.receive_id);
+      if (!chat) return fail(reply, 404, '会话不存在');
+      // 代码审查 B1：机器人只能在自己所在的会话里发言
+      if (!chat.member_ids.includes(BOT_ID)) return fail(reply, 403, '机器人不在这个会话里', { code: 'BOT_NOT_IN_CHAT' });
     }
     if (!chat) return fail(reply, 404, '会话不存在');
     const replyTo = body.reply_to_message_id ?? body.reply_to ?? null;
