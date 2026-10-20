@@ -27,6 +27,8 @@ export interface TokenPayload {
   typ: TokenType;
   /** refresh 令牌的服务端登记 id。 */
   jti?: string;
+  /** 登录设备会话 id（迭代 5）；升级前签发的令牌没有。 */
+  sid?: string;
   exp: number; // ms epoch
 }
 
