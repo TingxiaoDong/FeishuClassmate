@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type { TableDef } from '../../src/bitable/schema.js';
+import type { TableDef } from './builtin-schema.js';
 
 export interface StoredRecord {
   record_id: string;

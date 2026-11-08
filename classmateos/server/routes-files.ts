@@ -223,10 +223,11 @@ export function registerFileRoutes(ctx: Ctx): void {
     if (file.uploader_id !== me.sub) return fail(reply, 403, '只有上传者可以删除');
     await repo.setFileDrive(file_key, false, nowIso());
     // 会话 / 表格里还引用着就只移出云盘；没人引用了才真正删除
-    if ((await repo.listFileLinks(file_key)).length === 0) {
+    const linked = (await repo.listFileLinks(file_key)).length > 0;
+    if (!linked) {
       await repo.deleteFile(file_key);
       await fileStore.remove(file_key).catch(() => undefined);
     }
-    return reply.code(204).send();
+    return { removed_from_drive: true, deleted: !linked, file_key };
   });
 }

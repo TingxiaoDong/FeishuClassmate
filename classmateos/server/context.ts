@@ -7,7 +7,7 @@ import type { AuditLogService } from './audit-log.js';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import type { TableDef } from '../../src/bitable/schema.js';
+import type { TableDef } from './builtin-schema.js';
 import { verifyToken, type TokenPayload } from './auth.js';
 import type { AuthService } from './auth-service.js';
 import { isChatEvent, type BotEventBus, type BotEventType, type EventScope } from './events.js';
@@ -457,8 +457,8 @@ export function createCtx(base: Omit<Ctx, keyof CtxHelpers>): Ctx {
             record_id: null,
             created_at: msg.created_at,
           });
-          // 过渡期「我的云盘」会话：发进去的自己的文件即登记到云盘
-          if (chat.kind === 'drive' && file.uploader_id === senderId) {
+          // 自己在聊天里发送的文件自动进入云盘；聊天引用仍保留在「来自会话」。
+          if (file.uploader_id === senderId) {
             await repo.setFileDrive(file.file_key, true, msg.created_at);
           }
         }

@@ -9,6 +9,7 @@
  * 约定：时间戳一律由应用层生成 ISO 字符串（毫秒精度）传入，保证两种实现
  * 读写往返一致（文档并发保护按 updated_at 字符串比较）。
  */
+import type { AutomationDeliveryCommit, AutomationDeliveryOutcome } from './automation-delivery-core.js';
 
 export type Role = 'admin' | 'member' | 'bot';
 
@@ -274,7 +275,7 @@ export interface FieldMetaRecord extends CustomFieldRecord {
 
 /**
  * 内置表的结构覆盖层（字段改名、改选项、新增自定义字段、默认顺序）。
- * 没有记录时按 src/bitable/schema.ts + table-meta.ts 生成，version = 1。
+ * 没有记录时按 classmateos/server/builtin-schema.ts + table-meta.ts 生成，version = 1。
  */
 export interface TableSchemaRecord {
   table_key: string;
@@ -336,6 +337,17 @@ export interface CustomTableRecord {
   client_request_id: string | null;
   /** 表结构版本（字段接口的 base_version），新建为 1。 */
   version: number;
+  /** 所属自定义文件夹；null 表示根目录。 */
+  folder_id?: string | null;
+}
+
+export interface TableFolderRecord {
+  folder_id: string;
+  name: string;
+  parent_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export type DevicePlatform = 'ios' | 'android' | 'macos';
@@ -390,6 +402,11 @@ export interface Repo {
   /** expectedVersion=0 只插入；否则版本一致才更新。写入后 version = expectedVersion + 1。 */
   saveEntity(rec: EntityRecord, expectedVersion: number): Promise<boolean>;
   deleteEntity(kind: string, id: string): Promise<boolean>;
+  /**
+   * 自动化预授权 v2 原子投递：在同一事务内重查运行凭证、授权、任务版本、群成员、幂等与额度，
+   * 放行时写入消息与投递记录，拦截时只写拦截记录。判定规则见 automation-delivery-core.ts。
+   */
+  commitAutomationDelivery(input: AutomationDeliveryCommit): Promise<AutomationDeliveryOutcome>;
 
   getDocAccessRequest(id: string): Promise<DocAccessRequest | undefined>;
   saveDocAccessRequest(request: DocAccessRequest): Promise<boolean>;
@@ -530,6 +547,13 @@ export interface Repo {
     limit: number;
     offset: number;
   }): Promise<Page<DocRecord>>;
+
+  // table folders（自定义表目录）
+  listTableFolders(): Promise<TableFolderRecord[]>;
+  getTableFolder(id: string): Promise<TableFolderRecord | undefined>;
+  insertTableFolder(f: TableFolderRecord): Promise<boolean>;
+  updateTableFolder(f: TableFolderRecord, expectedVersion?: number): Promise<boolean>;
+  deleteTableFolder(id: string): Promise<boolean>;
 
   // custom tables（多维表格自定义数据表定义）
   /** 名称（去空格、大小写不敏感）已被占用时返回 'name_exists'，不插入。 */

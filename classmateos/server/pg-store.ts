@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { ALL_TABLES, type FieldDef, type TableDef } from '../../src/bitable/schema.js';
+import { ALL_TABLES, type FieldDef, type TableDef } from './builtin-schema.js';
 import type { ListOptions, ListResult, StoredRecord, TableStore } from './store.js';
 import { MIGRATION_META_FIELDS } from './validation.js';
 

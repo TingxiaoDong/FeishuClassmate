@@ -120,7 +120,10 @@ class _DocsPageState extends State<DocsPage> {
       if (!v2) {
         list = await api.listDocs();
       } else if (scope == DocScope.mine) {
-        final r = await Future.wait([api.listDocsIn('mine', folderId: folderId), api.listFolders(parentId: folderId)]);
+        final r = await Future.wait([
+          api.listDocsIn('mine', folderId: folderId),
+          api.listFolders(parentId: folderId),
+        ]);
         list = r[0] as List<CosDoc>;
         fs = r[1] as List<CosFolder>;
       } else {
@@ -161,14 +164,29 @@ class _DocsPageState extends State<DocsPage> {
     _load();
   }
 
-  Future<void> _create(bool wide, (String, String, IconData, String) tpl) async {
+  Future<void> _create(
+    bool wide,
+    (String, String, IconData, String) tpl,
+  ) async {
     try {
       final title = tpl.$2.isEmpty ? '未命名文档' : tpl.$2;
       final created = v2 && scope == DocScope.mine && folderId != null
           ? await _s.api.createDocIn(title, tpl.$4, folderId: folderId)
           : await _s.api.createDoc(title, tpl.$4);
-      await _load();
       if (!mounted) return;
+      // 先把新文档立即放进当前列表，避免等待列表请求或被旧请求结果覆盖。
+      if (scope == DocScope.recent || scope == DocScope.mine) {
+        setState(() {
+          final i = docs.indexWhere((d) => d.docId == created.docId);
+          if (i >= 0) {
+            docs[i] = created;
+          } else {
+            docs = [created, ...docs];
+          }
+        });
+      }
+      // 后台同步文件夹和服务端排序数据；序列号机制会丢弃过期结果。
+      _load();
       if (wide) {
         setState(() => selected = created.docId);
       } else {
@@ -202,7 +220,11 @@ class _DocsPageState extends State<DocsPage> {
 
   // ---------------- 文件夹与文档操作 ----------------
 
-  Future<String?> _askName(String title, {String initial = '', String hint = ''}) async {
+  Future<String?> _askName(
+    String title, {
+    String initial = '',
+    String hint = '',
+  }) async {
     final ctl = TextEditingController(text: initial);
     final r = await showDialog<String>(
       context: context,
@@ -219,8 +241,14 @@ class _DocsPageState extends State<DocsPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctl.text), child: const Text('确定')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctl.text),
+            child: const Text('确定'),
+          ),
         ],
       ),
     );
@@ -251,14 +279,32 @@ class _DocsPageState extends State<DocsPage> {
         _enterFolder([...path, f]);
       case 'rename':
         final name = await _askName('重命名文件夹', initial: f.name);
-        if (name != null) _guard(() => _s.api.updateFolder(f.folderId, name: name));
+        if (name != null)
+          _guard(() => _s.api.updateFolder(f.folderId, name: name));
       case 'move':
-        final to = await pickFolder(context, title: '移动「${f.name}」到', exclude: f.folderId);
+        final to = await pickFolder(
+          context,
+          title: '移动「${f.name}」到',
+          exclude: f.folderId,
+        );
         if (to == null) return;
-        _guard(() => _s.api.updateFolder(f.folderId, parentId: to.id, toRoot: to.id == null), '已移动');
+        _guard(
+          () => _s.api.updateFolder(
+            f.folderId,
+            parentId: to.id,
+            toRoot: to.id == null,
+          ),
+          '已移动',
+        );
       case 'delete':
-        final ok = await confirmDialog(context,
-            title: '删除文件夹', content: '「${f.name}」会被删除。里面你自己的文档会移到回收站，30 天内可以恢复；别人共享给你的文档只会移出这个文件夹。', ok: '删除', danger: true);
+        final ok = await confirmDialog(
+          context,
+          title: '删除文件夹',
+          content:
+              '「${f.name}」会被删除。里面你自己的文档会移到回收站，30 天内可以恢复；别人共享给你的文档只会移出这个文件夹。',
+          ok: '删除',
+          danger: true,
+        );
         if (ok) _guard(() => _s.api.deleteFolder(f.folderId), '已移到回收站');
     }
   }
@@ -267,20 +313,35 @@ class _DocsPageState extends State<DocsPage> {
     final api = _s.api;
     switch (action) {
       case 'star':
-        _guard(() => api.starDoc(d.docId, !d.starred), d.starred ? '已取消收藏' : '已收藏');
+        _guard(
+          () => api.starDoc(d.docId, !d.starred),
+          d.starred ? '已取消收藏' : '已收藏',
+        );
       case 'move':
         final to = await pickFolder(context, title: '移动「${d.title}」到');
         if (to == null) return;
         _guard(() => api.moveDoc(d.docId, to.id), '已移动到「${to.name}」');
       case 'delete':
-        final ok = await confirmDialog(context, title: '删除文档', content: '「${d.title}」会移到回收站，30 天内可以恢复。', ok: '删除', danger: true);
+        final ok = await confirmDialog(
+          context,
+          title: '删除文档',
+          content: '「${d.title}」会移到回收站，30 天内可以恢复。',
+          ok: '删除',
+          danger: true,
+        );
         if (!ok) return;
         if (selected == d.docId) setState(() => selected = null);
         _guard(() => api.deleteDoc(d.docId), '已移到回收站');
       case 'restore':
         _guard(() => api.restoreDoc(d.docId), '已恢复「${d.title}」');
       case 'purge':
-        final ok = await confirmDialog(context, title: '彻底删除', content: '「${d.title}」会被永久删除，无法恢复。', ok: '彻底删除', danger: true);
+        final ok = await confirmDialog(
+          context,
+          title: '彻底删除',
+          content: '「${d.title}」会被永久删除，无法恢复。',
+          ok: '彻底删除',
+          danger: true,
+        );
         if (ok) _guard(() => api.deleteDocForever(d.docId), '已彻底删除');
     }
   }
@@ -290,94 +351,167 @@ class _DocsPageState extends State<DocsPage> {
   @override
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
-    return LayoutBuilder(builder: (context, c) {
-      final wide = c.maxWidth >= 860;
-      final showNav = v2 && c.maxWidth >= 1180;
-      final list = _list(context, s, wide, showNav);
-      if (!wide) return list;
-      return Row(children: [
-        if (showNav) ...[SizedBox(width: 208, child: _nav(s, wide)), const VerticalDivider(width: 1)],
-        SizedBox(width: 320, child: list),
-        const VerticalDivider(width: 1),
-        Expanded(
-          child: selected == null
-              ? _home(context, s)
-              : DocEditor(
-                  key: ValueKey(selected),
-                  docId: selected!,
-                  focusCommentId: focusComment,
-                  onSaved: _load,
-                  onDeleted: () {
-                    setState(() => selected = null);
-                    _load();
-                  },
-                ),
-        ),
-      ]);
-    });
-  }
-
-  Widget _newButton(bool wide, {bool expanded = false}) => PopupMenuButton<String>(
-        tooltip: '新建',
-        position: PopupMenuPosition.under,
-        onSelected: (v) => v == 'folder' ? _newFolder() : _create(wide, _templates[int.parse(v)]),
-        itemBuilder: (_) => [
-          for (var i = 0; i < _templates.length; i++)
-            PopupMenuItem(
-              value: '$i',
-              child: Row(children: [Icon(_templates[i].$3, size: 18, color: Fs.text2), const SizedBox(width: 10), Text(_templates[i].$1)]),
-            ),
-          if (v2) ...[
-            const PopupMenuDivider(),
-            const PopupMenuItem(
-              value: 'folder',
-              child: Row(children: [Icon(Icons.create_new_folder_outlined, size: 18, color: Fs.text2), SizedBox(width: 10), Text('文件夹')]),
+    return LayoutBuilder(
+      builder: (context, c) {
+        final wide = c.maxWidth >= 860;
+        final showNav = v2 && c.maxWidth >= 1040;
+        final list = _list(context, s, wide, showNav);
+        if (!wide) return list;
+        return Row(
+          children: [
+            if (showNav) ...[
+              SizedBox(width: 220, child: _nav(s, wide)),
+              const VerticalDivider(width: 1),
+            ],
+            SizedBox(width: 320, child: list),
+            const VerticalDivider(width: 1),
+            Expanded(
+              child: selected == null
+                  ? _home(context, s)
+                  : DocEditor(
+                      key: ValueKey(selected),
+                      docId: selected!,
+                      focusCommentId: focusComment,
+                      onSaved: _load,
+                      onDeleted: () {
+                        setState(() => selected = null);
+                        _load();
+                      },
+                    ),
             ),
           ],
-        ],
-        child: Container(
-          width: expanded ? double.infinity : null,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(color: Fs.primary, borderRadius: BorderRadius.circular(Fs.radius)),
-          child: Row(mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.center, children: const [
-            Icon(Icons.add_rounded, size: 16, color: Colors.white),
-            SizedBox(width: 4),
-            Text('新建', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
-          ]),
+        );
+      },
+    );
+  }
+
+  Widget _newButton(
+    bool wide, {
+    bool expanded = false,
+  }) => PopupMenuButton<String>(
+    tooltip: '新建',
+    position: PopupMenuPosition.under,
+    onSelected: (v) =>
+        v == 'folder' ? _newFolder() : _create(wide, _templates[int.parse(v)]),
+    itemBuilder: (_) => [
+      for (var i = 0; i < _templates.length; i++)
+        PopupMenuItem(
+          value: '$i',
+          child: Row(
+            children: [
+              Icon(_templates[i].$3, size: 18, color: Fs.text2),
+              const SizedBox(width: 10),
+              Text(_templates[i].$1),
+            ],
+          ),
         ),
-      );
+      if (v2) ...[
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'folder',
+          child: Row(
+            children: [
+              Icon(Icons.create_new_folder_outlined, size: 18, color: Fs.text2),
+              SizedBox(width: 10),
+              Text('文件夹'),
+            ],
+          ),
+        ),
+      ],
+    ],
+    child: Container(
+      width: expanded ? double.infinity : null,
+      height: expanded ? 38 : null,
+      padding: EdgeInsets.symmetric(horizontal: 12, vertical: expanded ? 0 : 8),
+      decoration: BoxDecoration(
+        color: Fs.primary,
+        borderRadius: BorderRadius.circular(Fs.radius),
+      ),
+      child: Row(
+        mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: const [
+          Icon(Icons.add_rounded, size: 16, color: Colors.white),
+          SizedBox(width: 4),
+          Text(
+            '新建云文档',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 14,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 
   Widget _nav(AppState s, bool wide) {
-    Widget item(IconData icon, String label, bool sel, VoidCallback onTap) => HoverBox(
+    Widget item(IconData icon, String label, bool sel, VoidCallback onTap) =>
+        HoverBox(
           selected: sel,
-          selectedColor: Fs.primaryLight,
+          hoverColor: const Color(0xFFE8E9EB),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-          margin: const EdgeInsets.symmetric(vertical: 1),
+          margin: const EdgeInsets.only(bottom: 2),
           onTap: onTap,
-          child: Row(children: [
-            Icon(icon, size: 18, color: sel ? Fs.primary : Fs.text2),
-            const SizedBox(width: 10),
-            Text(label, style: TextStyle(fontSize: 14, color: sel ? Fs.primary : Fs.text1, fontWeight: sel ? FontWeight.w500 : null)),
-          ]),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: sel ? Fs.primary : Fs.text2),
+              const SizedBox(width: 10),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: sel ? Fs.primary : Fs.text1,
+                  fontWeight: sel ? FontWeight.w500 : null,
+                ),
+              ),
+            ],
+          ),
         );
     return Container(
-      color: const Color(0xFFF8F9FA),
-      child: ListView(padding: const EdgeInsets.fromLTRB(12, 14, 12, 12), children: [
-        const Padding(
-          padding: EdgeInsets.only(left: 4, bottom: 12),
-          child: Text('云文档', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-        ),
-        _newButton(wide, expanded: true),
-        const SizedBox(height: 14),
-        for (final sc in DocScope.values.where((x) => x != DocScope.trash))
-          _folderDrop(
-            sc == DocScope.mine ? const <CosFolder>[] : null,
-            item(sc.icon, sc.label, scope == sc && (sc != DocScope.mine || path.isEmpty), () => _setScope(sc)),
+      color: Fs.bg,
+      child: ListView(
+        padding: const EdgeInsets.all(12),
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(6, 4, 6, 14),
+            child: Text(
+              '云文档',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+            ),
           ),
-        if (s.feature('wiki')) item(Icons.menu_book_outlined, '知识库', false, () => s.go(AppModule.wiki)),
-        const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: Divider()),
-        item(DocScope.trash.icon, DocScope.trash.label, scope == DocScope.trash, () => _setScope(DocScope.trash)),
-      ]),
+          _newButton(wide, expanded: true),
+          const SizedBox(height: 14),
+          for (final sc in DocScope.values.where((x) => x != DocScope.trash))
+            _folderDrop(
+              sc == DocScope.mine ? const <CosFolder>[] : null,
+              item(
+                sc.icon,
+                sc.label,
+                scope == sc && (sc != DocScope.mine || path.isEmpty),
+                () => _setScope(sc),
+              ),
+            ),
+          if (s.feature('wiki'))
+            item(
+              Icons.menu_book_outlined,
+              '知识库',
+              false,
+              () => s.go(AppModule.wiki),
+            ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Divider(),
+          ),
+          item(
+            DocScope.trash.icon,
+            DocScope.trash.label,
+            scope == DocScope.trash,
+            () => _setScope(DocScope.trash),
+          ),
+        ],
+      ),
     );
   }
 
@@ -387,90 +521,164 @@ class _DocsPageState extends State<DocsPage> {
     final target = targetPath.isEmpty ? null : targetPath.last;
     return DragTarget<CosDoc>(
       onWillAcceptWithDetails: (d) => d.data.folderId != target?.folderId,
-      onAcceptWithDetails: (d) => _guard(() => _s.api.moveDoc(d.data.docId, target?.folderId), '已移动到「${target?.name ?? '我的空间'}」'),
+      onAcceptWithDetails: (d) => _guard(
+        () => _s.api.moveDoc(d.data.docId, target?.folderId),
+        '已移动到「${target?.name ?? '我的空间'}」',
+      ),
       builder: (_, cand, _) => Container(
         decoration: cand.isEmpty
             ? null
-            : BoxDecoration(border: Border.all(color: Fs.primary, width: 1.5), borderRadius: BorderRadius.circular(Fs.radius)),
+            : BoxDecoration(
+                border: Border.all(color: Fs.primary, width: 1.5),
+                borderRadius: BorderRadius.circular(Fs.radius),
+              ),
         child: child,
       ),
     );
   }
 
   Widget _home(BuildContext context, AppState s) => Container(
-        color: Fs.bg,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(40, 36, 40, 36),
+    color: Fs.bg,
+    child: ListView(
+      padding: const EdgeInsets.fromLTRB(40, 36, 40, 36),
+      children: [
+        const Text(
+          '新建文档',
+          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 16,
+          runSpacing: 16,
           children: [
-            const Text('新建文档', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 16),
-            Wrap(spacing: 16, runSpacing: 16, children: [
-              for (final t in _templates)
-                HoverBox(
-                  onTap: () => _create(true, t),
-                  hoverColor: Colors.white,
-                  radius: 10,
-                  child: Container(
-                    width: 168,
-                    height: 128,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Fs.line)),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            for (final t in _templates)
+              HoverBox(
+                onTap: () => _create(true, t),
+                hoverColor: Colors.white,
+                radius: 10,
+                child: Container(
+                  width: 168,
+                  height: 128,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Fs.line),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                       Container(
                         padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(color: Fs.primaryBg, borderRadius: BorderRadius.circular(8)),
+                        decoration: BoxDecoration(
+                          color: Fs.primaryBg,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
                         child: Icon(t.$3, color: Fs.primary, size: 22),
                       ),
                       const Spacer(),
-                      Text(t.$1, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                      Text(
+                        t.$1,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
                       const SizedBox(height: 2),
-                      Text(t.$4.isEmpty ? '从零开始写作' : '使用模板', style: const TextStyle(fontSize: 12, color: Fs.text3)),
-                    ]),
+                      Text(
+                        t.$4.isEmpty ? '从零开始写作' : '使用模板',
+                        style: const TextStyle(fontSize: 12, color: Fs.text3),
+                      ),
+                    ],
                   ),
                 ),
-            ]),
-            if (v2 && scope == DocScope.mine && path.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: Text('新文档会放在「${path.last.name}」里', style: const TextStyle(fontSize: 12, color: Fs.text3)),
-              ),
-            const SizedBox(height: 32),
-            Text(v2 ? scope.heading : '最近文档', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 12),
-            if (docs.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 24),
-                child: Text('这里还没有文档', style: TextStyle(color: Fs.text3)),
-              )
-            else
-              Container(
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Fs.line)),
-                child: Column(children: [
-                  for (final d in docs.take(10))
-                    HoverBox(
-                      radius: 0,
-                      onTap: scope == DocScope.trash ? null : () => setState(() => selected = d.docId),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      child: Row(children: [
-                        const DocIcon(size: 28),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(d.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14))),
-                        SizedBox(width: 120, child: Text(s.userName(d.owner), style: const TextStyle(fontSize: 13, color: Fs.text2))),
-                        SizedBox(
-                          width: 110,
-                          child: Text(
-                            fmtRelative(scope == DocScope.recent ? (d.lastViewedAt ?? d.updatedAt) : d.updatedAt),
-                            textAlign: TextAlign.right,
-                            style: const TextStyle(fontSize: 13, color: Fs.text3),
-                          ),
-                        ),
-                      ]),
-                    ),
-                ]),
               ),
           ],
         ),
-      );
+        if (v2 && scope == DocScope.mine && path.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: Text(
+              '新文档会放在「${path.last.name}」里',
+              style: const TextStyle(fontSize: 12, color: Fs.text3),
+            ),
+          ),
+        const SizedBox(height: 32),
+        Text(
+          v2 ? scope.heading : '最近文档',
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 12),
+        if (docs.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 24),
+            child: Text('这里还没有文档', style: TextStyle(color: Fs.text3)),
+          )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Fs.line),
+            ),
+            child: Column(
+              children: [
+                for (final d in docs.take(10))
+                  HoverBox(
+                    radius: 0,
+                    onTap: scope == DocScope.trash
+                        ? null
+                        : () => setState(() => selected = d.docId),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      children: [
+                        const DocIcon(size: 28),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            d.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 120,
+                          child: Text(
+                            s.userName(d.owner),
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Fs.text2,
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          width: 110,
+                          child: Text(
+                            fmtRelative(
+                              scope == DocScope.recent
+                                  ? (d.lastViewedAt ?? d.updatedAt)
+                                  : d.updatedAt,
+                            ),
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Fs.text3,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
 
   Widget _list(BuildContext context, AppState s, bool wide, bool showNav) {
     final kw = keyword.toLowerCase();
@@ -478,165 +686,261 @@ class _DocsPageState extends State<DocsPage> {
         .where((d) => kw.isEmpty || d.title.toLowerCase().contains(kw))
         .where((d) => v2 || !mineOnly || d.createdBy == s.me.userId)
         .toList();
-    final fs = folders.where((f) => kw.isEmpty || f.name.toLowerCase().contains(kw)).toList();
+    final fs = folders
+        .where((f) => kw.isEmpty || f.name.toLowerCase().contains(kw))
+        .toList();
     final empty = list.isEmpty && fs.isEmpty;
     return Container(
       color: Colors.white,
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 12, 8),
-          child: Row(children: [
-            Expanded(
-              child: HoverBox(
-                onTap: wide ? () => setState(() => selected = null) : null,
-                padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-                child: Text(v2 && showNav ? scope.heading : '云文档',
-                    maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: HoverBox(
+                    onTap: wide ? () => setState(() => selected = null) : null,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 2,
+                    ),
+                    child: Text(
+                      v2 && showNav ? scope.heading : '云文档',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                if (v2 && scope == DocScope.mine && showNav)
+                  FsIconButton(
+                    icon: Icons.create_new_folder_outlined,
+                    tooltip: '新建文件夹',
+                    onPressed: _newFolder,
+                  ),
+                if (!showNav) _newButton(wide),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: FsSearchField(
+              hint: '搜索文档',
+              onChanged: (v) => setState(() => keyword = v.trim()),
+            ),
+          ),
+          if (!v2)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+              child: Row(
+                children: [
+                  for (final m in [false, true])
+                    _chip(
+                      m ? '我创建的' : '全部文档',
+                      mineOnly == m,
+                      () => setState(() => mineOnly = m),
+                    ),
+                ],
+              ),
+            )
+          else if (!showNav)
+            SizedBox(
+              height: 40,
+              child: ListView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+                children: [
+                  for (final sc in DocScope.values)
+                    _chip(sc.label, scope == sc, () => _setScope(sc)),
+                  if (s.feature('wiki'))
+                    _chip('知识库', false, () => s.go(AppModule.wiki)),
+                ],
               ),
             ),
-            if (v2 && scope == DocScope.mine && showNav)
-              FsIconButton(icon: Icons.create_new_folder_outlined, tooltip: '新建文件夹', onPressed: _newFolder),
-            if (!showNav) _newButton(wide),
-          ]),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: FsSearchField(hint: '搜索文档', onChanged: (v) => setState(() => keyword = v.trim())),
-        ),
-        if (!v2)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-            child: Row(children: [for (final m in [false, true]) _chip(m ? '我创建的' : '全部文档', mineOnly == m, () => setState(() => mineOnly = m))]),
-          )
-        else if (!showNav)
-          SizedBox(
-            height: 40,
-            child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.fromLTRB(12, 10, 12, 4), children: [
-              for (final sc in DocScope.values) _chip(sc.label, scope == sc, () => _setScope(sc)),
-              if (s.feature('wiki')) _chip('知识库', false, () => s.go(AppModule.wiki)),
-            ]),
+          if (v2 && scope == DocScope.mine) _breadcrumb(),
+          if (v2 && scope == DocScope.trash)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 6, 16, 2),
+              child: Text(
+                '删除的文档保留 30 天，可以恢复',
+                style: TextStyle(fontSize: 12, color: Fs.text3),
+              ),
+            ),
+          Expanded(
+            child: loading
+                ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                : error != null
+                ? EmptyState(
+                    icon: Icons.cloud_off_outlined,
+                    title: '加载失败',
+                    subtitle: error,
+                    action: OutlinedButton(
+                      onPressed: _load,
+                      child: const Text('重试'),
+                    ),
+                  )
+                : empty
+                ? EmptyState(
+                    icon: scope == DocScope.trash
+                        ? Icons.delete_outline_rounded
+                        : Icons.description_outlined,
+                    title: kw.isNotEmpty ? '没有匹配的文档' : _emptyTitle(),
+                    subtitle: kw.isEmpty && (scope == DocScope.mine || !v2)
+                        ? '点「新建」创建第一篇文档'
+                        : null,
+                  )
+                : RefreshIndicator(
+                    onRefresh: _load,
+                    child: ListView(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      children: [
+                        for (final f in fs) _folderRow(f),
+                        for (final d in list) _docRow(s, d, wide),
+                      ],
+                    ),
+                  ),
           ),
-        if (v2 && scope == DocScope.mine) _breadcrumb(),
-        if (v2 && scope == DocScope.trash)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 6, 16, 2),
-            child: Text('删除的文档保留 30 天，可以恢复', style: TextStyle(fontSize: 12, color: Fs.text3)),
-          ),
-        Expanded(
-          child: loading
-              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
-              : error != null
-                  ? EmptyState(
-                      icon: Icons.cloud_off_outlined,
-                      title: '加载失败',
-                      subtitle: error,
-                      action: OutlinedButton(onPressed: _load, child: const Text('重试')),
-                    )
-                  : empty
-                      ? EmptyState(
-                          icon: scope == DocScope.trash ? Icons.delete_outline_rounded : Icons.description_outlined,
-                          title: kw.isNotEmpty ? '没有匹配的文档' : _emptyTitle(),
-                          subtitle: kw.isEmpty && (scope == DocScope.mine || !v2) ? '点「新建」创建第一篇文档' : null,
-                        )
-                      : RefreshIndicator(
-                          onRefresh: _load,
-                          child: ListView(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            children: [
-                              for (final f in fs) _folderRow(f),
-                              for (final d in list) _docRow(s, d, wide),
-                            ],
-                          ),
-                        ),
-        ),
-      ]),
+        ],
+      ),
     );
   }
 
   String _emptyTitle() => switch (scope) {
-        _ when !v2 => '还没有文档',
-        DocScope.recent => '还没有访问过的文档',
-        DocScope.mine => path.isEmpty ? '我的空间还是空的' : '文件夹是空的',
-        DocScope.shared => '还没有人和你共享文档',
-        DocScope.starred => '还没有收藏的文档',
-        DocScope.trash => '回收站是空的',
-      };
+    _ when !v2 => '还没有文档',
+    DocScope.recent => '还没有访问过的文档',
+    DocScope.mine => path.isEmpty ? '我的空间还是空的' : '文件夹是空的',
+    DocScope.shared => '还没有人和你共享文档',
+    DocScope.starred => '还没有收藏的文档',
+    DocScope.trash => '回收站是空的',
+  };
 
   Widget _chip(String label, bool sel, VoidCallback onTap) => Padding(
-        padding: const EdgeInsets.only(right: 6),
-        child: HoverBox(
-          selected: sel,
-          selectedColor: Fs.primaryLight,
-          radius: 14,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          onTap: onTap,
-          child: Text(label, style: TextStyle(fontSize: 12, color: sel ? Fs.primary : Fs.text2)),
-        ),
-      );
+    padding: const EdgeInsets.only(right: 6),
+    child: HoverBox(
+      selected: sel,
+      selectedColor: Fs.primaryLight,
+      radius: 14,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      onTap: onTap,
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 12, color: sel ? Fs.primary : Fs.text2),
+      ),
+    ),
+  );
 
   Widget _breadcrumb() => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 2),
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(children: [
-            for (var i = -1; i < path.length; i++) ...[
-              if (i >= 0) const Icon(Icons.chevron_right_rounded, size: 16, color: Fs.text3),
-              _folderDrop(
-                i < 0 ? const [] : path.sublist(0, i + 1),
-                HoverBox(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                  onTap: i == path.length - 1 ? null : () => _enterFolder(path.sublist(0, i + 1)),
-                  child: Text(i < 0 ? '我的空间' : path[i].name,
-                      style: TextStyle(fontSize: 12, color: i == path.length - 1 ? Fs.text1 : Fs.text3)),
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 2),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (var i = -1; i < path.length; i++) ...[
+            if (i >= 0)
+              const Icon(
+                Icons.chevron_right_rounded,
+                size: 16,
+                color: Fs.text3,
+              ),
+            _folderDrop(
+              i < 0 ? const [] : path.sublist(0, i + 1),
+              HoverBox(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                onTap: i == path.length - 1
+                    ? null
+                    : () => _enterFolder(path.sublist(0, i + 1)),
+                child: Text(
+                  i < 0 ? '我的空间' : path[i].name,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: i == path.length - 1 ? Fs.text1 : Fs.text3,
+                  ),
                 ),
               ),
-            ],
-          ]),
-        ),
-      );
+            ),
+          ],
+        ],
+      ),
+    ),
+  );
 
   Widget _folderRow(CosFolder f) => _folderDrop(
-        [...path, f],
-        HoverReveal(
-          builder: (_, hover) => HoverBox(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            onTap: () => _enterFolder([...path, f]),
-            onSecondaryTap: () {},
-            child: Row(children: [
-              const DocIcon(size: 34, color: Color(0xFFFFB82E), icon: Icons.folder_rounded),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+    [...path, f],
+    HoverReveal(
+      builder: (_, hover) => HoverBox(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+        onTap: () => _enterFolder([...path, f]),
+        onSecondaryTap: () {},
+        child: Row(
+          children: [
+            const DocIcon(
+              size: 34,
+              color: Color(0xFFFFB82E),
+              icon: Icons.folder_rounded,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    f.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   const SizedBox(height: 2),
-                  Text('文件夹${f.updatedAt == null ? '' : ' · ${fmtRelative(f.updatedAt)} 更新'}', style: const TextStyle(fontSize: 12, color: Fs.text3)),
-                ]),
+                  Text(
+                    '文件夹${f.updatedAt == null ? '' : ' · ${fmtRelative(f.updatedAt)} 更新'}',
+                    style: const TextStyle(fontSize: 12, color: Fs.text3),
+                  ),
+                ],
               ),
-              Opacity(
-                opacity: hover ? 1 : 0,
-                child: PopupMenuButton<String>(
-                  tooltip: '更多',
-                  icon: const Icon(Icons.more_horiz_rounded, size: 18, color: Fs.text3),
-                  onSelected: (v) => _folderAction(f, v),
-                  itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'open', child: Text('打开')),
-                    PopupMenuItem(value: 'rename', child: Text('重命名')),
-                    PopupMenuItem(value: 'move', child: Text('移动到')),
-                    PopupMenuDivider(),
-                    PopupMenuItem(value: 'delete', child: Text('删除', style: TextStyle(color: Fs.red))),
-                  ],
+            ),
+            Opacity(
+              opacity: hover ? 1 : 0,
+              child: PopupMenuButton<String>(
+                tooltip: '更多',
+                icon: const Icon(
+                  Icons.more_horiz_rounded,
+                  size: 18,
+                  color: Fs.text3,
                 ),
+                onSelected: (v) => _folderAction(f, v),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'open', child: Text('打开')),
+                  PopupMenuItem(value: 'rename', child: Text('重命名')),
+                  PopupMenuItem(value: 'move', child: Text('移动到')),
+                  PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Text('删除', style: TextStyle(color: Fs.red)),
+                  ),
+                ],
               ),
-            ]),
-          ),
+            ),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 
   Widget _docRow(AppState s, CosDoc d, bool wide) {
     final trash = v2 && scope == DocScope.trash;
     final mine = d.owner == s.me.userId;
     final time = switch (scope) {
-      DocScope.recent when v2 => '${fmtRelative(d.lastViewedAt ?? d.updatedAt)} 访问',
+      DocScope.recent when v2 =>
+        '${fmtRelative(d.lastViewedAt ?? d.updatedAt)} 访问',
       DocScope.trash when v2 => '${fmtRelative(d.deletedAt)} 删除',
       _ => '${fmtRelative(d.updatedAt)} 更新',
     };
@@ -647,59 +951,116 @@ class _DocsPageState extends State<DocsPage> {
         onTap: trash
             ? null
             : () => wide
-                ? setState(() {
-                    selected = d.docId;
-                    focusComment = null;
-                  })
-                : _openNarrow(d.docId),
-        child: Row(children: [
-          DocIcon(color: trash ? Fs.textDisabled : Fs.primary),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Flexible(
-                  child: Text(d.title,
-                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-                ),
-                if (d.starred) const Padding(padding: EdgeInsets.only(left: 4), child: Icon(Icons.star_rounded, size: 14, color: Fs.yellow)),
-              ]),
-              const SizedBox(height: 2),
-              Row(children: [
-                Flexible(
-                  child: Text('${s.userName(d.owner)} · $time',
-                      maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Fs.text3)),
-                ),
-                if (v2 && !mine && d.myRole != null) ...[
-                  const SizedBox(width: 6),
-                  FsTag(kRoleLabels[d.myRole!] ?? d.myRole!, color: TagColor.gray, fontSize: 11),
-                ],
-              ]),
-            ]),
-          ),
-          if (trash)
-            Row(mainAxisSize: MainAxisSize.min, children: [
-              FsIconButton(icon: Icons.restore_rounded, tooltip: '恢复', size: 18, onPressed: () => _docAction(d, 'restore')),
-              FsIconButton(icon: Icons.delete_forever_outlined, tooltip: '彻底删除', size: 18, color: Fs.red, onPressed: () => _docAction(d, 'purge')),
-            ])
-          else if (v2)
-            Opacity(
-              opacity: hover ? 1 : 0,
-              child: PopupMenuButton<String>(
-                tooltip: '更多',
-                icon: const Icon(Icons.more_horiz_rounded, size: 18, color: Fs.text3),
-                onSelected: (v) => _docAction(d, v),
-                itemBuilder: (_) => [
-                  PopupMenuItem(value: 'star', child: Text(d.starred ? '取消收藏' : '收藏')),
-                  if (mine) const PopupMenuItem(value: 'move', child: Text('移动到')),
-                  if (d.permissions?.canDelete ?? mine) ...[
-                    const PopupMenuDivider(),
-                    const PopupMenuItem(value: 'delete', child: Text('删除', style: TextStyle(color: Fs.red))),
-                  ],
+                  ? setState(() {
+                      selected = d.docId;
+                      focusComment = null;
+                    })
+                  : _openNarrow(d.docId),
+        child: Row(
+          children: [
+            DocIcon(color: trash ? Fs.textDisabled : Fs.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          d.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      if (d.starred)
+                        const Padding(
+                          padding: EdgeInsets.only(left: 4),
+                          child: Icon(
+                            Icons.star_rounded,
+                            size: 14,
+                            color: Fs.yellow,
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          '${s.userName(d.owner)} · $time',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12, color: Fs.text3),
+                        ),
+                      ),
+                      if (v2 && !mine && d.myRole != null) ...[
+                        const SizedBox(width: 6),
+                        FsTag(
+                          kRoleLabels[d.myRole!] ?? d.myRole!,
+                          color: TagColor.gray,
+                          fontSize: 11,
+                        ),
+                      ],
+                    ],
+                  ),
                 ],
               ),
             ),
-        ]),
+            if (trash)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  FsIconButton(
+                    icon: Icons.restore_rounded,
+                    tooltip: '恢复',
+                    size: 18,
+                    onPressed: () => _docAction(d, 'restore'),
+                  ),
+                  FsIconButton(
+                    icon: Icons.delete_forever_outlined,
+                    tooltip: '彻底删除',
+                    size: 18,
+                    color: Fs.red,
+                    onPressed: () => _docAction(d, 'purge'),
+                  ),
+                ],
+              )
+            else if (v2)
+              Opacity(
+                opacity: hover ? 1 : 0,
+                child: PopupMenuButton<String>(
+                  tooltip: '更多',
+                  icon: const Icon(
+                    Icons.more_horiz_rounded,
+                    size: 18,
+                    color: Fs.text3,
+                  ),
+                  onSelected: (v) => _docAction(d, v),
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'star',
+                      child: Text(d.starred ? '取消收藏' : '收藏'),
+                    ),
+                    if (mine)
+                      const PopupMenuItem(value: 'move', child: Text('移动到')),
+                    if (d.permissions?.canDelete ?? mine) ...[
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Text('删除', style: TextStyle(color: Fs.red)),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
     if (!v2 || trash || !mine) return row;
@@ -710,11 +1071,14 @@ class _DocsPageState extends State<DocsPage> {
         borderRadius: BorderRadius.circular(8),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
-            const DocIcon(size: 22),
-            const SizedBox(width: 8),
-            Text(d.title, style: const TextStyle(fontSize: 13)),
-          ]),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const DocIcon(size: 22),
+              const SizedBox(width: 8),
+              Text(d.title, style: const TextStyle(fontSize: 13)),
+            ],
+          ),
         ),
       ),
       childWhenDragging: Opacity(opacity: 0.4, child: row),
@@ -726,8 +1090,14 @@ class _DocsPageState extends State<DocsPage> {
 // ---------------- 选择文件夹 ----------------
 
 /// 选择目标文件夹；id 为 null 表示「我的空间」根目录。取消返回 null。
-Future<({String? id, String name})?> pickFolder(BuildContext context, {required String title, String? exclude}) =>
-    showScopedDialog<({String? id, String name})>(context, (_) => _FolderPicker(title: title, exclude: exclude));
+Future<({String? id, String name})?> pickFolder(
+  BuildContext context, {
+  required String title,
+  String? exclude,
+}) => showScopedDialog<({String? id, String name})>(
+  context,
+  (_) => _FolderPicker(title: title, exclude: exclude),
+);
 
 class _FolderPicker extends StatefulWidget {
   final String title;
@@ -750,63 +1120,108 @@ class _FolderPickerState extends State<_FolderPicker> {
 
   Future<void> _fetch(String? parent) async {
     try {
-      final list = await AppScope.read(context).api.listFolders(parentId: parent);
-      if (mounted) setState(() => children[parent] = list.where((f) => f.folderId != widget.exclude).toList());
+      final list = await AppScope.read(
+        context,
+      ).api.listFolders(parentId: parent);
+      if (mounted)
+        setState(
+          () => children[parent] = list
+              .where((f) => f.folderId != widget.exclude)
+              .toList(),
+        );
     } catch (e) {
       if (mounted) showToast(context, describeError(e), error: true);
     }
   }
 
   List<Widget> _rows(String? parent, int depth) => [
-        for (final f in children[parent] ?? const <CosFolder>[]) ...[
-          HoverBox(
-            selected: picked.id == f.folderId,
-            selectedColor: Fs.primaryLight,
-            padding: EdgeInsets.only(left: 8.0 + depth * 18, right: 8, top: 6, bottom: 6),
-            onTap: () => setState(() => picked = (id: f.folderId, name: f.name)),
-            child: Row(children: [
-              InkWell(
-                onTap: () {
-                  setState(() => expanded.contains(f.folderId) ? expanded.remove(f.folderId) : expanded.add(f.folderId));
-                  if (!children.containsKey(f.folderId)) _fetch(f.folderId);
-                },
-                child: Icon(expanded.contains(f.folderId) ? Icons.expand_more_rounded : Icons.chevron_right_rounded, size: 18, color: Fs.text3),
+    for (final f in children[parent] ?? const <CosFolder>[]) ...[
+      HoverBox(
+        selected: picked.id == f.folderId,
+        selectedColor: Fs.primaryLight,
+        padding: EdgeInsets.only(
+          left: 8.0 + depth * 18,
+          right: 8,
+          top: 6,
+          bottom: 6,
+        ),
+        onTap: () => setState(() => picked = (id: f.folderId, name: f.name)),
+        child: Row(
+          children: [
+            InkWell(
+              onTap: () {
+                setState(
+                  () => expanded.contains(f.folderId)
+                      ? expanded.remove(f.folderId)
+                      : expanded.add(f.folderId),
+                );
+                if (!children.containsKey(f.folderId)) _fetch(f.folderId);
+              },
+              child: Icon(
+                expanded.contains(f.folderId)
+                    ? Icons.expand_more_rounded
+                    : Icons.chevron_right_rounded,
+                size: 18,
+                color: Fs.text3,
               ),
-              const SizedBox(width: 4),
-              const Icon(Icons.folder_rounded, size: 18, color: Color(0xFFFFB82E)),
-              const SizedBox(width: 8),
-              Expanded(child: Text(f.name, style: const TextStyle(fontSize: 13))),
-            ]),
-          ),
-          if (expanded.contains(f.folderId)) ..._rows(f.folderId, depth + 1),
-        ],
-      ];
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.folder_rounded,
+              size: 18,
+              color: Color(0xFFFFB82E),
+            ),
+            const SizedBox(width: 8),
+            Expanded(child: Text(f.name, style: const TextStyle(fontSize: 13))),
+          ],
+        ),
+      ),
+      if (expanded.contains(f.folderId)) ..._rows(f.folderId, depth + 1),
+    ],
+  ];
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        content: SizedBox(
-          width: 380,
-          height: 340,
-          child: ListView(children: [
-            HoverBox(
-              selected: picked.id == null,
-              selectedColor: Fs.primaryLight,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              onTap: () => setState(() => picked = (id: null, name: '我的空间')),
-              child: const Row(children: [
+    title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+    content: SizedBox(
+      width: 380,
+      height: 340,
+      child: ListView(
+        children: [
+          HoverBox(
+            selected: picked.id == null,
+            selectedColor: Fs.primaryLight,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            onTap: () => setState(() => picked = (id: null, name: '我的空间')),
+            child: const Row(
+              children: [
                 Icon(Icons.home_outlined, size: 18, color: Fs.text2),
                 SizedBox(width: 8),
-                Text('我的空间', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-              ]),
+                Text(
+                  '我的空间',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                ),
+              ],
             ),
-            if (!children.containsKey(null)) const Padding(padding: EdgeInsets.all(20), child: Center(child: CircularProgressIndicator(strokeWidth: 2))),
-            ..._rows(null, 1),
-          ]),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, picked), child: const Text('移动到这里')),
+          ),
+          if (!children.containsKey(null))
+            const Padding(
+              padding: EdgeInsets.all(20),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ..._rows(null, 1),
         ],
-      );
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, picked),
+        child: const Text('移动到这里'),
+      ),
+    ],
+  );
 }

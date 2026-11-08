@@ -66,10 +66,16 @@ const fileDir = process.env.CLASSMATE_OS_FILE_DIR
     : join(tmpdir(), 'classmateos-files');
 const fileStore = new LocalFileStore({ dir: fileDir, urlPrefix: '/api/v1/files', secret });
 
+// 自动化预授权 v2：独立调度器密钥。不配置（或不合格）时自动化投递保持关闭。
+const automationSchedulerToken = process.env.CLASSMATE_OS_AUTOMATION_SCHEDULER_TOKEN || undefined;
+if (automationSchedulerToken && (automationSchedulerToken.length < 32 || automationSchedulerToken === botToken)) {
+  console.warn('[classmateos] 警告：CLASSMATE_OS_AUTOMATION_SCHEDULER_TOKEN 至少 32 个字符且不能与 bot 令牌相同，自动化投递保持关闭');
+}
 const app = await buildApp({
   users,
   secret,
   botToken,
+  automationSchedulerToken,
   // 机器人代办删除类操作默认关闭；管理员确认后设 CLASSMATE_OS_BOT_ALLOW_DELETE=1 打开
   botScopes: { allowDestructive: process.env.CLASSMATE_OS_BOT_ALLOW_DELETE === '1' },
   store,

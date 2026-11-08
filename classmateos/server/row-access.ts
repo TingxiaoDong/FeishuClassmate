@@ -10,7 +10,7 @@
  * 其余成员：list 中过滤、get/patch/delete 一律 404（不泄露存在性）。
  */
 
-import type { TableDef } from '../../src/bitable/schema.js';
+import type { TableDef } from './builtin-schema.js';
 import type { TokenPayload } from './auth.js';
 import type { StoredRecord } from './store.js';
 

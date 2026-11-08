@@ -26,8 +26,13 @@ class CosApiException implements Exception {
   /// 完整响应体（409 卡片已回答带 answer，文档冲突带 doc）。
   final Map<String, dynamic> data;
 
-  const CosApiException(this.statusCode, this.message,
-      {this.code, this.errors = const [], this.data = const {}});
+  const CosApiException(
+    this.statusCode,
+    this.message, {
+    this.code,
+    this.errors = const [],
+    this.data = const {},
+  });
 
   static final _cjk = RegExp(r'[\u4e00-\u9fff]');
 
@@ -46,12 +51,15 @@ class CosApiException implements Exception {
     if (code == 'ACCOUNT_DISABLED') return '账号已被禁用，请联系管理员';
     if (errors.isNotEmpty) {
       // 后端的中文提示多数已经写明了是哪一项（如「密码最短长度必须是…」），这时不再拼英文字段名
-      return errors.map((e) {
-        final msg = e['message']?.toString() ?? '';
-        final label = _fieldLabel(e['field']);
-        final known = label.isNotEmpty && !label.startsWith('${e['field']}');
-        return known || !_cjk.hasMatch(msg) ? '$label$msg' : msg;
-      }).join('；');
+      return errors
+          .map((e) {
+            final msg = e['message']?.toString() ?? '';
+            final label = _fieldLabel(e['field']);
+            final known =
+                label.isNotEmpty && !label.startsWith('${e['field']}');
+            return known || !_cjk.hasMatch(msg) ? '$label$msg' : msg;
+          })
+          .join('；');
     }
     if (statusCode == 403) return cn ? message : '没有权限执行这个操作';
     if (statusCode == 404) return cn ? message : '内容不存在或已被删除';
@@ -90,7 +98,9 @@ class CosApiException implements Exception {
 String describeError(Object e) {
   if (e is CosApiException) return e.friendly;
   final s = e.toString();
-  if (s.contains('SocketException') || s.contains('ClientException') || s.contains('Connection')) {
+  if (s.contains('SocketException') ||
+      s.contains('ClientException') ||
+      s.contains('Connection')) {
     return '连不上服务器，请检查网络或服务地址';
   }
   return s;
@@ -102,7 +112,12 @@ class CosSession {
   final String refreshToken;
   final DateTime expiresAt;
   final CosUser user;
-  const CosSession(this.accessToken, this.refreshToken, this.expiresAt, this.user);
+  const CosSession(
+    this.accessToken,
+    this.refreshToken,
+    this.expiresAt,
+    this.user,
+  );
 }
 
 /// 创建默认 HTTP 客户端；模拟模式（COS_MOCK）在 main() 里替换成 MockBackendClient。
@@ -134,8 +149,12 @@ class CosApiClient {
   Future<bool>? _refreshing;
 
   /// [client] 可注入（测试用 MockClient）；缺省用默认 http.Client。
-  CosApiClient(this.baseUrl, {this.accessToken, this.refreshToken, http.Client? client})
-      : _http = client ?? cosHttpClientFactory();
+  CosApiClient(
+    this.baseUrl, {
+    this.accessToken,
+    this.refreshToken,
+    http.Client? client,
+  }) : _http = client ?? cosHttpClientFactory();
 
   /// 服务端源（scheme://host:port），用于拼接预签名的相对地址。
   String get origin => Uri.parse(baseUrl).origin;
@@ -157,9 +176,9 @@ class CosApiClient {
   }
 
   Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        if (accessToken != null) 'Authorization': 'Bearer $accessToken',
-      };
+    'Content-Type': 'application/json',
+    if (accessToken != null) 'Authorization': 'Bearer $accessToken',
+  };
 
   static final _rand = Random();
 
@@ -182,7 +201,8 @@ class CosApiClient {
     } on CosApiException catch (e) {
       // 令牌失效：先刷新一次再重放；刷新失败才回登录页
       if (auth && e.statusCode == 401 && refreshToken != null) {
-        if (await refresh()) return _send(method, path, body: body, query: query);
+        if (await refresh())
+          return _send(method, path, body: body, query: query);
         onAuthLost?.call();
       } else if (auth && e.statusCode == 401 && borrowAccessToken != null) {
         String? t;
@@ -195,7 +215,8 @@ class CosApiClient {
         }
         onAuthLost?.call();
       }
-      if (auth && e.statusCode == 403 && e.code == 'PASSWORD_CHANGE_REQUIRED') onPasswordChangeRequired?.call();
+      if (auth && e.statusCode == 403 && e.code == 'PASSWORD_CHANGE_REQUIRED')
+        onPasswordChangeRequired?.call();
       rethrow;
     }
   }
@@ -206,18 +227,23 @@ class CosApiClient {
     String path, {
     Map<String, dynamic>? body,
     Map<String, String>? query,
-  }) =>
-      _call(method, path, body: body, query: query);
+  }) => _call(method, path, body: body, query: query);
 
   /// 不带令牌的请求（扫码登录的二维码创建、轮询）。
-  Future<Map<String, dynamic>> requestPublic(String method, String path, {Map<String, dynamic>? body}) =>
-      _call(method, path, body: body, auth: false);
+  Future<Map<String, dynamic>> requestPublic(
+    String method,
+    String path, {
+    Map<String, dynamic>? body,
+  }) => _call(method, path, body: body, auth: false);
 
   /// 扫码登录确认后，用后端返回的令牌建立会话（结构同 /auth/login 的返回）。
   CosUser adoptSession(Map<String, dynamic> data) => _applySession(data).user;
 
   /// 二期分页列表的解析。
-  CosPage<T> parsePage<T>(Map<String, dynamic> data, T Function(Map<String, dynamic>) f) => _page(data, f);
+  CosPage<T> parsePage<T>(
+    Map<String, dynamic> data,
+    T Function(Map<String, dynamic>) f,
+  ) => _page(data, f);
 
   Future<Map<String, dynamic>> _send(
     String method,
@@ -241,8 +267,12 @@ class CosApiClient {
     if (res.statusCode == 204) return const {};
     Map<String, dynamic> data;
     try {
-      final decoded = res.body.isEmpty ? null : jsonDecode(utf8.decode(res.bodyBytes));
-      data = decoded is Map ? decoded.cast<String, dynamic>() : <String, dynamic>{};
+      final decoded = res.body.isEmpty
+          ? null
+          : jsonDecode(utf8.decode(res.bodyBytes));
+      data = decoded is Map
+          ? decoded.cast<String, dynamic>()
+          : <String, dynamic>{};
     } on FormatException {
       data = {'message': res.body};
     }
@@ -251,7 +281,11 @@ class CosApiClient {
         res.statusCode,
         data['message']?.toString() ?? 'HTTP ${res.statusCode}',
         code: data['code']?.toString(),
-        errors: (data['errors'] as List?)?.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList() ??
+        errors:
+            (data['errors'] as List?)
+                ?.whereType<Map>()
+                .map((e) => e.cast<String, dynamic>())
+                .toList() ??
             const [],
         data: data,
       );
@@ -259,15 +293,24 @@ class CosApiClient {
     return data;
   }
 
-  List<T> _items<T>(Map<String, dynamic> data, T Function(Map<String, dynamic>) f) =>
-      (data['items'] as List?)?.map((e) => f((e as Map).cast<String, dynamic>())).toList() ?? <T>[];
+  List<T> _items<T>(
+    Map<String, dynamic> data,
+    T Function(Map<String, dynamic>) f,
+  ) =>
+      (data['items'] as List?)
+          ?.map((e) => f((e as Map).cast<String, dynamic>()))
+          .toList() ??
+      <T>[];
 
-  CosPage<T> _page<T>(Map<String, dynamic> data, T Function(Map<String, dynamic>) f) => CosPage(
-        _items(data, f),
-        hasMore: data['has_more'] == true,
-        pageToken: data['page_token']?.toString(),
-        total: (data['total'] as num?)?.toInt(),
-      );
+  CosPage<T> _page<T>(
+    Map<String, dynamic> data,
+    T Function(Map<String, dynamic>) f,
+  ) => CosPage(
+    _items(data, f),
+    hasMore: data['has_more'] == true,
+    pageToken: data['page_token']?.toString(),
+    total: (data['total'] as num?)?.toInt(),
+  );
 
   /// 按 page_token 循环拉完所有页。
   Future<List<T>> _all<T>(
@@ -279,7 +322,11 @@ class CosApiClient {
     final out = <T>[];
     String? token;
     for (var i = 0; i < maxPages; i++) {
-      final data = await _call('GET', path, query: {...query, if (token != null) 'page_token': token});
+      final data = await _call(
+        'GET',
+        path,
+        query: {...query, if (token != null) 'page_token': token},
+      );
       final p = _page(data, f);
       out.addAll(p.items);
       if (!p.hasMore || p.pageToken == null) break;
@@ -312,15 +359,27 @@ class CosApiClient {
   /// 登录并缓存令牌。
   Future<CosUser> login(String username, String password) async {
     // 带上设备名和平台，「登录设备」列表里才不会显示「未知设备」
-    final data = await _call('POST', '/auth/login',
-        body: {'username': username, 'password': password, 'device_name': localDeviceName(), 'platform': localPlatform()},
-        auth: false);
+    final data = await _call(
+      'POST',
+      '/auth/login',
+      body: {
+        'username': username,
+        'password': password,
+        'device_name': localDeviceName(),
+        'platform': localPlatform(),
+      },
+      auth: false,
+    );
     return _applySession(data).user;
   }
 
   /// 用保存的 refresh_token 恢复登录（自动登录）。失败抛 401。
   Future<CosUser> resume(String refresh) async {
-    final data = await _send('POST', '/auth/refresh', body: {'refresh_token': refresh});
+    final data = await _send(
+      'POST',
+      '/auth/refresh',
+      body: {'refresh_token': refresh},
+    );
     return _applySession(data).user;
   }
 
@@ -330,7 +389,11 @@ class CosApiClient {
     if (rt == null) return Future.value(false);
     return _refreshing ??= () async {
       try {
-        final data = await _send('POST', '/auth/refresh', body: {'refresh_token': rt});
+        final data = await _send(
+          'POST',
+          '/auth/refresh',
+          body: {'refresh_token': rt},
+        );
         _applySession(data);
         return true;
       } catch (_) {
@@ -363,32 +426,53 @@ class CosApiClient {
 
   // ---------------- 用户 ----------------
 
-  Future<CosUser> me() async => CosUser.fromJson(await _call('GET', '/users/me'));
+  Future<CosUser> me() async =>
+      CosUser.fromJson(await _call('GET', '/users/me'));
 
-  Future<List<CosUser>> listUsers({String? keyword}) =>
-      _all('/users', CosUser.fromJson, query: {if (keyword != null) 'keyword': keyword, 'page_size': '500'});
+  Future<List<CosUser>> listUsers({String? keyword}) => _all(
+    '/users',
+    CosUser.fromJson,
+    query: {if (keyword != null) 'keyword': keyword, 'page_size': '500'},
+  );
 
   /// 修改自己的资料：普通成员只能改头像、签名、电话。
-  Future<CosUser> updateMe({String? avatarUrl, String? statusText, String? phone}) async =>
-      CosUser.fromJson(await _call('PATCH', '/users/me', body: {
-        if (avatarUrl != null) 'avatar_url': avatarUrl.isEmpty ? null : avatarUrl,
-        if (statusText != null) 'status_text': statusText.isEmpty ? null : statusText,
+  Future<CosUser> updateMe({
+    String? avatarUrl,
+    String? statusText,
+    String? phone,
+  }) async => CosUser.fromJson(
+    await _call(
+      'PATCH',
+      '/users/me',
+      body: {
+        if (avatarUrl != null)
+          'avatar_url': avatarUrl.isEmpty ? null : avatarUrl,
+        if (statusText != null)
+          'status_text': statusText.isEmpty ? null : statusText,
         if (phone != null) 'phone': phone.isEmpty ? null : phone,
-      }));
+      },
+    ),
+  );
 
   /// 管理员：添加成员。
   Future<CosUser> adminCreateUser(Map<String, dynamic> body) async =>
       CosUser.fromJson(await _call('POST', '/users', body: body));
 
   /// 管理员：修改成员资料 / 重置密码 / 禁用。
-  Future<CosUser> adminUpdateUser(String userId, Map<String, dynamic> body) async =>
-      CosUser.fromJson(await _call('PATCH', '/users/${Uri.encodeComponent(userId)}', body: body));
+  Future<CosUser> adminUpdateUser(
+    String userId,
+    Map<String, dynamic> body,
+  ) async => CosUser.fromJson(
+    await _call('PATCH', '/users/${Uri.encodeComponent(userId)}', body: body),
+  );
 
   // ---------------- 会话 ----------------
 
-  Future<List<CosChat>> listChats() => _all('/chats', CosChat.fromJson, query: {'page_size': '200'});
+  Future<List<CosChat>> listChats() =>
+      _all('/chats', CosChat.fromJson, query: {'page_size': '200'});
 
-  Future<CosChat> getChat(String chatId) async => CosChat.fromJson(await _call('GET', '/chats/$chatId'));
+  Future<CosChat> getChat(String chatId) async =>
+      CosChat.fromJson(await _call('GET', '/chats/$chatId'));
 
   /// 创建会话。单聊（p2p）对同一个人去重，已存在时返回原会话。
   Future<CosChat> createChat({
@@ -397,33 +481,63 @@ class CosApiClient {
     required List<String> memberIds,
     String? description,
   }) async {
-    final data = await _call('POST', '/chats', body: {
-      'chat_type': chatType,
-      if (name != null && name.isNotEmpty) 'name': name,
-      'member_ids': memberIds,
-      if (description != null && description.isNotEmpty) 'description': description,
-    });
+    final data = await _call(
+      'POST',
+      '/chats',
+      body: {
+        'chat_type': chatType,
+        if (name != null && name.isNotEmpty) 'name': name,
+        'member_ids': memberIds,
+        if (description != null && description.isNotEmpty)
+          'description': description,
+      },
+    );
     return CosChat.fromJson(data);
   }
 
-  Future<CosChat> updateChat(String chatId, {String? name, String? description}) async =>
-      CosChat.fromJson(await _call('PATCH', '/chats/$chatId', body: {
+  Future<CosChat> updateChat(
+    String chatId, {
+    String? name,
+    String? description,
+  }) async => CosChat.fromJson(
+    await _call(
+      'PATCH',
+      '/chats/$chatId',
+      body: {
         if (name != null) 'name': name,
-        if (description != null) 'description': description.isEmpty ? null : description,
-      }));
+        if (description != null)
+          'description': description.isEmpty ? null : description,
+      },
+    ),
+  );
 
   Future<CosChat> addMembers(String chatId, List<String> userIds) async =>
-      CosChat.fromJson(await _call('POST', '/chats/$chatId/members', body: {'member_ids': userIds}));
+      CosChat.fromJson(
+        await _call(
+          'POST',
+          '/chats/$chatId/members',
+          body: {'member_ids': userIds},
+        ),
+      );
 
   /// 移除成员；userId 是自己表示退群。
   Future<void> removeMember(String chatId, String userId) async =>
       _call('DELETE', '/chats/$chatId/members/${Uri.encodeComponent(userId)}');
 
-  Future<CosChat> updateChatSettings(String chatId, {bool? pinned, bool? muted}) async =>
-      CosChat.fromJson(await _call('PATCH', '/chats/$chatId/settings', body: {
+  Future<CosChat> updateChatSettings(
+    String chatId, {
+    bool? pinned,
+    bool? muted,
+  }) async => CosChat.fromJson(
+    await _call(
+      'PATCH',
+      '/chats/$chatId/settings',
+      body: {
         if (pinned != null) 'pinned': pinned,
         if (muted != null) 'muted': muted,
-      }));
+      },
+    ),
+  );
 
   // ---------------- 消息 ----------------
 
@@ -434,11 +548,15 @@ class CosApiClient {
     String? afterMessageId,
     int pageSize = 50,
   }) async {
-    final data = await _call('GET', '/chats/$chatId/messages', query: {
-      if (beforeMessageId != null) 'before_message_id': beforeMessageId,
-      if (afterMessageId != null) 'after_message_id': afterMessageId,
-      'page_size': '$pageSize',
-    });
+    final data = await _call(
+      'GET',
+      '/chats/$chatId/messages',
+      query: {
+        if (beforeMessageId != null) 'before_message_id': beforeMessageId,
+        if (afterMessageId != null) 'after_message_id': afterMessageId,
+        'page_size': '$pageSize',
+      },
+    );
     return _page(data, CosMessage.fromJson);
   }
 
@@ -451,63 +569,113 @@ class CosApiClient {
     String? threadRootId,
     bool alsoSendToChat = false,
   }) async {
-    final data = await _call('POST', '/chats/$chatId/messages', body: {
-      'msg_type': msgType,
-      'content': content,
-      'client_msg_id': clientMsgId ?? newClientMsgId(),
-      if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
-      if (threadRootId != null) 'thread_root_id': threadRootId,
-      if (threadRootId != null && alsoSendToChat) 'also_send_to_chat': true,
-    });
+    final data = await _call(
+      'POST',
+      '/chats/$chatId/messages',
+      body: {
+        'msg_type': msgType,
+        'content': content,
+        'client_msg_id': clientMsgId ?? newClientMsgId(),
+        if (replyToMessageId != null) 'reply_to_message_id': replyToMessageId,
+        if (threadRootId != null) 'thread_root_id': threadRootId,
+        if (threadRootId != null && alsoSendToChat) 'also_send_to_chat': true,
+      },
+    );
     return CosMessage.fromJson(data);
   }
 
-  Future<CosMessage> sendText(String chatId, String text,
-          {List<Map<String, String>> mentions = const [], String? replyToMessageId, String? threadRootId, bool alsoSendToChat = false}) =>
-      sendMessage(chatId, 'text', {'text': text, if (mentions.isNotEmpty) 'mentions': mentions},
-          replyToMessageId: replyToMessageId, threadRootId: threadRootId, alsoSendToChat: alsoSendToChat);
+  Future<CosMessage> sendText(
+    String chatId,
+    String text, {
+    List<Map<String, String>> mentions = const [],
+    String? replyToMessageId,
+    String? threadRootId,
+    bool alsoSendToChat = false,
+  }) => sendMessage(
+    chatId,
+    'text',
+    {'text': text, if (mentions.isNotEmpty) 'mentions': mentions},
+    replyToMessageId: replyToMessageId,
+    threadRootId: threadRootId,
+    alsoSendToChat: alsoSendToChat,
+  );
 
   /// 标记已读；[messageId] 为空表示读到最新一条。
-  Future<void> markRead(String chatId, {String? messageId}) async =>
-      _call('POST', '/chats/$chatId/read', body: {if (messageId != null) 'message_id': messageId});
+  Future<void> markRead(String chatId, {String? messageId}) async => _call(
+    'POST',
+    '/chats/$chatId/read',
+    body: {if (messageId != null) 'message_id': messageId},
+  );
 
   Future<CosMessage> recallMessage(String messageId) async =>
       CosMessage.fromJson(await _call('POST', '/messages/$messageId/recall'));
 
   Future<CosMessage> editMessage(String messageId, String text) async =>
-      CosMessage.fromJson(await _call('PATCH', '/messages/$messageId', body: {
-        'content': {'text': text}
-      }));
+      CosMessage.fromJson(
+        await _call(
+          'PATCH',
+          '/messages/$messageId',
+          body: {
+            'content': {'text': text},
+          },
+        ),
+      );
 
-  Future<CosPage<CosMessageHit>> searchMessages(String keyword, {String? chatId, int pageSize = 20, String? pageToken}) async {
-    final data = await _call('GET', '/messages/search', query: {
-      'keyword': keyword,
-      if (chatId != null) 'chat_id': chatId,
-      'page_size': '$pageSize',
-      if (pageToken != null) 'page_token': pageToken,
-    });
+  Future<CosPage<CosMessageHit>> searchMessages(
+    String keyword, {
+    String? chatId,
+    int pageSize = 20,
+    String? pageToken,
+  }) async {
+    final data = await _call(
+      'GET',
+      '/messages/search',
+      query: {
+        'keyword': keyword,
+        if (chatId != null) 'chat_id': chatId,
+        'page_size': '$pageSize',
+        if (pageToken != null) 'page_token': pageToken,
+      },
+    );
     return _page(data, CosMessageHit.fromJson);
   }
 
   /// 卡片交互回调（ask_user_question 回答）。已回答返回 409（code CARD_ANSWERED，data 带 answer）。
-  Future<void> answerCard(String cardId, String action, {Map<String, dynamic>? formValues}) async {
-    await _call('POST', '/cards/$cardId/actions', body: {
-      'action': action,
-      if (formValues != null) 'form_values': formValues,
-    });
+  Future<void> answerCard(
+    String cardId,
+    String action, {
+    Map<String, dynamic>? formValues,
+  }) async {
+    await _call(
+      'POST',
+      '/cards/$cardId/actions',
+      body: {
+        'action': action,
+        if (formValues != null) 'form_values': formValues,
+      },
+    );
   }
 
   // ---------------- 文件（预签名直传） ----------------
 
   /// 上传字节，返回文件引用（可直接作为 file / image 消息 content）。
   /// [ref] 二期：把文件绑定到对象（如 {type: doc, id: doc_xxx}），能看这个对象的人就能看文件。
-  Future<CosFileRef> uploadBytes(String fileName, Uint8List bytes, {String? contentType, Map<String, String>? ref}) async {
-    final grant = await _call('POST', '/files/upload-url', body: {
-      'file_name': fileName,
-      'size': bytes.length,
-      if (contentType != null) 'content_type': contentType,
-      if (ref != null) 'ref': ref,
-    });
+  Future<CosFileRef> uploadBytes(
+    String fileName,
+    Uint8List bytes, {
+    String? contentType,
+    Map<String, String>? ref,
+  }) async {
+    final grant = await _call(
+      'POST',
+      '/files/upload-url',
+      body: {
+        'file_name': fileName,
+        'size': bytes.length,
+        if (contentType != null) 'content_type': contentType,
+        if (ref != null) 'ref': ref,
+      },
+    );
     final uploadUrl = grant['upload_url'] as String;
     final http.Response res;
     try {
@@ -537,8 +705,11 @@ class CosApiClient {
 
   /// 换取带签名的绝对下载地址；[attachment] 为 true 时强制下载而不是在浏览器里预览。
   Future<String> downloadUrl(String fileKey, {bool attachment = false}) async {
-    final data = await _call('GET', '/files/${Uri.encodeComponent(fileKey)}/download-url',
-        query: {if (attachment) 'disposition': 'attachment'});
+    final data = await _call(
+      'GET',
+      '/files/${Uri.encodeComponent(fileKey)}/download-url',
+      query: {if (attachment) 'disposition': 'attachment'},
+    );
     return absolute(data['download_url'] as String);
   }
 
@@ -550,31 +721,75 @@ class CosApiClient {
     int pageSize = 100,
     String? pageToken,
   }) async {
-    final data = await _call('GET', '/files', query: {
-      'scope': scope,
-      if (kind != null) 'kind': kind,
-      if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
-      'page_size': '$pageSize',
-      if (pageToken != null) 'page_token': pageToken,
-    });
+    final data = await _call(
+      'GET',
+      '/files',
+      query: {
+        'scope': scope,
+        if (kind != null) 'kind': kind,
+        if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
+        'page_size': '$pageSize',
+        if (pageToken != null) 'page_token': pageToken,
+      },
+    );
     return _page(data, CosDriveFile.fromJson);
   }
 
   /// 空间用量（字节）。
   Future<({int used, int quota})> fileUsage() async {
     final data = await _call('GET', '/files/usage');
-    return (used: (data['used'] as num?)?.toInt() ?? 0, quota: (data['quota'] as num?)?.toInt() ?? 0);
+    return (
+      used: (data['used'] as num?)?.toInt() ?? 0,
+      quota: (data['quota'] as num?)?.toInt() ?? 0,
+    );
   }
 
   Future<CosDriveFile> addToDrive(String fileKey) async =>
-      CosDriveFile.fromJson(await _call('POST', '/files/${Uri.encodeComponent(fileKey)}/drive'));
+      CosDriveFile.fromJson(
+        await _call('POST', '/files/${Uri.encodeComponent(fileKey)}/drive'),
+      );
 
   /// 删除：会话 / 表格里还引用着就只移出云盘。
-  Future<void> deleteFile(String fileKey) async => _call('DELETE', '/files/${Uri.encodeComponent(fileKey)}');
+  Future<Map<String, dynamic>> deleteFile(String fileKey) async =>
+      _call('DELETE', '/files/${Uri.encodeComponent(fileKey)}');
+
+  Future<List<CosTableFolder>> listTableFolders() async =>
+      _items(await _call('GET', '/table-folders'), CosTableFolder.fromJson);
+  Future<CosTableFolder> createTableFolder(
+    String name, {
+    String? parentId,
+  }) async => CosTableFolder.fromJson(
+    await _call(
+      'POST',
+      '/table-folders',
+      body: {'name': name, if (parentId != null) 'parent_id': parentId},
+    ),
+  );
+  Future<CosTableFolder> updateTableFolder(
+    String id, {
+    String? name,
+    String? parentId,
+    bool clearParent = false,
+  }) async => CosTableFolder.fromJson(
+    await _call(
+      'PATCH',
+      '/table-folders/$id',
+      body: {
+        if (name != null) 'name': name,
+        if (parentId != null || clearParent)
+          'parent_id': clearParent ? null : parentId,
+      },
+    ),
+  );
+  Future<void> deleteTableFolder(String id) async =>
+      _call('DELETE', '/table-folders/$id');
+  Future<void> moveTableToFolder(String tableKey, String? folderId) async =>
+      _call('PATCH', '/tables/$tableKey/folder', body: {'folder_id': folderId});
 
   // ---------------- 表格引擎 ----------------
 
-  Future<List<CosTableMeta>> listTables() async => _items(await _call('GET', '/tables'), CosTableMeta.fromJson);
+  Future<List<CosTableMeta>> listTables() async =>
+      _items(await _call('GET', '/tables'), CosTableMeta.fromJson);
 
   /// 新建数据表；201 为新建成功，200 为幂等重试命中。
   Future<CosTableMeta> createTable({
@@ -584,13 +799,18 @@ class CosApiClient {
     required List<Map<String, dynamic>> fields,
     String? clientRequestId,
   }) async {
-    final data = await _call('POST', '/tables', body: {
-      'name': name,
-      if (description != null && description.isNotEmpty) 'description': description,
-      'primary_field': primaryField,
-      'fields': fields,
-      if (clientRequestId != null) 'client_request_id': clientRequestId,
-    });
+    final data = await _call(
+      'POST',
+      '/tables',
+      body: {
+        'name': name,
+        if (description != null && description.isNotEmpty)
+          'description': description,
+        'primary_field': primaryField,
+        'fields': fields,
+        if (clientRequestId != null) 'client_request_id': clientRequestId,
+      },
+    );
     return CosTableMeta.fromJson(data);
   }
 
@@ -602,19 +822,26 @@ class CosApiClient {
     int pageSize = 500,
     String? pageToken,
   }) async {
-    final data = await _call('GET', '/tables/$tableKey/records', query: {
-      if (filter != null) 'filter': filter,
-      if (sort != null) 'sort': sort,
-      if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
-      'page_size': '$pageSize',
-      if (pageToken != null) 'page_token': pageToken,
-    });
+    final data = await _call(
+      'GET',
+      '/tables/$tableKey/records',
+      query: {
+        if (filter != null) 'filter': filter,
+        if (sort != null) 'sort': sort,
+        if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
+        'page_size': '$pageSize',
+        if (pageToken != null) 'page_token': pageToken,
+      },
+    );
     return _page(data, CosRecord.fromJson);
   }
 
   /// 拉取全部记录（按 page_token 翻页，最多 [maxRecords] 条）。
-  Future<({List<CosRecord> items, int total})> listAllRecords(String tableKey,
-      {String? keyword, int maxRecords = 10000}) async {
+  Future<({List<CosRecord> items, int total})> listAllRecords(
+    String tableKey, {
+    String? keyword,
+    int maxRecords = 10000,
+  }) async {
     final out = <CosRecord>[];
     String? token;
     int total = 0;
@@ -628,23 +855,46 @@ class CosApiClient {
     return (items: out, total: total);
   }
 
-  Future<CosRecord> createRecord(String tableKey, Map<String, dynamic> fields) async =>
-      CosRecord.fromJson(await _call('POST', '/tables/$tableKey/records', body: {'fields': fields}));
+  Future<CosRecord> createRecord(
+    String tableKey,
+    Map<String, dynamic> fields,
+  ) async => CosRecord.fromJson(
+    await _call('POST', '/tables/$tableKey/records', body: {'fields': fields}),
+  );
 
-  Future<CosRecord> updateRecord(String tableKey, String recordId, Map<String, dynamic> fields) async =>
-      CosRecord.fromJson(await _call('PATCH', '/tables/$tableKey/records/$recordId', body: {'fields': fields}));
+  Future<CosRecord> updateRecord(
+    String tableKey,
+    String recordId,
+    Map<String, dynamic> fields,
+  ) async => CosRecord.fromJson(
+    await _call(
+      'PATCH',
+      '/tables/$tableKey/records/$recordId',
+      body: {'fields': fields},
+    ),
+  );
 
   Future<void> deleteRecord(String tableKey, String recordId) async =>
       _call('DELETE', '/tables/$tableKey/records/$recordId');
 
   // ---------------- 日历 ----------------
 
-  Future<List<CosCalendarEvent>> listEvents(DateTime from, DateTime to, {String? userId, bool expandRecurring = false}) async {
-    final data = await _call('GET', '/calendar/events', query: {
-      (expandRecurring ? 'start_ms' : 'from'): '${from.millisecondsSinceEpoch}',
-      (expandRecurring ? 'end_ms' : 'to'): '${to.millisecondsSinceEpoch}',
-      if (userId != null) 'user_id': userId,
-    });
+  Future<List<CosCalendarEvent>> listEvents(
+    DateTime from,
+    DateTime to, {
+    String? userId,
+    bool expandRecurring = false,
+  }) async {
+    final data = await _call(
+      'GET',
+      '/calendar/events',
+      query: {
+        (expandRecurring ? 'start_ms' : 'from'):
+            '${from.millisecondsSinceEpoch}',
+        (expandRecurring ? 'end_ms' : 'to'): '${to.millisecondsSinceEpoch}',
+        if (userId != null) 'user_id': userId,
+      },
+    );
     return _items(data, CosCalendarEvent.fromJson);
   }
 
@@ -660,19 +910,19 @@ class CosApiClient {
     List<int>? reminders,
     String? recurrence,
     bool clearRecurrence = false,
-  }) =>
-      {
-        if (recurrence != null || clearRecurrence) 'recurrence': recurrence,
-        if (title != null) 'title': title,
-        if (start != null) 'start_ms': start.millisecondsSinceEpoch,
-        if (end != null) 'end_ms': end.millisecondsSinceEpoch,
-        if (attendeeIds != null) 'attendee_ids': attendeeIds,
-        if (description != null) 'description': description.isEmpty ? null : description,
-        if (location != null) 'location': location.isEmpty ? null : location,
-        if (allDay != null) 'all_day': allDay,
-        if (color != null) 'color': color.isEmpty ? null : color,
-        if (reminders != null) 'reminders': reminders,
-      };
+  }) => {
+    if (recurrence != null || clearRecurrence) 'recurrence': recurrence,
+    if (title != null) 'title': title,
+    if (start != null) 'start_ms': start.millisecondsSinceEpoch,
+    if (end != null) 'end_ms': end.millisecondsSinceEpoch,
+    if (attendeeIds != null) 'attendee_ids': attendeeIds,
+    if (description != null)
+      'description': description.isEmpty ? null : description,
+    if (location != null) 'location': location.isEmpty ? null : location,
+    if (allDay != null) 'all_day': allDay,
+    if (color != null) 'color': color.isEmpty ? null : color,
+    if (reminders != null) 'reminders': reminders,
+  };
 
   Future<CosCalendarEvent> createEvent({
     required String title,
@@ -687,20 +937,25 @@ class CosApiClient {
     String? recurrence,
     bool clearRecurrence = false,
     String? scope,
-  }) async =>
-      CosCalendarEvent.fromJson(await _call('POST', '/calendar/events',
-          body: _eventBody(
-            title: title,
-            start: start,
-            end: end,
-            attendeeIds: attendeeIds,
-            description: description,
-            location: location,
-            allDay: allDay,
-            color: color,
-            reminders: reminders,
-            recurrence: recurrence, clearRecurrence: clearRecurrence,
-          )));
+  }) async => CosCalendarEvent.fromJson(
+    await _call(
+      'POST',
+      '/calendar/events',
+      body: _eventBody(
+        title: title,
+        start: start,
+        end: end,
+        attendeeIds: attendeeIds,
+        description: description,
+        location: location,
+        allDay: allDay,
+        color: color,
+        reminders: reminders,
+        recurrence: recurrence,
+        clearRecurrence: clearRecurrence,
+      ),
+    ),
+  );
 
   /// 修改日程（仅创建者）。传入的字段才会修改；空字符串表示清空。
   Future<CosCalendarEvent> updateEvent(
@@ -717,39 +972,64 @@ class CosApiClient {
     String? recurrence,
     bool clearRecurrence = false,
     String? scope,
-  }) async =>
-      CosCalendarEvent.fromJson(await _call('PATCH', '/calendar/events/$eventId',
-          query: {if (scope != null) 'scope': scope},
-          body: _eventBody(
-            title: title,
-            start: start,
-            end: end,
-            attendeeIds: attendeeIds,
-            description: description,
-            location: location,
-            allDay: allDay,
-            color: color,
-            reminders: reminders,
-            recurrence: recurrence, clearRecurrence: clearRecurrence,
-          )));
+  }) async => CosCalendarEvent.fromJson(
+    await _call(
+      'PATCH',
+      '/calendar/events/$eventId',
+      query: {if (scope != null) 'scope': scope},
+      body: _eventBody(
+        title: title,
+        start: start,
+        end: end,
+        attendeeIds: attendeeIds,
+        description: description,
+        location: location,
+        allDay: allDay,
+        color: color,
+        reminders: reminders,
+        recurrence: recurrence,
+        clearRecurrence: clearRecurrence,
+      ),
+    ),
+  );
 
   /// 回复邀请：accepted | declined | tentative。
   Future<CosCalendarEvent> rsvpEvent(String eventId, String rsvp) async =>
-      CosCalendarEvent.fromJson(await _call('POST', '/calendar/events/$eventId/rsvp', body: {'rsvp': rsvp}));
+      CosCalendarEvent.fromJson(
+        await _call(
+          'POST',
+          '/calendar/events/$eventId/rsvp',
+          body: {'rsvp': rsvp},
+        ),
+      );
 
-  Future<void> deleteEvent(String eventId, {String? scope}) async => _call('DELETE', '/calendar/events/$eventId', query: {if (scope != null) 'scope': scope});
+  Future<void> deleteEvent(String eventId, {String? scope}) async => _call(
+    'DELETE',
+    '/calendar/events/$eventId',
+    query: {if (scope != null) 'scope': scope},
+  );
 
   // ---------------- 任务 ----------------
 
   /// [assigneeId] / [createdBy] 可传 `me`。
-  Future<List<CosTask>> listTasks({String? assigneeId, String? createdBy, String? status, String? followerId, bool includeSubtasks = false}) async {
-    final data = await _call('GET', '/tasks', query: {
-      if (assigneeId != null) 'assignee_id': assigneeId,
-      if (createdBy != null) 'created_by': createdBy,
-      if (followerId != null) 'follower_id': followerId,
-      if (includeSubtasks) 'include_subtasks': 'true',
-      if (status != null) 'status': status,
-    });
+  Future<List<CosTask>> listTasks({
+    String? assigneeId,
+    String? createdBy,
+    String? status,
+    String? followerId,
+    bool includeSubtasks = false,
+  }) async {
+    final data = await _call(
+      'GET',
+      '/tasks',
+      query: {
+        if (assigneeId != null) 'assignee_id': assigneeId,
+        if (createdBy != null) 'created_by': createdBy,
+        if (followerId != null) 'follower_id': followerId,
+        if (includeSubtasks) 'include_subtasks': 'true',
+        if (status != null) 'status': status,
+      },
+    );
     return _items(data, CosTask.fromJson);
   }
 
@@ -760,15 +1040,21 @@ class CosApiClient {
     DateTime? due,
     String? description,
     String? priority,
-  }) async =>
-      CosTask.fromJson(await _call('POST', '/tasks', body: {
+  }) async => CosTask.fromJson(
+    await _call(
+      'POST',
+      '/tasks',
+      body: {
         'title': title,
         if (parentId != null) 'parent_id': parentId,
         if (assigneeId != null) 'assignee_id': assigneeId,
         if (due != null) 'due_ms': due.millisecondsSinceEpoch,
-        if (description != null && description.isNotEmpty) 'description': description,
+        if (description != null && description.isNotEmpty)
+          'description': description,
         if (priority != null) 'priority': priority,
-      }));
+      },
+    ),
+  );
 
   /// 修改任务。[clearDue] / [clearAssignee] 为 true 时清空对应字段。
   Future<CosTask> updateTask(
@@ -781,46 +1067,91 @@ class CosApiClient {
     bool clearAssignee = false,
     String? description,
     String? priority,
-  }) async =>
-      CosTask.fromJson(await _call('PATCH', '/tasks/$taskId', body: {
+  }) async => CosTask.fromJson(
+    await _call(
+      'PATCH',
+      '/tasks/$taskId',
+      body: {
         if (title != null) 'title': title,
         if (status != null) 'status': status,
-        if (clearDue) 'due_ms': null else if (due != null) 'due_ms': due.millisecondsSinceEpoch,
-        if (clearAssignee) 'assignee_id': null else if (assigneeId != null) 'assignee_id': assigneeId,
-        if (description != null) 'description': description.isEmpty ? null : description,
+        if (clearDue)
+          'due_ms': null
+        else if (due != null)
+          'due_ms': due.millisecondsSinceEpoch,
+        if (clearAssignee)
+          'assignee_id': null
+        else if (assigneeId != null)
+          'assignee_id': assigneeId,
+        if (description != null)
+          'description': description.isEmpty ? null : description,
         if (priority != null) 'priority': priority,
-      }));
+      },
+    ),
+  );
 
-  Future<void> deleteTask(String taskId) async => _call('DELETE', '/tasks/$taskId');
+  Future<void> deleteTask(String taskId) async =>
+      _call('DELETE', '/tasks/$taskId');
 
   // ---------------- 文档 ----------------
 
   /// scope：all | mine | shared。按 updated_at 倒序。
   Future<List<CosDoc>> listDocs({String scope = 'all', String? keyword}) =>
-      _all('/docs', CosDoc.fromJson, query: {
-        'scope': scope,
-        if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
-        'page_size': '200',
-      });
+      _all(
+        '/docs',
+        CosDoc.fromJson,
+        query: {
+          'scope': scope,
+          if (keyword != null && keyword.isNotEmpty) 'keyword': keyword,
+          'page_size': '200',
+        },
+      );
 
-  Future<CosDoc> getDoc(String docId) async => CosDoc.fromJson(await _call('GET', '/docs/$docId'));
+  Future<CosDoc> getDoc(String docId) async =>
+      CosDoc.fromJson(await _call('GET', '/docs/$docId'));
 
   Future<CosDoc> createDoc(String title, String markdown) async =>
-      CosDoc.fromJson(await _call('POST', '/docs', body: {'title': title, 'markdown': markdown}));
+      CosDoc.fromJson(
+        await _call(
+          'POST',
+          '/docs',
+          body: {'title': title, 'markdown': markdown},
+        ),
+      );
 
   /// 修改文档。带 [baseUpdatedAt] 时做并发保护：被他人改过返回 409（code DOC_CONFLICT，data.doc 为最新）。
-  Future<CosDoc> updateDoc(String docId, {String? title, String? markdown, String? baseUpdatedAt}) async =>
-      CosDoc.fromJson(await _call('PATCH', '/docs/$docId', body: {
+  Future<CosDoc> updateDoc(
+    String docId, {
+    String? title,
+    String? markdown,
+    String? baseUpdatedAt,
+  }) async => CosDoc.fromJson(
+    await _call(
+      'PATCH',
+      '/docs/$docId',
+      body: {
         if (title != null) 'title': title,
         if (markdown != null) 'markdown': markdown,
         if (baseUpdatedAt != null) 'base_updated_at': baseUpdatedAt,
-      }));
+      },
+    ),
+  );
 
   Future<void> deleteDoc(String docId) async => _call('DELETE', '/docs/$docId');
 
   // ---------------- 报表 ----------------
 
-  Future<Map<String, dynamic>> dashboardSummary() => _call('GET', '/dashboard/summary');
+  Future<Map<String, dynamic>> dashboardSummary() =>
+      _call('GET', '/dashboard/summary');
+
+  Future<Map<String, dynamic>> workbenchDashboards() =>
+      _call('GET', '/workbench/dashboards');
+
+  Future<Map<String, dynamic>> saveWorkbenchDashboards(
+    List<Map<String, dynamic>> dashboards,
+  ) => _call('PUT', '/workbench/dashboards', body: {'dashboards': dashboards});
+
+  Future<Map<String, dynamic>> workbenchDashboardData() =>
+      _call('GET', '/workbench/dashboards/data');
 
   /// 通用 GET（轻量入口）。
   Future<Map<String, dynamic>> rawGet(String path) => _call('GET', path);

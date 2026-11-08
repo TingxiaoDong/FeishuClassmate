@@ -24,10 +24,13 @@ class BitablePage extends StatefulWidget {
 
 class _BitablePageState extends State<BitablePage> {
   List<CosTableMeta> tables = [];
+  List<CosTableFolder> folders = [];
+  final Set<String> collapsedFolders = {};
   bool loading = true;
   String? error;
   String? selected;
   String keyword = '';
+  bool quickActionsExpanded = false;
 
   /// 折叠的侧边栏分组：true = 内置，false = 自定义。
   final Set<bool> collapsedGroups = {};
@@ -99,10 +102,15 @@ class _BitablePageState extends State<BitablePage> {
       });
     }
     try {
-      final t = await AppScope.read(context).api.listTables();
+      final api = AppScope.read(context).api;
+      final results = await Future.wait([
+        api.listTables(),
+        api.listTableFolders(),
+      ]);
       if (!mounted) return;
       setState(() {
-        tables = t;
+        tables = results[0] as List<CosTableMeta>;
+        folders = results[1] as List<CosTableFolder>;
         loading = false;
       });
       _checkTarget();
@@ -116,6 +124,175 @@ class _BitablePageState extends State<BitablePage> {
       }
     }
   }
+
+  Future<void> _createFolder({String? parentId}) async {
+    final ctl = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(parentId == null ? '新建文件夹' : '新建子文件夹'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLength: 50,
+          decoration: const InputDecoration(labelText: '文件夹名称'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctl.text.trim()),
+            child: const Text('创建'),
+          ),
+        ],
+      ),
+    );
+    ctl.dispose();
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      await AppScope.read(
+        context,
+      ).api.createTableFolder(name, parentId: parentId);
+      await _load(quiet: true);
+    } catch (e) {
+      if (mounted) showToast(context, describeError(e), error: true);
+    }
+  }
+
+  List<Widget> _folderNodes(
+    BuildContext context,
+    String? parentId,
+    List<CosTableMeta> list,
+    bool wide, {
+    int depth = 0,
+  }) {
+    final out = <Widget>[];
+    for (final f in folders.where((x) => x.parentId == parentId)) {
+      final childTables = list
+          .where((x) => !x.builtin && x.folderId == f.folderId)
+          .toList();
+      final collapsed = collapsedFolders.contains(f.folderId);
+      out.add(
+        HoverBox(
+          padding: EdgeInsets.fromLTRB(8 + depth * 16, 8, 4, 6),
+          onTap: () => setState(
+            () => collapsed
+                ? collapsedFolders.remove(f.folderId)
+                : collapsedFolders.add(f.folderId),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                collapsed
+                    ? Icons.chevron_right_rounded
+                    : Icons.expand_more_rounded,
+                size: 16,
+                color: Fs.text3,
+              ),
+              const SizedBox(width: 2),
+              const Icon(Icons.folder_outlined, size: 17, color: Fs.text2),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  f.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13.5),
+                ),
+              ),
+              FsIconButton(
+                icon: Icons.create_new_folder_outlined,
+                tooltip: '新建子文件夹',
+                onPressed: () => _createFolder(parentId: f.folderId),
+              ),
+            ],
+          ),
+        ),
+      );
+      if (!collapsed) {
+        out.addAll(
+          _folderNodes(context, f.folderId, list, wide, depth: depth + 1),
+        );
+        out.addAll([
+          for (final table in childTables)
+            _tableTile(context, table, wide, depth: depth + 1),
+        ]);
+      }
+    }
+    return out;
+  }
+
+  Widget _tableTile(
+    BuildContext context,
+    CosTableMeta t,
+    bool wide, {
+    int depth = 0,
+  }) => HoverBox(
+    selected: wide && t.key == selected,
+    hoverColor: wide ? const Color(0xFFE8E9EB) : Fs.hover,
+    padding: EdgeInsets.fromLTRB(10 + depth * 16, 9, 4, 9),
+    onTap: () {
+      if (wide) {
+        setState(() {
+          selected = t.key;
+          focusRecord = null;
+          focusView = null;
+        });
+      } else {
+        pushScoped(
+          context,
+          Scaffold(
+            appBar: AppBar(title: Text(t.name)),
+            body: TableView(meta: t, onMetaChanged: _onMetaChanged),
+          ),
+        );
+      }
+    },
+    child: Row(
+      children: [
+        Icon(
+          tableIcon(t.icon),
+          size: 17,
+          color: wide && t.key == selected ? Fs.primary : Fs.text2,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            t.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 13.5,
+              color: wide && t.key == selected ? Fs.primary : Fs.text1,
+            ),
+          ),
+        ),
+        Text(
+          '${t.fields.length}',
+          style: const TextStyle(fontSize: 11, color: Fs.text3),
+        ),
+        if (tableMenuItems(AppScope.of(context), t).isNotEmpty)
+          SizedBox(
+            width: 24,
+            height: 22,
+            child: PopupMenuButton<String>(
+              tooltip: '更多',
+              padding: EdgeInsets.zero,
+              iconSize: 16,
+              icon: const Icon(
+                Icons.more_horiz_rounded,
+                size: 16,
+                color: Fs.text3,
+              ),
+              onSelected: (v) => _tableAction(t, v),
+              itemBuilder: (_) => tableMenuItems(AppScope.read(context), t),
+            ),
+          ),
+      ],
+    ),
+  );
 
   Future<void> _createTable({bool fromFile = false}) async {
     final s = AppScope.read(context);
@@ -184,7 +361,7 @@ class _BitablePageState extends State<BitablePage> {
         if (!wide) return sidebar;
         return Row(
           children: [
-            SizedBox(width: 248, child: sidebar),
+            SizedBox(width: 220, child: sidebar),
             const VerticalDivider(width: 1),
             Expanded(
               child: meta == null
@@ -203,6 +380,30 @@ class _BitablePageState extends State<BitablePage> {
     );
   }
 
+  Widget _quickAction({
+    Key? key,
+    required IconData icon,
+    required String label,
+    required VoidCallback? onTap,
+  }) => SizedBox(
+    key: key,
+    height: 34,
+    width: double.infinity,
+    child: TextButton.icon(
+      onPressed: onTap,
+      style: TextButton.styleFrom(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        foregroundColor: Fs.text1,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+        ),
+      ),
+      icon: Icon(icon, size: 17, color: Fs.text2),
+      label: Text(label, overflow: TextOverflow.ellipsis),
+    ),
+  );
+
   Widget _sidebar(BuildContext context, bool wide) {
     final list = tables
         .where(
@@ -217,60 +418,97 @@ class _BitablePageState extends State<BitablePage> {
       child: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 12, 12),
-            child: Row(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF9B6CFF), Fs.purple],
-                    ),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(
-                    Icons.grid_view_rounded,
-                    color: Colors.white,
-                    size: 19,
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(6, 4, 6, 14),
+                  child: Row(
                     children: [
-                      const Text(
-                        '实验室数据中心',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
+                      const Expanded(
+                        child: Text(
+                          '多维表格',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                       Text(
-                        '${tables.length} 张数据表',
+                        '${tables.length} 张',
                         style: const TextStyle(fontSize: 12, color: Fs.text3),
                       ),
                     ],
                   ),
                 ),
-                if (AppScope.of(context).feature('table.create'))
-                  FsIconButton(
-                    icon: Icons.add_rounded,
-                    tooltip: '新建数据表',
-                    onPressed: loading ? null : _createTable,
+                if (AppScope.of(context).feature('table.create')) ...[
+                  SizedBox(
+                    height: 38,
+                    child: FilledButton.icon(
+                      onPressed: loading
+                          ? null
+                          : () => setState(
+                              () =>
+                                  quickActionsExpanded = !quickActionsExpanded,
+                            ),
+                      icon: AnimatedRotation(
+                        turns: quickActionsExpanded ? 0.125 : 0,
+                        duration: const Duration(milliseconds: 150),
+                        child: const Icon(Icons.add_rounded, size: 18),
+                      ),
+                      label: const Text('新建数据表'),
+                    ),
                   ),
-                if (AppScope.of(context).feature('table.create') && AppScope.of(context).feature('table.import'))
-                  FsIconButton(
-                    key: const ValueKey('create-table-from-file'),
-                    icon: Icons.upload_file_rounded,
-                    tooltip: '从 Excel / CSV 新建',
-                    onPressed: loading ? null : () => _createTable(fromFile: true),
+                  AnimatedSize(
+                    duration: const Duration(milliseconds: 150),
+                    curve: Curves.easeOut,
+                    child: quickActionsExpanded
+                        ? Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Column(
+                              children: [
+                                _quickAction(
+                                  icon: Icons.table_rows_outlined,
+                                  label: '空白数据表',
+                                  onTap: loading ? null : _createTable,
+                                ),
+                                _quickAction(
+                                  icon: Icons.create_new_folder_outlined,
+                                  label: '新建文件夹',
+                                  onTap: loading ? null : () => _createFolder(),
+                                ),
+                                if (AppScope.of(
+                                  context,
+                                ).feature('table.import'))
+                                  _quickAction(
+                                    key: const ValueKey(
+                                      'create-table-from-file',
+                                    ),
+                                    icon: Icons.upload_file_rounded,
+                                    label: '从 Excel / CSV 新建',
+                                    onTap: loading
+                                        ? null
+                                        : () => _createTable(fromFile: true),
+                                  ),
+                              ],
+                            ),
+                          )
+                        : const SizedBox.shrink(),
                   ),
-                FsIconButton(
-                  icon: Icons.refresh_rounded,
-                  tooltip: '刷新',
-                  onPressed: _load,
+                ],
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Spacer(),
+                    FsIconButton(
+                      icon: Icons.refresh_rounded,
+                      tooltip: '刷新',
+                      onPressed: _load,
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -302,127 +540,12 @@ class _BitablePageState extends State<BitablePage> {
                       vertical: 4,
                     ),
                     children: [
-                      for (final builtin in [true, false]) ...[
-                        if (list.any((t) => t.builtin == builtin))
-                          HoverBox(
-                            onTap: () => setState(
-                              () => collapsedGroups.contains(builtin)
-                                  ? collapsedGroups.remove(builtin)
-                                  : collapsedGroups.add(builtin),
-                            ),
-                            padding: const EdgeInsets.fromLTRB(4, 10, 10, 6),
-                            child: Row(
-                              children: [
-                                Icon(
-                                  collapsedGroups.contains(builtin)
-                                      ? Icons.chevron_right_rounded
-                                      : Icons.expand_more_rounded,
-                                  size: 16,
-                                  color: Fs.text3,
-                                ),
-                                const SizedBox(width: 2),
-                                Text(
-                                  '${builtin ? '内置数据表' : '自定义数据表'}（${list.where((t) => t.builtin == builtin).length}）',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: Fs.text3,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        if (!collapsedGroups.contains(builtin))
-                          for (final t in list.where(
-                            (t) => t.builtin == builtin,
-                          ))
-                            HoverBox(
-                              selected: wide && t.key == selected,
-                              hoverColor: wide
-                                  ? const Color(0xFFE8E9EB)
-                                  : Fs.hover,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 9,
-                              ),
-                              onTap: () {
-                                if (wide) {
-                                  setState(() {
-                                    selected = t.key;
-                                    focusRecord = null;
-                                    focusView = null;
-                                  });
-                                } else {
-                                  pushScoped(
-                                    context,
-                                    Scaffold(
-                                      appBar: AppBar(title: Text(t.name)),
-                                      body: TableView(
-                                        meta: t,
-                                        onMetaChanged: _onMetaChanged,
-                                      ),
-                                    ),
-                                  );
-                                }
-                              },
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    tableIcon(t.icon),
-                                    size: 17,
-                                    color: wide && t.key == selected
-                                        ? Fs.primary
-                                        : Fs.text2,
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      t.name,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 13.5,
-                                        color: wide && t.key == selected
-                                            ? Fs.primary
-                                            : Fs.text1,
-                                        fontWeight: wide && t.key == selected
-                                            ? FontWeight.w500
-                                            : FontWeight.normal,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    '${t.fields.length}',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Fs.text3,
-                                    ),
-                                  ),
-                                  if (tableMenuItems(
-                                    AppScope.of(context),
-                                    t,
-                                  ).isNotEmpty)
-                                    SizedBox(
-                                      width: 24,
-                                      height: 22,
-                                      child: PopupMenuButton<String>(
-                                        tooltip: '更多',
-                                        padding: EdgeInsets.zero,
-                                        iconSize: 16,
-                                        icon: const Icon(
-                                          Icons.more_horiz_rounded,
-                                          size: 16,
-                                          color: Fs.text3,
-                                        ),
-                                        onSelected: (v) => _tableAction(t, v),
-                                        itemBuilder: (_) => tableMenuItems(
-                                          AppScope.read(context),
-                                          t,
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
+                      if (list.isNotEmpty || folders.isNotEmpty) ...[
+                        ..._folderNodes(context, null, list, wide),
+                        for (final t in list.where(
+                          (t) => !t.builtin && t.folderId == null,
+                        ))
+                          _tableTile(context, t, wide),
                       ],
                     ],
                   ),

@@ -181,8 +181,10 @@ export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { r
         copied++;
       }
     }
+    const srcFolder = (await repo.getEntity('table_folder_link', src.key))?.data.folder_id as string | undefined;
+    if (srcFolder) await repo.saveEntity({ kind: 'table_folder_link', id: key, scope: 'global', data: { folder_id: srcFolder }, version: 0, created_at: now, updated_at: now }, 0);
     ctx.publish('table.created', { table_key: key }, undefined, { all: true, user_only: true });
-    return reply.code(201).send({ ...describeSchema(schema, r.me, await access.flags(r.me, schema)), copied_records: copied });
+    return reply.code(201).send({ ...describeSchema(schema, r.me, await access.flags(r.me, schema)), folder_id: srcFolder ?? null, copied_records: copied });
   });
 
   app.delete('/api/v1/tables/:table_key', async (req, reply) => {
@@ -195,6 +197,7 @@ export function registerTableManageRoutes(ctx: Ctx, svc: TableService, opts: { r
       for (const v of await repo.listViews(key)) await repo.deleteView(v.view_id);
       await repo.deleteEntity(TABLE_META_KIND, key);
       await repo.deleteCustomTable(key);
+      await repo.deleteEntity('table_folder_link', key);
       svc.forget(key);
       ctx.tableDefs.delete(key);
       ctx.customTables.delete(key);

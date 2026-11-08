@@ -5,6 +5,7 @@
 import type { FastifyReply } from 'fastify';
 import {
   BOT_ID,
+  CONFIRM_USE_KIND,
   fail,
   invalid,
   newId,
@@ -16,7 +17,7 @@ import {
   type FieldError,
 } from './context.js';
 import { parseAgentContext, parseAgentResult } from './agent-message.js';
-import { boundActionErrors, headerStr, markAgentRequest } from './agent-principal.js';
+import { boundActionErrors, headerStr, markAgentRequest, sendConfirmCardStatus } from './agent-principal.js';
 import { nowIso, p2pKeyOf, publicMessage, type ChatRecord, type MessageRecord } from './repo.js';
 import { extractUrls, type LinkPreviewService } from './link-preview.js';
 
@@ -645,6 +646,24 @@ export function registerImRoutes(ctx: Ctx, deps: ImDeps = {}): void {
       }
     }
     if (!chat) return fail(reply, 404, '会话不存在');
+    // 代码审查 A4 后端兜底：代发到机器人不在的会话（如同学之间的私聊）必须带同学确认过的卡片。
+    if (obo && !chat.member_ids.includes(BOT_ID)) {
+      const card = headerStr(req, 'x-agent-confirm');
+      if (!card) return fail(reply, 403, '发到机器人不在的会话需要先确认', { code: 'BOT_CONFIRM_REQUIRED' });
+      const target = body.receive_id;
+      const cardMsg = await repo.findMessageByCardId(card);
+      const st = sendConfirmCardStatus(cardMsg, obo.user_id, BOT_ID, target);
+      if (st === 'mismatch' || st === 'unbound') return fail(reply, 403, '确认卡片确认的不是这个发送目标，请重新确认', { code: 'BOT_CONFIRM_MISMATCH' });
+      if (st === 'consumed') return fail(reply, 409, '这张确认卡片已经用过了', { code: 'CARD_CONSUMED' });
+      if (st !== 'ok') return fail(reply, 403, '确认卡片无效或已过期，请重新确认', { code: 'BOT_CONFIRM_REQUIRED' });
+      const now = nowIso();
+      const claimed = await repo.saveEntity(
+        { kind: CONFIRM_USE_KIND, id: `${card}:send:${target}`, scope: obo.user_id, data: { card_id: card, user_id: obo.user_id, method: 'POST', url: '/api/v1/bot/messages', target_id: target, used_at: now }, version: 0, created_at: now, updated_at: now },
+        0,
+      );
+      if (!claimed) return fail(reply, 409, '这张确认卡片已经用来发给这个目标了，请重新确认', { code: 'CARD_CONSUMED' });
+      markAgentRequest(req, { on_behalf_of: obo.user_id, session_id: headerStr(req, 'x-agent-session'), tool_call_id: headerStr(req, 'x-agent-tool-call'), confirm_card: card });
+    }
     const content = { ...checked.content! };
     delete content.sent_on_behalf_of; // 只能由服务端写
     // 机器人和这位同学自己的单聊里不用标（就是在回他本人）

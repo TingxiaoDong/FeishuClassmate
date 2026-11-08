@@ -1,6 +1,6 @@
 /**
  * Record validation against the Bitable-derived table definitions
- * (src/bitable/schema.ts). 语义与飞书多维表格一致：
+ * (classmateos/server/builtin-schema.ts). 语义与飞书多维表格一致：
  *   - 1 Text / 15 Url          → string
  *   - 2 Number                 → number
  *   - 3 SingleSelect           → string ∈ options
@@ -12,7 +12,7 @@
  * 未知字段拒绝。错误信息为中文（前端直接展示）。
  */
 
-import type { FieldDef, TableDef } from '../../src/bitable/schema.js';
+import type { FieldDef, TableDef } from './builtin-schema.js';
 
 export interface ValidationError {
   field: string;

@@ -3,7 +3,7 @@
  * 全表扫描、视图读取、实时事件（R-BT-05）。字段 / 视图 / 记录三组路由共用。
  */
 
-import { ALL_TABLES, type TableDef } from '../../src/bitable/schema.js';
+import { ALL_TABLES, type TableDef } from './builtin-schema.js';
 import { newId, type AuthedUser, type Ctx } from './context.js';
 import { agentState, viaBotFor } from './agent-context.js';
 import { nowIso, type TableViewRecord } from './repo.js';

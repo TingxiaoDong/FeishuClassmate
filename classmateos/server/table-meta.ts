@@ -1,10 +1,10 @@
 /**
  * 多维表格的展示元数据（《前端接口需求文档》8.1）：
  * 中文表名 / 说明 / 图标 / 主字段 / 字段中文名 / 选项颜色。
- * 表结构本身仍以 src/bitable/schema.ts 为准，这里只补充给人看的信息。
+ * 表结构本身仍以 classmateos/server/builtin-schema.ts 为准，这里只补充给人看的信息。
  */
 
-import type { FieldDef, TableDef } from '../../src/bitable/schema.js';
+import type { FieldDef, TableDef } from './builtin-schema.js';
 
 interface TableMeta {
   name: string;

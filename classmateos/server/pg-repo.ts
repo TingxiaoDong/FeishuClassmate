@@ -8,6 +8,7 @@ import type { ResourceGrant } from './repo.js';
  */
 
 import { readFile } from 'node:fs/promises';
+import { DELIVERY_KIND, deliveryRecordData, evaluateDelivery, type AutomationDeliveryCommit, type AutomationDeliveryOutcome, ACL_ENTITY_KINDS, AUTOMATION_ACL_FENCE_KEY } from './automation-delivery-core.js';
 import type { Pool, PoolClient } from 'pg';
 import type {
   CalendarEventRecord,
@@ -16,6 +17,7 @@ import type {
   ChatView,
   CustomFieldRecord,
   CustomTableRecord,
+  TableFolderRecord,
   DeviceRecord,
   FieldMetaRecord,
   NotificationRecord,
@@ -202,6 +204,7 @@ function toCustomTable(r: Row): CustomTableRecord {
     updated_at: isoReq(r.updated_at),
     client_request_id: (r.client_request_id as string) ?? null,
     version: Number(r.version ?? 1),
+    folder_id: (r.folder_id as string) ?? null,
   };
 }
 
@@ -280,13 +283,73 @@ export class PgRepo implements Repo {
   }
   async saveEntity(e: EntityRecord, expectedVersion: number) {
     const args = [e.kind, e.id, e.scope, JSON.stringify(e.data), e.created_at, e.updated_at];
+    const q = ACL_ENTITY_KINDS.has(e.kind) ? undefined : this.q.bind(this);
+    if (!q) return this.aclWrite(async (aq) => this.saveEntityOn(aq, e, expectedVersion, args));
+    return this.saveEntityOn(q, e, expectedVersion, args);
+  }
+  private async saveEntityOn(q: (t: string, p: unknown[]) => Promise<Row[]>, e: EntityRecord, expectedVersion: number, args: unknown[]) {
     const rows = expectedVersion === 0
-      ? await this.q('INSERT INTO cos_entities(kind,id,scope,data,version,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,1,$5,$6) ON CONFLICT DO NOTHING RETURNING id', args)
-      : await this.q('UPDATE cos_entities SET scope=$3,data=$4::jsonb,version=version+1,updated_at=$5 WHERE kind=$1 AND id=$2 AND version=$6 RETURNING id', [e.kind, e.id, e.scope, JSON.stringify(e.data), e.updated_at, expectedVersion]);
+      ? await q('INSERT INTO cos_entities(kind,id,scope,data,version,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,1,$5,$6) ON CONFLICT DO NOTHING RETURNING id', args)
+      : await q('UPDATE cos_entities SET scope=$3,data=$4::jsonb,version=version+1,updated_at=$5 WHERE kind=$1 AND id=$2 AND version=$6 RETURNING id', [e.kind, e.id, e.scope, JSON.stringify(e.data), e.updated_at, expectedVersion]);
     return rows.length === 1;
   }
   async deleteEntity(kind: string, id: string) {
-    return (await this.q('DELETE FROM cos_entities WHERE kind=$1 AND id=$2 RETURNING id', [kind, id])).length > 0;
+    const sql = 'DELETE FROM cos_entities WHERE kind=$1 AND id=$2 RETURNING id';
+    if (ACL_ENTITY_KINDS.has(kind)) return this.aclWrite(async (q) => (await q(sql, [kind, id])).length > 0);
+    return (await this.q(sql, [kind, id])).length > 0;
+  }
+
+  /**
+   * 单事务原子投递。锁顺序固定：授权行 FOR UPDATE → 运行行 FOR UPDATE → 任务行 FOR SHARE → 群成员行 FOR SHARE → 投递记录行 FOR UPDATE。
+   * 同一授权的所有投递在授权行上串行；撤销（更新授权行）、结束运行、修改任务、移出群成员都与投递互斥。
+   * READ COMMITTED 下拿到授权行锁后，后续语句能看到先前已提交的投递，因此额度统计和幂等判断不会漏算。
+   */
+  async commitAutomationDelivery(input: AutomationDeliveryCommit): Promise<AutomationDeliveryOutcome> {
+    return this.tx(async (c) => {
+      const exec = async (text: string, params: unknown[]) => (await c.query(text, params)).rows as Row[];
+      const one = async (sql: string, params: unknown[]) => { const r = await exec(sql, params); return r[0] ? this.toEntity(r[0]) : undefined; };
+      // 权限围栏（排他）必须是第一把锁：收回权限的写操作先拿共享围栏再写，二者没有反向等待，不会死锁。
+      await exec('SELECT pg_advisory_xact_lock($1::bigint)', [AUTOMATION_ACL_FENCE_KEY]);
+      const grant = await one('SELECT * FROM cos_entities WHERE kind=$1 AND id=$2 FOR UPDATE', [input.grantKind, input.draftId]);
+      const run = await one('SELECT * FROM cos_entities WHERE kind=$1 AND id=$2 FOR UPDATE', [input.runKind, input.runId]);
+      const task = await one('SELECT * FROM cos_entities WHERE kind=$1 AND id=$2 FOR SHARE', [input.task.kind, input.task.id]);
+      const isMember = input.memberCheck
+        ? (await exec('SELECT 1 FROM cos_chat_members WHERE chat_id=$1 AND user_id=$2 FOR SHARE', [input.memberCheck.chatId, input.memberCheck.userId])).length > 0
+        : null;
+      const existing = await one('SELECT * FROM cos_entities WHERE kind=$1 AND id=$2 FOR UPDATE', [DELIVERY_KIND, input.deliveryKey]);
+      const cnt = (await exec(
+        `SELECT count(*) FILTER (WHERE data->>'runId'=$3) AS run,
+                count(*) FILTER (WHERE data->>'dayKey'=$4) AS day,
+                count(*) FILTER (WHERE data->>'runId'=$3 AND data->>'targetKey'=$5) AS target_run,
+                count(*) FILTER (WHERE data->>'dayKey'=$4 AND data->>'targetKey'=$5) AS target_day
+           FROM cos_entities WHERE kind=$1 AND scope=$2 AND data->>'status'='sent'`,
+        [DELIVERY_KIND, input.grantId, input.runId, input.dayKey, input.targetKey],
+      ))[0];
+      const counts = { run: num(cnt.run), day: num(cnt.day), targetRun: num(cnt.target_run), targetDay: num(cnt.target_day) };
+      // 提交时复核：在本事务连接上读（不额外占用连接池），围栏保证复核到提交之间不会有人收回权限。
+      const recheckCode = input.blockedCode || !input.recheck ? null : await input.recheck(this.boundTo(c));
+      const decision = evaluateDelivery(recheckCode ? { ...input, blockedCode: recheckCode } : input, { grant, run, task, isMember, existing, counts });
+      if (decision.kind === 'reject') return { status: 'rejected', code: decision.code } as const;
+      if (decision.kind === 'duplicate') {
+        const m = await exec('SELECT * FROM cos_messages WHERE message_id=$1', [decision.messageId]);
+        if (!m[0]) throw new Error(`automation delivery message missing: ${decision.messageId}`);
+        return { status: 'sent', message: toMessage(m[0]), duplicate: true } as const;
+      }
+      const at = new Date(input.nowMs).toISOString();
+      const save = (data: Record<string, unknown>) => exec(
+        `INSERT INTO cos_entities(kind,id,scope,data,version,created_at,updated_at) VALUES($1,$2,$3,$4::jsonb,1,$5,$5)
+         ON CONFLICT (kind,id) DO UPDATE SET data=EXCLUDED.data, version=cos_entities.version+1, updated_at=EXCLUDED.updated_at
+         WHERE cos_entities.data->>'status' <> 'sent'`,
+        [DELIVERY_KIND, input.deliveryKey, input.grantId, JSON.stringify(data), at],
+      );
+      if (decision.kind === 'block') {
+        await save(deliveryRecordData(input, 'blocked', { code: decision.code }, existing));
+        return { status: 'blocked', code: decision.code } as const;
+      }
+      const res = await this.insertMessageOn(exec, input.message!);
+      await save(deliveryRecordData(input, 'sent', { messageId: res.message.message_id }, existing));
+      return { status: 'sent', message: res.message, duplicate: res.duplicate } as const;
+    });
   }
 
   async getDocAccessRequest(id: string): Promise<DocAccessRequest | undefined> {
@@ -300,6 +363,7 @@ export class PgRepo implements Repo {
     const c = await this.pool.connect();
     try {
       await c.query('BEGIN');
+      await c.query('SELECT pg_advisory_xact_lock_shared($1::bigint)', [AUTOMATION_ACL_FENCE_KEY]);
       const request = await c.query("SELECT request_id FROM cos_doc_access_requests WHERE request_id=$1 AND doc_id=$2 AND status='pending' FOR UPDATE", [id,grant.resource_id]);
       if (!request.rowCount) { await c.query('ROLLBACK'); return false; }
       const data = JSON.stringify({ ...grant, version: grant.version + 1 });
@@ -323,12 +387,15 @@ export class PgRepo implements Repo {
     return rows[0] ? { ...(rows[0].data as ResourceGrant), version: Number(rows[0].version) } : undefined;
   }
   async saveResourceGrant(grant: ResourceGrant, expectedVersion: number): Promise<boolean> {
+    return this.aclWrite((q) => this.saveResourceGrantOn(q, grant, expectedVersion));
+  }
+  private async saveResourceGrantOn(q: (t: string, p: unknown[]) => Promise<Row[]>, grant: ResourceGrant, expectedVersion: number): Promise<boolean> {
     const data = { ...grant, version: expectedVersion + 1 };
     if (expectedVersion === 0) {
-      const rows = await this.q('INSERT INTO cos_resource_grants(resource_type,resource_id,data,version) VALUES($1,$2,$3::jsonb,1) ON CONFLICT DO NOTHING RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data)]);
+      const rows = await q('INSERT INTO cos_resource_grants(resource_type,resource_id,data,version) VALUES($1,$2,$3::jsonb,1) ON CONFLICT DO NOTHING RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data)]);
       return rows.length === 1;
     }
-    const rows = await this.q('UPDATE cos_resource_grants SET data=$3::jsonb,version=version+1 WHERE resource_type=$1 AND resource_id=$2 AND version=$4 RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data), expectedVersion]);
+    const rows = await q('UPDATE cos_resource_grants SET data=$3::jsonb,version=version+1 WHERE resource_type=$1 AND resource_id=$2 AND version=$4 RETURNING version', [grant.resource_type, grant.resource_id, JSON.stringify(data), expectedVersion]);
     return rows.length === 1;
   }
 
@@ -343,6 +410,19 @@ export class PgRepo implements Repo {
   private async q(text: string, params: unknown[] = []): Promise<Row[]> {
     const res = await this.pool.query(text, params);
     return res.rows as Row[];
+  }
+
+  /** 收回权限类写操作：在事务里先拿共享权限围栏再写（见 automation-delivery-core）。 */
+  private aclWrite<T>(fn: (q: (text: string, params: unknown[]) => Promise<Row[]>) => Promise<T>): Promise<T> {
+    return this.tx(async (c) => {
+      await c.query('SELECT pg_advisory_xact_lock_shared($1::bigint)', [AUTOMATION_ACL_FENCE_KEY]);
+      return fn(async (text, params) => (await c.query(text, params)).rows as Row[]);
+    });
+  }
+  /** 绑定到某个事务连接的只读视图（自动化投递的提交时复核用）；不能开新事务。 */
+  private boundTo(c: PoolClient): PgRepo {
+    const pool = { query: (text: string, params?: unknown[]) => c.query(text, params), connect: () => { throw new Error('read-only transaction view'); } };
+    return new PgRepo(pool as unknown as Pool);
   }
 
   private async tx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -409,10 +489,10 @@ export class PgRepo implements Repo {
     const entries = Object.entries(patch).filter(([, v]) => v !== undefined);
     if (entries.length === 0) return this.getUser(userId);
     const sets = entries.map(([k], i) => `"${k}" = $${i + 2}`).join(', ');
-    const rows = await this.q(`UPDATE cos_users SET ${sets} WHERE user_id = $1 RETURNING *`, [
+    const rows = await this.aclWrite((q) => q(`UPDATE cos_users SET ${sets} WHERE user_id = $1 RETURNING *`, [
       userId,
       ...entries.map(([, v]) => v),
-    ]);
+    ]));
     return rows[0] ? toUser(rows[0]) : undefined;
   }
 
@@ -496,10 +576,10 @@ export class PgRepo implements Repo {
   }
 
   async removeMember(chatId: string, userId: string) {
-    const rows = await this.q('DELETE FROM cos_chat_members WHERE chat_id = $1 AND user_id = $2 RETURNING user_id', [
+    const rows = await this.aclWrite((q) => q('DELETE FROM cos_chat_members WHERE chat_id = $1 AND user_id = $2 RETURNING user_id', [
       chatId,
       userId,
-    ]);
+    ]));
     return rows.length > 0;
   }
 
@@ -577,7 +657,12 @@ export class PgRepo implements Repo {
   // ---------------- messages ----------------
 
   async insertMessage(m: NewMessage) {
-    const rows = await this.q(
+    return this.insertMessageOn((text, params) => this.q(text, params), m);
+  }
+
+  /** exec 可以是连接池，也可以是事务连接（原子投递在事务内调用）。 */
+  private async insertMessageOn(exec: (text: string, params: unknown[]) => Promise<Row[]>, m: NewMessage) {
+    const rows = await exec(
       `WITH ins AS (
          INSERT INTO cos_messages (message_id, chat_id, sender_id, msg_type, content, created_at,
                                    reply_to_message_id, client_msg_id, card_id, thread_root_id, also_send_to_chat, forwarded_from)
@@ -594,7 +679,7 @@ export class PgRepo implements Repo {
         m.forwarded_from ? JSON.stringify(m.forwarded_from) : null],
     );
     if (rows[0]) return { message: toMessage(rows[0]), duplicate: false };
-    const dup = await this.q(
+    const dup = await exec(
       'SELECT * FROM cos_messages WHERE chat_id = $1 AND sender_id = $2 AND client_msg_id = $3',
       [m.chat_id, m.sender_id, m.client_msg_id],
     );
@@ -841,7 +926,7 @@ export class PgRepo implements Repo {
                          f.drive_added_at AS linked_at, 0 AS pri
                   FROM cos_files f WHERE f.uploader_id = $1 AND f.in_drive AND f.uploaded_at IS NOT NULL`);
     }
-    if (opts.scope !== 'mine') {
+    if (opts.scope === 'shared') {
       parts.push(`SELECT f.*, 'chat' AS src_type, l.chat_id AS src_chat, l.message_id AS src_msg,
                          l.created_at AS linked_at, 1 AS pri
                   FROM cos_file_links l
@@ -1025,7 +1110,7 @@ export class PgRepo implements Repo {
   }
 
   async deleteDoc(docId: string) {
-    return (await this.q('DELETE FROM cos_docs WHERE doc_id = $1 RETURNING doc_id', [docId])).length > 0;
+    return (await this.aclWrite((q) => q('DELETE FROM cos_docs WHERE doc_id = $1 RETURNING doc_id', [docId]))).length > 0;
   }
 
   async listDocs(opts: { userId: string; scope: 'all' | 'mine' | 'shared'; keyword?: string; limit: number; offset: number }) {
@@ -1041,6 +1126,13 @@ export class PgRepo implements Repo {
     );
     return { items: rows.map(toDoc), total: rows.length ? num(rows[0]._total) : 0 };
   }
+
+  // ---------------- table folders ----------------
+  async listTableFolders() { return (await this.q('SELECT * FROM cos_entities WHERE kind=$1 ORDER BY created_at,id', ['table_folder'])).map(r => { const d = r.data as Record<string,unknown>; return { folder_id: String(r.id), name: String(d.name), parent_id: (d.parent_id as string) ?? null, created_by: String(d.created_by), created_at: isoReq(r.created_at), updated_at: isoReq(r.updated_at) } as TableFolderRecord; }); }
+  async getTableFolder(id: string) { const r = await this.getEntity('table_folder', id); if (!r) return undefined; return { folder_id:id, name:String(r.data.name), parent_id:(r.data.parent_id as string) ?? null, created_by:String(r.data.created_by), created_at:r.created_at, updated_at:r.updated_at }; }
+  async insertTableFolder(f: TableFolderRecord) { return this.saveEntity({kind:'table_folder', id:f.folder_id, scope:'global', data:{name:f.name,parent_id:f.parent_id,created_by:f.created_by},version:0,created_at:f.created_at,updated_at:f.updated_at},0); }
+  async updateTableFolder(f: TableFolderRecord) { const old=await this.getEntity('table_folder',f.folder_id); if(!old) return false; return this.saveEntity({kind:'table_folder',id:f.folder_id,scope:'global',data:{name:f.name,parent_id:f.parent_id,created_by:f.created_by},version:old.version,created_at:old.created_at,updated_at:f.updated_at},old.version); }
+  async deleteTableFolder(id: string) { return this.deleteEntity('table_folder',id); }
 
   // ---------------- custom tables ----------------
 

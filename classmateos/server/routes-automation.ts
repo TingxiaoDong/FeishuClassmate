@@ -19,6 +19,7 @@
  */
 
 import cron from 'node-cron';
+import { canonicalJson } from './automation-authorization.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { headerStr } from './agent-principal.js';
 import { fail, invalid, newId, type AuthedUser, type Ctx, type FieldError } from './context.js';
@@ -58,6 +59,8 @@ export interface JobData {
 
 export interface TriggerData {
   trigger_id: string;
+  /** 持久安全修订标记；旧任务缺省 legacy，安全变更后不可恢复旧标记。 */
+  security_revision?: string;
   owner_id: string;
   name: string;
   event: TriggerEvent;
@@ -298,6 +301,7 @@ export function registerAutomationRoutes(ctx: Ctx): void {
     const now = nowIso();
     const d: TriggerData = {
       trigger_id: newId('trg'),
+      security_revision: newId('asr'),
       owner_id: me.sub,
       name: p.name!,
       event: p.event!,
@@ -329,6 +333,10 @@ export function registerAutomationRoutes(ctx: Ctx): void {
     const p = await parseTrigger(me, (req.body ?? {}) as Record<string, unknown>, got.d, errors);
     if (errors.length) return invalid(reply, errors);
     const d: TriggerData = { ...got.d, ...p, updated_at: nowIso() };
+    const securityKeys = ['owner_id', 'event', 'filter', 'cron', 'condition', 'prompt', 'chat_id', 'enabled', 'cooldown_sec'] as const;
+    if (securityKeys.some(k => canonicalJson(got.d[k] ?? null) !== canonicalJson(d[k] ?? null))) {
+      d.security_revision = newId('asr');
+    }
     if (!(await save(TRIGGER_KIND, trigger_id, got.d.owner_id, d as unknown as Record<string, unknown>, got.rec))) {
       return fail(reply, 409, '触发器正被其他请求修改', { code: 'CONFLICT' });
     }

@@ -18,7 +18,8 @@ import '../widgets/common.dart';
 class NotificationBell extends StatelessWidget {
   final double size;
   final Color? color;
-  const NotificationBell({super.key, this.size = 22, this.color});
+  final Color? hoverColor;
+  const NotificationBell({super.key, this.size = 22, this.color, this.hoverColor});
 
   @override
   Widget build(BuildContext context) {
@@ -29,6 +30,7 @@ class NotificationBell extends StatelessWidget {
       message: n > 0 ? '通知（$n 条未读）' : '通知',
       child: HoverBox(
         onTap: () => openNotificationCenter(context),
+        hoverColor: hoverColor,
         padding: const EdgeInsets.all(8),
         radius: 8,
         child: Badge(

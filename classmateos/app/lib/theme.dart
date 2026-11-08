@@ -197,6 +197,8 @@ ThemeData buildFsTheme() {
     scaffoldBackgroundColor: Colors.white,
     splashFactory: NoSplash.splashFactory,
     hoverColor: Fs.hover,
+    highlightColor: Colors.transparent,
+    splashColor: Colors.transparent,
     dividerColor: Fs.line,
     dividerTheme: const DividerThemeData(
       color: Fs.line,

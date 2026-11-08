@@ -30,7 +30,7 @@ import fastifyWebsocket from '@fastify/websocket';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ALL_TABLES, type TableDef } from '../../src/bitable/schema.js';
+import { ALL_TABLES, type TableDef } from './builtin-schema.js';
 import { hashPassword } from './auth.js';
 import { AuthService } from './auth-service.js';
 import { CollabHub, collabTextFromUpdate } from './collab.js';
@@ -57,6 +57,8 @@ import { AgentAuditLog, BotScopePolicy, registerAgentAudit, type AgentScopeOptio
 import { registerAgentContext } from './agent-context.js';
 import { registerAgentRoutes } from './routes-agent.js';
 import { registerAutomationRoutes } from './routes-automation.js';
+import { registerAutomationAuthorizationRoutes } from './routes-automation-authorization.js';
+import { usableSchedulerToken } from './routes-automation-scheduler.js';
 import { registerRobotRoutes } from './routes-robots.js';
 import { registerAgentMetricsRoutes } from './routes-agent-metrics.js';
 import { registerWorkbenchRoutes } from './routes-workbench.js';
@@ -86,6 +88,10 @@ export interface AppOptions {
   webUrl?: string;
   /** Bot 网关令牌（X-Bot-Token）。 */
   botToken?: string;
+  /** 自动化调度器密钥（X-Automation-Scheduler-Token），至少 32 字符且不能与 botToken 相同；不配置则自动化投递关闭。 */
+  automationSchedulerToken?: string;
+  /** 自动化运行凭证换发租约（毫秒），默认 15000；测试可调小。 */
+  automationResumeLeaseMs?: number;
   /** 机器人代办作用域（X-On-Behalf-Of），缺省用 DEFAULT_BOT_DENY 黑名单。 */
   botScopes?: AgentScopeOptions;
   /** 平台数据层；缺省 MemoryRepo。PgRepo 在这里传入。 */
@@ -337,6 +343,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
 
   registerAgentRoutes(ctx);
   registerAutomationRoutes(ctx);
+  registerAutomationAuthorizationRoutes(ctx, { schedulerToken: usableSchedulerToken(opts.automationSchedulerToken, opts.botToken), resumeLeaseMs: opts.automationResumeLeaseMs });
   registerRobotRoutes(ctx);
   registerAgentMetricsRoutes(ctx);
   registerAgentAudit(app, {
@@ -386,7 +393,7 @@ export async function buildApp(opts: AppOptions): Promise<FastifyInstance> {
   // 测试 / 运维用的内部句柄
   app.decorate('cos', { ctx, tables, notifications, push: pushDispatcher, presence, clock });
   registerDocRoutes(ctx, notifications, docVersions!);
-  registerWorkbenchRoutes(ctx, CAPABILITIES);
+  registerWorkbenchRoutes(ctx, CAPABILITIES, tables);
   registerWikiRoutes(ctx);
   // 日历默认时区：参数 > 环境变量 COS_CALENDAR_TZ > 指定了固定偏移时用偏移 > Asia/Shanghai
   const envCalTz = process.env.COS_CALENDAR_TZ;

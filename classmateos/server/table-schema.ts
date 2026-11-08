@@ -1,12 +1,12 @@
 /**
  * 多维表格「表结构」统一模型（《二期功能需求文档》R-BT-01 / R-BT-02）：
- *   - 内置表：src/bitable/schema.ts + table-meta.ts 生成，叠加 cos_table_schemas 覆盖层
+ *   - 内置表：classmateos/server/builtin-schema.ts + table-meta.ts 生成，叠加 cos_table_schemas 覆盖层
  *     （字段改名 / 改选项 / 新增自定义字段 / 默认顺序）；
  *   - 自定义表：cos_custom_tables 里的定义。
  * 两者都转成 TableSchema，再由 schemaToDef 生成记录校验 / 存储用的 TableDef。
  */
 
-import type { FieldDef, TableDef } from '../../src/bitable/schema.js';
+import type { FieldDef, TableDef } from './builtin-schema.js';
 import type { FieldError } from './context.js';
 import type { CustomTableRecord, FieldMetaRecord, TableSchemaRecord } from './repo.js';
 import { COLOR_NAMES, describeTable } from './table-meta.js';

@@ -60,14 +60,25 @@ class CosUser {
 
   /// 改密成功后清掉强制改密标记。
   CosUser withoutPasswordChange() => CosUser(
-        userId: userId, name: name, email: email, role: role, avatarUrl: avatarUrl, department: department,
-        title: title, phone: phone, statusText: statusText, permissions: permissions,
-        primaryDepartmentId: primaryDepartmentId, leaderId: leaderId);
+    userId: userId,
+    name: name,
+    email: email,
+    role: role,
+    avatarUrl: avatarUrl,
+    department: department,
+    title: title,
+    phone: phone,
+    statusText: statusText,
+    permissions: permissions,
+    primaryDepartmentId: primaryDepartmentId,
+    leaderId: leaderId,
+  );
 
   bool get isAdmin => role == 'admin';
 
   /// 是否有某个权限点；后端没返回 permissions 时，管理员视为全部都有。
-  bool can(String perm) => permissions == null ? isAdmin : permissions!.contains(perm);
+  bool can(String perm) =>
+      permissions == null ? isAdmin : permissions!.contains(perm);
   bool get isBot => role == 'bot' || userId == 'bot';
 
   factory CosUser.fromJson(Map<String, dynamic> j) => CosUser(
@@ -80,7 +91,9 @@ class CosUser {
     title: _str(j['title']),
     phone: _str(j['phone']),
     statusText: _str(j['status_text']),
-    permissions: j['permissions'] is List ? [for (final p in j['permissions'] as List) p.toString()] : null,
+    permissions: j['permissions'] is List
+        ? [for (final p in j['permissions'] as List) p.toString()]
+        : null,
     primaryDepartmentId: _str(j['primary_department_id']),
     leaderId: _str(j['leader_id']),
     mustChangePassword: j['must_change_password'] == true,
@@ -182,7 +195,8 @@ class CosChat {
     if (j.containsKey('owner_id')) ownerId = _str(j['owner_id']);
     if (j.containsKey('description')) description = _str(j['description']);
     if (j.containsKey('thread_mode')) threadMode = j['thread_mode'] == true;
-    if (j['pinned_message_ids'] is List) pinnedMessageIds = _strList(j['pinned_message_ids']);
+    if (j['pinned_message_ids'] is List)
+      pinnedMessageIds = _strList(j['pinned_message_ids']);
     final u = _iso(j['updated_at']);
     if (u != null) updatedAt = u;
   }
@@ -262,14 +276,15 @@ class CosMessage {
   /// 根消息的话题摘要；没有回复时为 null。
   CosThreadInfo? get thread {
     final t = _map(raw['thread']);
-    if (t == null || ((t['reply_count'] as num?)?.toInt() ?? 0) <= 0) return null;
+    if (t == null || ((t['reply_count'] as num?)?.toInt() ?? 0) <= 0)
+      return null;
     return CosThreadInfo.fromJson(t);
   }
 
   List<CosReaction> get reactions => [
-        for (final r in (raw['reactions'] as List? ?? const []))
-          if (r is Map) CosReaction.fromJson(r.cast<String, dynamic>()),
-      ]..removeWhere((r) => r.count <= 0);
+    for (final r in (raw['reactions'] as List? ?? const []))
+      if (r is Map) CosReaction.fromJson(r.cast<String, dynamic>()),
+  ]..removeWhere((r) => r.count <= 0);
 
   /// AI 助手代某位同学发的消息（后端待改问题 C2）：`content.sent_on_behalf_of = {user_id, name}`。
   /// 由服务端写入，客户端不能伪造；回同学本人的单聊里没有这个字段。
@@ -338,6 +353,25 @@ class CosRecord {
   );
 }
 
+class CosTableFolder {
+  final String folderId;
+  final String name;
+  final String? parentId;
+  final String createdBy;
+  const CosTableFolder({
+    required this.folderId,
+    required this.name,
+    this.parentId,
+    required this.createdBy,
+  });
+  factory CosTableFolder.fromJson(Map<String, dynamic> j) => CosTableFolder(
+    folderId: j['folder_id']?.toString() ?? '',
+    name: j['name']?.toString() ?? '',
+    parentId: _str(j['parent_id']),
+    createdBy: j['created_by']?.toString() ?? '',
+  );
+}
+
 class CosTableMeta {
   final String key;
   final String name;
@@ -351,6 +385,7 @@ class CosTableMeta {
   final String? createdBy;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+  final String? folderId;
 
   /// 二期：表结构版本（字段接口并发保护 base_version）。
   final int? version;
@@ -369,6 +404,7 @@ class CosTableMeta {
     this.createdBy,
     this.createdAt,
     this.updatedAt,
+    this.folderId,
     this.version,
     this.permissions,
   });
@@ -387,7 +423,11 @@ class CosTableMeta {
   /// 内置表的内置字段：不可删、不可改类型。
   bool isBuiltinField(CosFieldMeta f) => f.builtin ?? builtin;
 
-  CosTableMeta copyWith({List<CosFieldMeta>? fields, int? version, String? name}) => CosTableMeta(
+  CosTableMeta copyWith({
+    List<CosFieldMeta>? fields,
+    int? version,
+    String? name,
+  }) => CosTableMeta(
     key: key,
     name: name ?? this.name,
     description: description,
@@ -398,6 +438,7 @@ class CosTableMeta {
     createdBy: createdBy,
     createdAt: createdAt,
     updatedAt: updatedAt,
+    folderId: folderId,
     version: version ?? this.version,
     permissions: permissions,
   );
@@ -419,8 +460,11 @@ class CosTableMeta {
     createdBy: _str(j['created_by']),
     createdAt: _iso(j['created_at']),
     updatedAt: _iso(j['updated_at']),
+    folderId: _str(j['folder_id']),
     version: (j['version'] as num?)?.toInt(),
-    permissions: _map(j['permissions']) == null ? null : CosPermissions.fromJson(_map(j['permissions'])!),
+    permissions: _map(j['permissions']) == null
+        ? null
+        : CosPermissions.fromJson(_map(j['permissions'])!),
     fields:
         (j['fields'] as List?)
             ?.map(
@@ -593,7 +637,10 @@ class CosCalendarEvent {
   final bool busyOnly;
 
   const CosCalendarEvent({
-    this.recurrence, this.recurringEventId, this.originalStartMs, this.isException = false,
+    this.recurrence,
+    this.recurringEventId,
+    this.originalStartMs,
+    this.isException = false,
     required this.eventId,
     required this.title,
     required this.start,
@@ -715,10 +762,12 @@ class CosTask {
   bool get isDone => status == 'done';
 
   /// 某个权限：后端给了就按后端；没给时用 [fallback]。
-  bool can(String key, bool fallback) => permissions == null ? fallback : permissions![key] == true;
+  bool can(String key, bool fallback) =>
+      permissions == null ? fallback : permissions![key] == true;
 
   /// 在某个清单里的分组。
-  String? sectionIn(String listId) => tasklists.where((e) => e.listId == listId).firstOrNull?.sectionId;
+  String? sectionIn(String listId) =>
+      tasklists.where((e) => e.listId == listId).firstOrNull?.sectionId;
 
   factory CosTask.fromJson(Map<String, dynamic> j) => CosTask(
     taskId: j['task_id'] as String? ?? '',
@@ -736,10 +785,16 @@ class CosTask {
     parentId: _str(j['parent_id']),
     subtaskCount: (j['subtask_count'] as num?)?.toInt() ?? 0,
     subtaskDoneCount: (j['subtask_done_count'] as num?)?.toInt() ?? 0,
-    depth: (j['depth'] as num?)?.toInt() ?? (_str(j['parent_id']) == null ? 1 : 2),
-    followerIds: [for (final e in (j['follower_ids'] as List? ?? const [])) e.toString()],
+    depth:
+        (j['depth'] as num?)?.toInt() ?? (_str(j['parent_id']) == null ? 1 : 2),
+    followerIds: [
+      for (final e in (j['follower_ids'] as List? ?? const [])) e.toString(),
+    ],
     permissions: j['permissions'] is Map
-        ? {for (final e in (j['permissions'] as Map).entries) e.key.toString(): e.value == true}
+        ? {
+            for (final e in (j['permissions'] as Map).entries)
+              e.key.toString(): e.value == true,
+          }
         : null,
     tasklists: [
       for (final e in (j['tasklists'] as List? ?? const []))
@@ -754,8 +809,11 @@ class CosTaskListRef {
   final String? sectionId;
   final String? name;
   const CosTaskListRef(this.listId, this.sectionId, [this.name]);
-  factory CosTaskListRef.fromJson(Map<String, dynamic> j) =>
-      CosTaskListRef(j['list_id']?.toString() ?? '', _str(j['section_id']), _str(j['name']));
+  factory CosTaskListRef.fromJson(Map<String, dynamic> j) => CosTaskListRef(
+    j['list_id']?.toString() ?? '',
+    _str(j['section_id']),
+    _str(j['name']),
+  );
 }
 
 // ---------------- 文档 ----------------
@@ -841,7 +899,9 @@ class CosDoc {
     summary: _str(j['summary']),
     markdown: j['markdown'] as String?,
     updatedAtRaw: j['updated_at']?.toString(),
-    permissions: _map(j['permissions']) != null ? CosPermissions.fromJson(_map(j['permissions'])!) : null,
+    permissions: _map(j['permissions']) != null
+        ? CosPermissions.fromJson(_map(j['permissions'])!)
+        : null,
     myRole: _str(j['my_role']),
     ownerId: _str(j['owner_id']),
     folderId: _str(j['folder_id']),
@@ -949,7 +1009,6 @@ class CosMessageHit {
       CosMessageHit(CosMessage.fromJson(j), _str(j['highlight']));
 }
 
-
 // ---------------- 迭代 4：消息增强 ----------------
 
 /// 代发人：AI 助手代哪位同学发的消息。
@@ -964,13 +1023,18 @@ class CosThreadInfo {
   final DateTime? lastReplyAt;
   final List<String> participants;
   final bool followed;
-  const CosThreadInfo({this.replyCount = 0, this.lastReplyAt, this.participants = const [], this.followed = false});
+  const CosThreadInfo({
+    this.replyCount = 0,
+    this.lastReplyAt,
+    this.participants = const [],
+    this.followed = false,
+  });
   factory CosThreadInfo.fromJson(Map<String, dynamic> j) => CosThreadInfo(
-        replyCount: (j['reply_count'] as num?)?.toInt() ?? 0,
-        lastReplyAt: _iso(j['last_reply_at']),
-        participants: _strList(j['participants']),
-        followed: j['followed'] == true,
-      );
+    replyCount: (j['reply_count'] as num?)?.toInt() ?? 0,
+    lastReplyAt: _iso(j['last_reply_at']),
+    participants: _strList(j['participants']),
+    followed: j['followed'] == true,
+  );
 }
 
 class CosReaction {
@@ -981,11 +1045,11 @@ class CosReaction {
   final bool reactedByMe;
   const CosReaction(this.emoji, this.count, this.userIds, this.reactedByMe);
   factory CosReaction.fromJson(Map<String, dynamic> j) => CosReaction(
-        j['emoji']?.toString() ?? '',
-        (j['count'] as num?)?.toInt() ?? _strList(j['user_ids']).length,
-        _strList(j['user_ids']),
-        j['reacted_by_me'] == true,
-      );
+    j['emoji']?.toString() ?? '',
+    (j['count'] as num?)?.toInt() ?? _strList(j['user_ids']).length,
+    _strList(j['user_ids']),
+    j['reacted_by_me'] == true,
+  );
 }
 
 /// 加急提醒（WS `message.urgent` 或 `GET /messages/urgent/pending`）。
@@ -996,9 +1060,9 @@ class CosUrgent {
   final String? preview;
   const CosUrgent(this.messageId, this.chatId, this.fromUserId, [this.preview]);
   factory CosUrgent.fromJson(Map<String, dynamic> j) => CosUrgent(
-        j['message_id']?.toString() ?? '',
-        j['chat_id']?.toString() ?? '',
-        j['from_user_id']?.toString() ?? '',
-        _str(j['preview']),
-      );
+    j['message_id']?.toString() ?? '',
+    j['chat_id']?.toString() ?? '',
+    j['from_user_id']?.toString() ?? '',
+    _str(j['preview']),
+  );
 }

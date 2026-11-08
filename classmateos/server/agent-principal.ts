@@ -254,6 +254,18 @@ export function confirmCardStatus(
   return 'ok';
 }
 
+/**
+ * 代发消息确认（代码审查 A4 后端兜底）：卡片绑定 POST /bot/messages，target_id 包含这次的单个目标。
+ * 一张卡可以确认多人群发；每个目标的使用记录由 routes-im.ts 原子写入，所以同一目标只能发一次。
+ */
+export function sendConfirmCardStatus(msg: MessageRecord | undefined, userId: string, botId: string, target: string, now = Date.now()): ConfirmCardStatus {
+  const b = msg?.content.bound_action as { target_id?: unknown } | undefined;
+  const bound = typeof b?.target_id === 'string' ? [b.target_id] : Array.isArray(b?.target_id) ? b.target_id.filter((x): x is string => typeof x === 'string') : [];
+  const st = confirmCardStatus(msg, userId, botId, { method: 'POST', route: '/api/v1/bot/messages', path: '/api/v1/bot/messages', targets: bound }, now);
+  if (st !== 'ok') return st;
+  return bound.includes(target) ? 'ok' : 'mismatch';
+}
+
 /** 兼容旧调用：只有完全通过（含操作绑定）才算有效。 */
 export function isValidConfirmCard(msg: MessageRecord | undefined, userId: string, botId: string, action?: RequestAction, now = Date.now()): boolean {
   return confirmCardStatus(msg, userId, botId, action, now) === 'ok';

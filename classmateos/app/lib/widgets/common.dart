@@ -17,7 +17,8 @@ String fmtHm(DateTime d) => '${two(d.hour)}:${two(d.minute)}';
 String fmtDate(DateTime d) => '${d.year}-${two(d.month)}-${two(d.day)}';
 String fmtDateCn(DateTime d) => '${d.month}月${d.day}日';
 String fmtDateTime(DateTime d) => '${fmtDate(d)} ${fmtHm(d)}';
-bool sameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+bool sameDay(DateTime a, DateTime b) =>
+    a.year == b.year && a.month == b.month && a.day == b.day;
 DateTime dayStart(DateTime d) => DateTime(d.year, d.month, d.day);
 
 /// 会话列表 / 文档列表的相对时间（今天 HH:mm、昨天、周X、MM-dd、yyyy-MM-dd）。
@@ -48,11 +49,14 @@ String fmtSize(int bytes) {
   if (bytes <= 0) return '-';
   if (bytes < 1024) return '$bytes B';
   if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024) return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
   return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)} GB';
 }
 
-String fmtNumber(num v) => v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+String fmtNumber(num v) =>
+    v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
 
 String greeting() {
   final h = DateTime.now().hour;
@@ -100,7 +104,13 @@ class FsAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final u = url;
     if (u != null && u.isNotEmpty && !isBot && !isGroup) {
-      final fallback = FsAvatar(name: name, seed: seed, size: size, color: color, icon: icon);
+      final fallback = FsAvatar(
+        name: name,
+        seed: seed,
+        size: size,
+        color: color,
+        icon: icon,
+      );
       ImageProvider? img;
       if (u.startsWith('data:')) {
         final i = u.indexOf('base64,');
@@ -114,25 +124,37 @@ class FsAvatar extends StatelessWidget {
       }
       if (img != null) {
         return ClipOval(
-          child: Image(image: img, width: size, height: size, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback),
+          child: Image(
+            image: img,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => fallback,
+          ),
         );
       }
     }
     final bg = color ?? (isBot ? Fs.primary : colorFor(seed ?? name));
-    final ic = icon ?? (isBot ? Icons.smart_toy_rounded : (isGroup ? Icons.groups_rounded : null));
+    final ic =
+        icon ??
+        (isBot
+            ? Icons.smart_toy_rounded
+            : (isGroup ? Icons.groups_rounded : null));
     final trimmed = name.trim();
     final label = trimmed.isEmpty
         ? '?'
         : (RegExp(r'^[A-Za-z]').hasMatch(trimmed)
-            ? trimmed.substring(0, trimmed.length >= 2 ? 2 : 1).toUpperCase()
-            : trimmed.characters.last);
+              ? trimmed.substring(0, trimmed.length >= 2 ? 2 : 1).toUpperCase()
+              : trimmed.characters.last);
     return Container(
       width: size,
       height: size,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: isGroup || isBot ? BoxShape.rectangle : BoxShape.circle,
-        borderRadius: isGroup || isBot ? BorderRadius.circular(size * 0.28) : null,
+        borderRadius: isGroup || isBot
+            ? BorderRadius.circular(size * 0.28)
+            : null,
         gradient: isBot
             ? const LinearGradient(
                 colors: [Color(0xFF4E83FD), Color(0xFF7F3BF5)],
@@ -170,12 +192,20 @@ class FsTag extends StatelessWidget {
     final c = color ?? TagColor.of(text);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(color: c.bg, borderRadius: BorderRadius.circular(4)),
+      decoration: BoxDecoration(
+        color: c.bg,
+        borderRadius: BorderRadius.circular(4),
+      ),
       child: Text(
         text,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(color: c.fg, fontSize: fontSize, fontWeight: FontWeight.w500, height: 1.4),
+        style: TextStyle(
+          color: c.fg,
+          fontSize: fontSize,
+          fontWeight: FontWeight.w500,
+          height: 1.4,
+        ),
       ),
     );
   }
@@ -188,33 +218,43 @@ class FsSearchField extends StatelessWidget {
   final ValueChanged<String>? onChanged;
   final TextEditingController? controller;
   final double height;
-  const FsSearchField({super.key, this.hint = '搜索', this.onChanged, this.controller, this.height = 32});
+  const FsSearchField({
+    super.key,
+    this.hint = '搜索',
+    this.onChanged,
+    this.controller,
+    this.height = 32,
+  });
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: height,
-        child: TextField(
-          controller: controller,
-          onChanged: onChanged,
-          style: const TextStyle(fontSize: 13),
-          decoration: InputDecoration(
-            hintText: hint,
-            hintStyle: const TextStyle(fontSize: 13, color: Fs.text3),
-            prefixIcon: const Icon(Icons.search_rounded, size: 18, color: Fs.text3),
-            prefixIconConstraints: const BoxConstraints(minWidth: 34),
-            contentPadding: EdgeInsets.zero,
-            fillColor: Fs.hover,
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Fs.radius), borderSide: BorderSide.none),
-            enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Fs.radius), borderSide: BorderSide.none),
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(Fs.radius),
-              borderSide: const BorderSide(color: Fs.primary),
-            ),
-          ),
+    height: height,
+    child: TextField(
+      controller: controller,
+      onChanged: onChanged,
+      style: const TextStyle(fontSize: 13),
+      decoration: InputDecoration(
+        hintText: hint,
+        hintStyle: const TextStyle(fontSize: 13, color: Fs.text3),
+        prefixIcon: const Icon(Icons.search_rounded, size: 18, color: Fs.text3),
+        prefixIconConstraints: const BoxConstraints(minWidth: 34),
+        contentPadding: EdgeInsets.zero,
+        fillColor: Fs.hover,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+          borderSide: BorderSide.none,
         ),
-      );
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(Fs.radius),
+          borderSide: const BorderSide(color: Fs.primary),
+        ),
+      ),
+    ),
+  );
 }
 
 // ---------------- 悬停可点击块 ----------------
@@ -229,6 +269,7 @@ class HoverBox extends StatefulWidget {
   final double radius;
   final Color? hoverColor;
   final Color? selectedColor;
+  final Duration duration;
   const HoverBox({
     super.key,
     required this.child,
@@ -240,6 +281,8 @@ class HoverBox extends StatefulWidget {
     this.radius = Fs.radius,
     this.hoverColor,
     this.selectedColor,
+    // 悬停状态应即时切换，避免鼠标移出后出现短暂的残留色。
+    this.duration = Duration.zero,
   });
 
   @override
@@ -252,9 +295,13 @@ class _HoverBoxState extends State<HoverBox> {
   Widget build(BuildContext context) {
     final bg = widget.selected
         ? (widget.selectedColor ?? Fs.selected)
-        : (hover && widget.onTap != null ? (widget.hoverColor ?? Fs.hover) : Colors.transparent);
+        : (hover && widget.onTap != null
+              ? (widget.hoverColor ?? Fs.hover)
+              : Colors.transparent);
     return MouseRegion(
-      cursor: widget.onTap != null ? SystemMouseCursors.click : MouseCursor.defer,
+      cursor: widget.onTap != null
+          ? SystemMouseCursors.click
+          : MouseCursor.defer,
       onEnter: (_) => setState(() => hover = true),
       onExit: (_) => setState(() => hover = false),
       child: GestureDetector(
@@ -263,10 +310,13 @@ class _HoverBoxState extends State<HoverBox> {
         onSecondaryTap: widget.onSecondaryTap,
         onLongPress: widget.onSecondaryTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 90),
+          duration: widget.duration,
           margin: widget.margin,
           padding: widget.padding,
-          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(widget.radius)),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(widget.radius),
+          ),
           child: widget.child,
         ),
       ),
@@ -286,10 +336,10 @@ class _HoverRevealState extends State<HoverReveal> {
   bool hover = false;
   @override
   Widget build(BuildContext context) => MouseRegion(
-        onEnter: (_) => setState(() => hover = true),
-        onExit: (_) => setState(() => hover = false),
-        child: widget.builder(context, hover),
-      );
+    onEnter: (_) => setState(() => hover = true),
+    onExit: (_) => setState(() => hover = false),
+    child: widget.builder(context, hover),
+  );
 }
 
 // ---------------- 面板 / 空状态 ----------------
@@ -311,31 +361,40 @@ class PaneHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Container(
-        height: height,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Fs.line))),
-        child: Row(
-          children: [
-            if (leading != null) ...[leading!, const SizedBox(width: 10)],
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-                  if (subtitle != null)
-                    DefaultTextStyle(
-                        style: const TextStyle(fontSize: 12, color: Fs.text3), child: subtitle!),
-                ],
+    height: height,
+    padding: const EdgeInsets.symmetric(horizontal: 16),
+    decoration: const BoxDecoration(
+      border: Border(bottom: BorderSide(color: Fs.line)),
+    ),
+    child: Row(
+      children: [
+        if (leading != null) ...[leading!, const SizedBox(width: 10)],
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-            ...actions,
-          ],
+              if (subtitle != null)
+                DefaultTextStyle(
+                  style: const TextStyle(fontSize: 12, color: Fs.text3),
+                  child: subtitle!,
+                ),
+            ],
+          ),
         ),
-      );
+        ...actions,
+      ],
+    ),
+  );
 }
 
 class EmptyState extends StatelessWidget {
@@ -343,33 +402,56 @@ class EmptyState extends StatelessWidget {
   final String title;
   final String? subtitle;
   final Widget? action;
-  const EmptyState({super.key, required this.icon, required this.title, this.subtitle, this.action});
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.action,
+  });
 
   @override
   Widget build(BuildContext context) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 88,
-                height: 88,
-                decoration: const BoxDecoration(color: Fs.primaryBg, shape: BoxShape.circle),
-                child: Icon(icon, size: 40, color: Fs.primary.withValues(alpha: 0.65)),
-              ),
-              const SizedBox(height: 16),
-              Text(title, style: const TextStyle(fontSize: 15, color: Fs.text1, fontWeight: FontWeight.w500)),
-              if (subtitle != null) ...[
-                const SizedBox(height: 6),
-                Text(subtitle!,
-                    textAlign: TextAlign.center, style: const TextStyle(fontSize: 13, color: Fs.text3)),
-              ],
-              if (action != null) ...[const SizedBox(height: 16), action!],
-            ],
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 88,
+            height: 88,
+            decoration: const BoxDecoration(
+              color: Fs.primaryBg,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              icon,
+              size: 40,
+              color: Fs.primary.withValues(alpha: 0.65),
+            ),
           ),
-        ),
-      );
+          const SizedBox(height: 16),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 15,
+              color: Fs.text1,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (subtitle != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              subtitle!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 13, color: Fs.text3),
+            ),
+          ],
+          if (action != null) ...[const SizedBox(height: 16), action!],
+        ],
+      ),
+    ),
+  );
 }
 
 class FsIconButton extends StatelessWidget {
@@ -378,18 +460,31 @@ class FsIconButton extends StatelessWidget {
   final VoidCallback? onPressed;
   final double size;
   final Color? color;
-  const FsIconButton(
-      {super.key, required this.icon, required this.tooltip, this.onPressed, this.size = 20, this.color});
+  final Color? hoverColor;
+  const FsIconButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    this.onPressed,
+    this.size = 20,
+    this.color,
+    this.hoverColor,
+  });
 
   @override
   Widget build(BuildContext context) => Tooltip(
-        message: tooltip,
-        child: HoverBox(
-          onTap: onPressed,
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: size, color: color ?? (onPressed == null ? Fs.textDisabled : Fs.text2)),
-        ),
-      );
+    message: tooltip,
+    child: HoverBox(
+      onTap: onPressed,
+      hoverColor: hoverColor,
+      padding: const EdgeInsets.all(6),
+      child: Icon(
+        icon,
+        size: size,
+        color: color ?? (onPressed == null ? Fs.textDisabled : Fs.text2),
+      ),
+    ),
+  );
 }
 
 // ---------------- 提示 / 确认 ----------------
@@ -398,30 +493,48 @@ void showToast(BuildContext context, String msg, {bool error = false}) {
   final m = ScaffoldMessenger.maybeOf(context);
   if (m == null) return;
   m.hideCurrentSnackBar();
-  m.showSnackBar(SnackBar(
-    duration: Duration(milliseconds: error ? 3500 : 1800),
-    content: Row(
-      children: [
-        Icon(error ? Icons.error_rounded : Icons.check_circle_rounded,
-            color: error ? Fs.red : Fs.green, size: 18),
-        const SizedBox(width: 8),
-        Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
-      ],
+  m.showSnackBar(
+    SnackBar(
+      duration: Duration(milliseconds: error ? 3500 : 1800),
+      content: Row(
+        children: [
+          Icon(
+            error ? Icons.error_rounded : Icons.check_circle_rounded,
+            color: error ? Fs.red : Fs.green,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(msg, style: const TextStyle(fontSize: 13))),
+        ],
+      ),
     ),
-  ));
+  );
 }
 
-Future<bool> confirmDialog(BuildContext context,
-    {required String title, required String content, String ok = '确定', bool danger = false}) async {
+Future<bool> confirmDialog(
+  BuildContext context, {
+  required String title,
+  required String content,
+  String ok = '确定',
+  bool danger = false,
+}) async {
   final r = await showDialog<bool>(
     context: context,
     builder: (ctx) => AlertDialog(
       title: Text(title),
-      content: Text(content, style: const TextStyle(color: Fs.text2, fontSize: 14)),
+      content: Text(
+        content,
+        style: const TextStyle(color: Fs.text2, fontSize: 14),
+      ),
       actions: [
-        OutlinedButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+        OutlinedButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('取消'),
+        ),
         FilledButton(
-          style: danger ? FilledButton.styleFrom(backgroundColor: Fs.red) : null,
+          style: danger
+              ? FilledButton.styleFrom(backgroundColor: Fs.red)
+              : null,
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(ok),
         ),
@@ -432,7 +545,10 @@ Future<bool> confirmDialog(BuildContext context,
 }
 
 Future<void> openExternal(BuildContext context, String url) async {
-  final ok = await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  final ok = await launchUrl(
+    Uri.parse(url),
+    mode: LaunchMode.externalApplication,
+  );
   if (!ok && context.mounted) showToast(context, '无法打开链接', error: true);
 }
 
@@ -566,7 +682,12 @@ class _UserPickerDialogState extends State<_UserPickerDialog> {
   @override
   Widget build(BuildContext context) {
     final list = widget.users
-        .where((u) => keyword.isEmpty || u.name.contains(keyword) || u.userId.contains(keyword))
+        .where(
+          (u) =>
+              keyword.isEmpty ||
+              u.name.contains(keyword) ||
+              u.userId.contains(keyword),
+        )
         .toList();
     return Dialog(
       child: SizedBox(
@@ -577,12 +698,24 @@ class _UserPickerDialogState extends State<_UserPickerDialog> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
-              child: Row(children: [
-                Expanded(
-                    child: Text(widget.title,
-                        style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
-                FsIconButton(icon: Icons.close_rounded, tooltip: '关闭', onPressed: () => Navigator.pop(context)),
-              ]),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  FsIconButton(
+                    icon: Icons.close_rounded,
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
             ),
             if (widget.askGroupName)
               Padding(
@@ -594,76 +727,116 @@ class _UserPickerDialogState extends State<_UserPickerDialog> {
               ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: FsSearchField(hint: '搜索成员', onChanged: (v) => setState(() => keyword = v.trim())),
+              child: FsSearchField(
+                hint: '搜索成员',
+                onChanged: (v) => setState(() => keyword = v.trim()),
+              ),
             ),
             const SizedBox(height: 8),
             Expanded(
               child: list.isEmpty
-                  ? const Center(child: Text('没有匹配的成员', style: TextStyle(color: Fs.text3)))
+                  ? const Center(
+                      child: Text('没有匹配的成员', style: TextStyle(color: Fs.text3)),
+                    )
                   : ListView(
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                       children: [
                         for (final u in list)
                           HoverBox(
-                            selected: !widget.multiple && picked.contains(u.userId),
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                            selected:
+                                !widget.multiple && picked.contains(u.userId),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 8,
+                            ),
                             onTap: () => setState(() {
                               if (widget.multiple) {
-                                picked.contains(u.userId) ? picked.remove(u.userId) : picked.add(u.userId);
+                                picked.contains(u.userId)
+                                    ? picked.remove(u.userId)
+                                    : picked.add(u.userId);
                               } else {
                                 picked
                                   ..clear()
                                   ..add(u.userId);
                               }
                             }),
-                            child: Row(children: [
-                              if (widget.multiple)
-                                Padding(
-                                  padding: const EdgeInsets.only(right: 8),
-                                  child: Icon(
-                                    picked.contains(u.userId)
-                                        ? Icons.check_box_rounded
-                                        : Icons.check_box_outline_blank_rounded,
-                                    color: picked.contains(u.userId) ? Fs.primary : Fs.textDisabled,
-                                    size: 20,
+                            child: Row(
+                              children: [
+                                if (widget.multiple)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: Icon(
+                                      picked.contains(u.userId)
+                                          ? Icons.check_box_rounded
+                                          : Icons
+                                                .check_box_outline_blank_rounded,
+                                      color: picked.contains(u.userId)
+                                          ? Fs.primary
+                                          : Fs.textDisabled,
+                                      size: 20,
+                                    ),
+                                  ),
+                                FsAvatar(
+                                  name: u.name,
+                                  seed: u.userId,
+                                  size: 32,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        u.name,
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                                      Text(
+                                        u.email ?? u.userId,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Fs.text3,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
-                              FsAvatar(name: u.name, seed: u.userId, size: 32),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(u.name, style: const TextStyle(fontSize: 14)),
-                                    Text(u.email ?? u.userId,
-                                        style: const TextStyle(fontSize: 12, color: Fs.text3)),
-                                  ],
-                                ),
-                              ),
-                              if (u.role == 'admin') const FsTag('管理员', color: TagColor.blue),
-                            ]),
+                                if (u.role == 'admin')
+                                  const FsTag('管理员', color: TagColor.blue),
+                              ],
+                            ),
                           ),
                       ],
                     ),
             ),
             Container(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-              decoration: const BoxDecoration(border: Border(top: BorderSide(color: Fs.lineLight))),
-              child: Row(children: [
-                Text('已选 ${picked.length} 人', style: const TextStyle(color: Fs.text2, fontSize: 13)),
-                const Spacer(),
-                OutlinedButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-                const SizedBox(width: 10),
-                FilledButton(
-                  onPressed: picked.isEmpty && !widget.multiple
-                      ? null
-                      : () {
-                          widget.onGroupName?.call(groupName.text.trim());
-                          Navigator.pop(context, picked.toList());
-                        },
-                  child: const Text('确定'),
-                ),
-              ]),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: Fs.lineLight)),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    '已选 ${picked.length} 人',
+                    style: const TextStyle(color: Fs.text2, fontSize: 13),
+                  ),
+                  const Spacer(),
+                  OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(
+                    onPressed: picked.isEmpty && !widget.multiple
+                        ? null
+                        : () {
+                            widget.onGroupName?.call(groupName.text.trim());
+                            Navigator.pop(context, picked.toList());
+                          },
+                    child: const Text('确定'),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -674,7 +847,11 @@ class _UserPickerDialogState extends State<_UserPickerDialog> {
 
 // ---------------- 日期时间选择 ----------------
 
-Future<DateTime?> pickDateTime(BuildContext context, {DateTime? initial, bool withTime = true}) async {
+Future<DateTime?> pickDateTime(
+  BuildContext context, {
+  DateTime? initial,
+  bool withTime = true,
+}) async {
   final init = initial ?? DateTime.now();
   final d = await showDatePicker(
     context: context,
@@ -684,7 +861,10 @@ Future<DateTime?> pickDateTime(BuildContext context, {DateTime? initial, bool wi
   );
   if (d == null || !context.mounted) return null;
   if (!withTime) return DateTime(d.year, d.month, d.day);
-  final t = await showTimePicker(context: context, initialTime: TimeOfDay.fromDateTime(init));
+  final t = await showTimePicker(
+    context: context,
+    initialTime: TimeOfDay.fromDateTime(init),
+  );
   return DateTime(d.year, d.month, d.day, t?.hour ?? 0, t?.minute ?? 0);
 }
 
@@ -706,27 +886,36 @@ class DateField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => InkWell(
-        borderRadius: BorderRadius.circular(Fs.radius),
-        onTap: !enabled
-            ? null
-            : () async {
-                final d = await pickDateTime(context, initial: value, withTime: withTime);
-                if (d != null) onChanged(d);
-              },
-        child: InputDecorator(
-          decoration: InputDecoration(
-            enabled: enabled,
-            suffixIcon: value != null && enabled
-                ? IconButton(
-                    icon: const Icon(Icons.close_rounded, size: 16),
-                    onPressed: () => onChanged(null),
-                  )
-                : const Icon(Icons.calendar_today_outlined, size: 16),
-          ),
-          child: Text(
-            value == null ? hint : (withTime ? fmtDateTime(value!) : fmtDate(value!)),
-            style: TextStyle(fontSize: 14, color: value == null ? Fs.text3 : Fs.text1),
-          ),
+    borderRadius: BorderRadius.circular(Fs.radius),
+    onTap: !enabled
+        ? null
+        : () async {
+            final d = await pickDateTime(
+              context,
+              initial: value,
+              withTime: withTime,
+            );
+            if (d != null) onChanged(d);
+          },
+    child: InputDecorator(
+      decoration: InputDecoration(
+        enabled: enabled,
+        suffixIcon: value != null && enabled
+            ? IconButton(
+                icon: const Icon(Icons.close_rounded, size: 16),
+                onPressed: () => onChanged(null),
+              )
+            : const Icon(Icons.calendar_today_outlined, size: 16),
+      ),
+      child: Text(
+        value == null
+            ? hint
+            : (withTime ? fmtDateTime(value!) : fmtDate(value!)),
+        style: TextStyle(
+          fontSize: 14,
+          color: value == null ? Fs.text3 : Fs.text1,
         ),
-      );
+      ),
+    ),
+  );
 }

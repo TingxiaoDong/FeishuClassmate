@@ -3,6 +3,7 @@ import { isThreadOnly } from './repo.js';
 import type { EntityRecord } from './repo.js';
 import type { DocAccessRequest } from './repo.js';
 import type { ResourceGrant } from './repo.js';
+import { ACL_ENTITY_KINDS, AclFence, DELIVERY_KIND, deliveryRecordData, evaluateDelivery, type AutomationDeliveryCommit, type AutomationDeliveryOutcome } from './automation-delivery-core.js';
 /**
  * MemoryRepo：进程内存实现（开发 / 测试默认）。语义与 PgRepo 保持一致，
  * 共享同一套契约测试（tests/classmateos/frontend-contract.test.ts）。
@@ -15,6 +16,7 @@ import type {
   ChatView,
   CustomFieldRecord,
   CustomTableRecord,
+  TableFolderRecord,
   NotificationRecord,
   NotificationSettings,
   TableSchemaRecord,
@@ -48,6 +50,9 @@ const includesCI = (hay: string | null | undefined, needle: string) =>
 
 export class MemoryRepo implements Repo {
   private readonly entities = new Map<string, EntityRecord>();
+  /** 权限围栏：收回权限的写操作取共享，自动化投递取排他（见 automation-delivery-core）。 */
+  private readonly aclFence = new AclFence();
+  private aclWrite<T>(fn: () => T): Promise<T> { return this.aclFence.run(false, fn); }
   async getEntity(kind: string, id: string) {
     const e = this.entities.get(`${kind}\u0000${id}`);
     return e ? structuredClone(e) : undefined;
@@ -58,14 +63,71 @@ export class MemoryRepo implements Repo {
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
       .map((e) => structuredClone(e));
   }
-  async saveEntity(rec: EntityRecord, expectedVersion: number) {
+  async saveEntity(rec: EntityRecord, expectedVersion: number): Promise<boolean> {
+    if (ACL_ENTITY_KINDS.has(rec.kind)) return this.aclWrite(() => this.saveEntitySync(rec, expectedVersion));
+    return this.saveEntitySync(rec, expectedVersion);
+  }
+  private saveEntitySync(rec: EntityRecord, expectedVersion: number) {
     const key = `${rec.kind}\u0000${rec.id}`;
     if ((this.entities.get(key)?.version ?? 0) !== expectedVersion) return false;
     this.entities.set(key, structuredClone({ ...rec, version: expectedVersion + 1 }));
     return true;
   }
-  async deleteEntity(kind: string, id: string) {
+  async deleteEntity(kind: string, id: string): Promise<boolean> {
+    if (ACL_ENTITY_KINDS.has(kind)) return this.aclWrite(() => this.entities.delete(`${kind}\u0000${id}`));
     return this.entities.delete(`${kind}\u0000${id}`);
+  }
+  /**
+   * 先拿排他权限围栏并做提交时复核（期间收回权限的写操作都要等待），
+   * 然后同步执行提交（没有 await），在单线程内与其他写操作天然互斥，等价于一个事务。
+   */
+  async commitAutomationDelivery(input: AutomationDeliveryCommit): Promise<AutomationDeliveryOutcome> {
+    return this.aclFence.run(true, async () => {
+      const recheckCode = input.blockedCode || !input.recheck ? null : await input.recheck(this);
+      return this.commitAutomationDeliverySync(recheckCode ? { ...input, blockedCode: recheckCode } : input);
+    });
+  }
+  private commitAutomationDeliverySync(input: AutomationDeliveryCommit): AutomationDeliveryOutcome {
+    const ent = (kind: string, id: string) => this.entities.get(`${kind}\u0000${id}`);
+    const existing = ent(DELIVERY_KIND, input.deliveryKey);
+    const counts = { run: 0, day: 0, targetRun: 0, targetDay: 0 };
+    for (const e of this.entities.values()) {
+      if (e.kind !== DELIVERY_KIND || e.scope !== input.grantId || e.data.status !== 'sent') continue;
+      const sameRun = e.data.runId === input.runId, sameDay = e.data.dayKey === input.dayKey, sameTarget = e.data.targetKey === input.targetKey;
+      if (sameRun) counts.run++;
+      if (sameDay) counts.day++;
+      if (sameRun && sameTarget) counts.targetRun++;
+      if (sameDay && sameTarget) counts.targetDay++;
+    }
+    const isMember = input.memberCheck
+      ? !!this.members.get(input.memberCheck.chatId)?.some((m) => m.user_id === input.memberCheck!.userId)
+      : null;
+    const decision = evaluateDelivery(input, {
+      grant: ent(input.grantKind, input.draftId), run: ent(input.runKind, input.runId), task: ent(input.task.kind, input.task.id), isMember, existing, counts,
+    });
+    if (decision.kind === 'reject') return { status: 'rejected', code: decision.code };
+    if (decision.kind === 'duplicate') {
+      const m = this.messageIndex.get(decision.messageId);
+      if (!m) throw new Error(`automation delivery message missing: ${decision.messageId}`);
+      return { status: 'sent', message: clone(m), duplicate: true };
+    }
+    const at = new Date(input.nowMs).toISOString();
+    const save = (data: Record<string, unknown>) => {
+      const key = `${DELIVERY_KIND}\u0000${input.deliveryKey}`;
+      const prev = this.entities.get(key);
+      this.entities.set(key, structuredClone({ kind: DELIVERY_KIND, id: input.deliveryKey, scope: input.grantId, data, version: (prev?.version ?? 0) + 1, created_at: prev?.created_at ?? at, updated_at: at }));
+    };
+    if (decision.kind === 'block') {
+      save(deliveryRecordData(input, 'blocked', { code: decision.code }, existing));
+      return { status: 'blocked', code: decision.code };
+    }
+    if (!this.chats.has(input.message!.chat_id)) {
+      save(deliveryRecordData(input, 'blocked', { code: 'PERMISSION_DENIED' }, existing));
+      return { status: 'blocked', code: 'PERMISSION_DENIED' };
+    }
+    const res = this.insertMessageSync(input.message!);
+    save(deliveryRecordData(input, 'sent', { messageId: res.message.message_id }, existing));
+    return { status: 'sent', message: res.message, duplicate: res.duplicate };
   }
 
   private readonly accessRequests = new Map<string, DocAccessRequest>();
@@ -78,7 +140,10 @@ export class MemoryRepo implements Repo {
     this.accessRequests.set(r.request_id, structuredClone(r));
     return true;
   }
-  async resolveDocAccessRequest(id: string, status: 'approved' | 'rejected', grant: ResourceGrant) {
+  async resolveDocAccessRequest(id: string, status: 'approved' | 'rejected', grant: ResourceGrant): Promise<boolean> {
+    return this.aclWrite(() => this.resolveDocAccessRequestSync(id, status, grant));
+  }
+  private resolveDocAccessRequestSync(id: string, status: 'approved' | 'rejected', grant: ResourceGrant) {
     const r = this.accessRequests.get(id);
     const key = `doc:${grant.resource_id}`;
     if (!r || r.status !== 'pending' || r.doc_id !== grant.resource_id || (this.resourceGrants.get(key)?.version ?? 0) !== grant.version) return false;
@@ -93,10 +158,12 @@ export class MemoryRepo implements Repo {
     return value ? structuredClone(value) : undefined;
   }
   async saveResourceGrant(grant: ResourceGrant, expectedVersion: number): Promise<boolean> {
-    const key = `${grant.resource_type}:${grant.resource_id}`;
-    if ((this.resourceGrants.get(key)?.version ?? 0) !== expectedVersion) return false;
-    this.resourceGrants.set(key, structuredClone({ ...grant, version: expectedVersion + 1 }));
-    return true;
+    return this.aclWrite(() => {
+      const key = `${grant.resource_type}:${grant.resource_id}`;
+      if ((this.resourceGrants.get(key)?.version ?? 0) !== expectedVersion) return false;
+      this.resourceGrants.set(key, structuredClone({ ...grant, version: expectedVersion + 1 }));
+      return true;
+    });
   }
 
   private readonly users = new Map<string, UserRecord>();
@@ -113,6 +180,7 @@ export class MemoryRepo implements Repo {
   private readonly docs = new Map<string, DocRecord>();
   private readonly devices = new Map<string, DeviceRecord>();
   private readonly customTables = new Map<string, CustomTableRecord>();
+  private readonly tableFolders = new Map<string, TableFolderRecord>();
   private readonly tableSchemas = new Map<string, TableSchemaRecord>();
   private readonly views = new Map<string, TableViewRecord>();
   private readonly notifications: NotificationRecord[] = [];
@@ -145,6 +213,9 @@ export class MemoryRepo implements Repo {
   }
 
   async updateUser(userId: string, patch: UserPatch) {
+    return this.aclWrite(() => this.updateUserSync(userId, patch));
+  }
+  private updateUserSync(userId: string, patch: UserPatch) {
     const u = this.users.get(userId);
     if (!u) return undefined;
     for (const [k, v] of Object.entries(patch)) {
@@ -244,6 +315,9 @@ export class MemoryRepo implements Repo {
   }
 
   async removeMember(chatId: string, userId: string) {
+    return this.aclWrite(() => this.removeMemberSync(chatId, userId));
+  }
+  private removeMemberSync(chatId: string, userId: string) {
     const list = this.members.get(chatId);
     if (!list) return false;
     const i = list.findIndex((m) => m.user_id === userId);
@@ -305,6 +379,10 @@ export class MemoryRepo implements Repo {
   // ---------------- messages ----------------
 
   async insertMessage(m: NewMessage) {
+    return this.insertMessageSync(m);
+  }
+
+  private insertMessageSync(m: NewMessage): { message: MessageRecord; duplicate: boolean } {
     const list = this.messages.get(m.chat_id);
     if (!list) throw new Error(`chat not found: ${m.chat_id}`);
     if (m.client_msg_id) {
@@ -536,7 +614,7 @@ export class MemoryRepo implements Repo {
         }
       }
     }
-    if (opts.scope !== 'mine') {
+    if (opts.scope === 'shared') {
       const links = this.fileLinks
         .filter((l) => l.source_type === 'chat' && l.chat_id)
         .sort((a, b) => b.created_at.localeCompare(a.created_at));
@@ -671,7 +749,7 @@ export class MemoryRepo implements Repo {
   }
 
   async deleteDoc(docId: string) {
-    return this.docs.delete(docId);
+    return this.aclWrite(() => this.docs.delete(docId));
   }
 
   async listDocs(opts: { userId: string; scope: 'all' | 'mine' | 'shared'; keyword?: string; limit: number; offset: number }) {
@@ -690,6 +768,13 @@ export class MemoryRepo implements Repo {
       .slice(0, opts.limit)
       .map(clone);
   }
+
+  // ---------------- table folders ----------------
+  async listTableFolders() { return [...this.tableFolders.values()].sort((a,b) => a.created_at.localeCompare(b.created_at)).map(clone); }
+  async getTableFolder(id: string) { const f = this.tableFolders.get(id); return f ? clone(f) : undefined; }
+  async insertTableFolder(f: TableFolderRecord) { if (this.tableFolders.has(f.folder_id)) return false; this.tableFolders.set(f.folder_id, clone(f)); return true; }
+  async updateTableFolder(f: TableFolderRecord) { if (!this.tableFolders.has(f.folder_id)) return false; this.tableFolders.set(f.folder_id, clone(f)); return true; }
+  async deleteTableFolder(id: string) { return this.tableFolders.delete(id); }
 
   // ---------------- custom tables ----------------
 

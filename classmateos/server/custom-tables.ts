@@ -5,7 +5,7 @@
  *   - describeCustomTable：与 GET /tables 单项结构一致的返回体。
  */
 
-import type { FieldDef, TableDef } from '../../src/bitable/schema.js';
+import type { FieldDef, TableDef } from './builtin-schema.js';
 import type { FieldError } from './context.js';
 import type { CustomFieldRecord, CustomTableRecord } from './repo.js';
 import { COLOR_NAMES } from './table-meta.js';
@@ -275,6 +275,7 @@ export function describeCustomTable(t: CustomTableRecord) {
     created_by: t.created_by,
     created_at: t.created_at,
     updated_at: t.updated_at,
+    folder_id: t.folder_id ?? null,
     fields: t.fields.map((f) => ({
       field_name: f.field_name,
       title: f.title,

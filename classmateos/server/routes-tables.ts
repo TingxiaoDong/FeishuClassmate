@@ -1,6 +1,6 @@
 /**
  * 多维表格（《前端接口需求文档》第 8 节 +《多维表格新建数据表接口需求》+《二期功能需求文档》R-BT-01 ~ 06）。
- * 数据表 = 内置表（src/bitable/schema.ts，可叠加结构覆盖层）+ 自定义表（POST /tables）。
+ * 数据表 = 内置表（classmateos/server/builtin-schema.ts，可叠加结构覆盖层）+ 自定义表（POST /tables）。
  *
  *   本文件：表列表 / 单表 / 新建表、记录 CRUD（含按视图计算、分组）、批量操作、实时事件
  *   routes-table-fields.ts：字段管理（R-BT-02）
@@ -9,10 +9,10 @@
 
 import type { FastifyReply } from 'fastify';
 import { randomBytes } from 'node:crypto';
-import { ALL_TABLES } from '../../src/bitable/schema.js';
+import { ALL_TABLES } from './builtin-schema.js';
 import { fail, invalid, type AuthedUser, type Ctx, type FieldError } from './context.js';
 import { parseCreateTable } from './custom-tables.js';
-import { nowIso, type CustomTableRecord } from './repo.js';
+import { nowIso, type CustomTableRecord, type TableFolderRecord } from './repo.js';
 import { canAccessRecord, filterAccessible, hasRowAccessRule } from './row-access.js';
 import { registerTableFieldRoutes } from './routes-table-fields.js';
 import { registerTableViewRoutes } from './routes-table-views.js';
@@ -31,6 +31,8 @@ const VIEW_DELETE_MAX = 10_000;
 
 export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock; notifications?: NotificationService }): TableService {
   const { app, store, repo } = ctx;
+  const TABLE_FOLDER_LINK = 'table_folder_link';
+  const folderOf = async (key: string) => (await repo.getEntity(TABLE_FOLDER_LINK, key))?.data.folder_id as string | null | undefined;
   const svc = new TableService(ctx, opts.clock);
   const access = tableAccessOf(ctx);
   // 表级权限：统一挡在 /tables/:table_key/** 前面（R-BT-09）
@@ -166,6 +168,75 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock; notification
   const explain = (res: ResolvedTable, errors: FieldError[]) =>
     errors.map((e) => `「${titleOf(res, e.field)}」${e.message}`).join('；');
 
+  // ---------------- 自定义表文件夹 ----------------
+  const folderVisible = (f: TableFolderRecord, me: AuthedUser) => me.role === 'admin' || f.created_by === me.sub;
+  const folderChildren = async (id: string) => (await repo.listTableFolders()).filter((f) => f.parent_id === id);
+  app.get('/api/v1/table-folders', async (req, reply) => {
+    const me = await ctx.requireUser(req, reply); if (!me) return;
+    return { items: (await repo.listTableFolders()).filter((f) => folderVisible(f, me)) };
+  });
+  app.post('/api/v1/table-folders', async (req, reply) => {
+    const me = await ctx.requireUser(req, reply); if (!me) return;
+    const body = (req.body ?? {}) as { name?: unknown; parent_id?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 50) return invalid(reply, [{ field: 'name', message: '文件夹名称不能为空且不超过 50 个字' }]);
+    const parentId = body.parent_id == null || body.parent_id === '' ? null : String(body.parent_id);
+    if (parentId) {
+      const parent = await repo.getTableFolder(parentId);
+      if (!parent || !folderVisible(parent, me)) return fail(reply, 404, '上级文件夹不存在', { code: 'FOLDER_NOT_FOUND' });
+    }
+    const now = nowIso();
+    const f: TableFolderRecord = { folder_id: `folder_${randomBytes(5).toString('hex')}`, name, parent_id: parentId, created_by: me.sub, created_at: now, updated_at: now };
+    await repo.insertTableFolder(f);
+    return reply.code(201).send(f);
+  });
+  app.patch('/api/v1/table-folders/:folder_id', async (req, reply) => {
+    const me = await ctx.requireUser(req, reply); if (!me) return;
+    const id = (req.params as { folder_id: string }).folder_id;
+    const old = await repo.getTableFolder(id);
+    if (!old || !folderVisible(old, me)) return fail(reply, 404, '文件夹不存在', { code: 'FOLDER_NOT_FOUND' });
+    const body = (req.body ?? {}) as { name?: unknown; parent_id?: unknown };
+    const name = body.name === undefined ? old.name : typeof body.name === 'string' ? body.name.trim() : '';
+    if (!name || name.length > 50) return invalid(reply, [{ field: 'name', message: '文件夹名称不能为空且不超过 50 个字' }]);
+    const parentId = body.parent_id === undefined ? old.parent_id : (body.parent_id == null || body.parent_id === '' ? null : String(body.parent_id));
+    if (parentId === id) return fail(reply, 422, '文件夹不能放进自己里面', { code: 'FOLDER_CYCLE' });
+    if (parentId) {
+      const parent = await repo.getTableFolder(parentId);
+      if (!parent || !folderVisible(parent, me)) return fail(reply, 404, '上级文件夹不存在', { code: 'FOLDER_NOT_FOUND' });
+      let cursor: string | null = parent.parent_id;
+      const all = await repo.listTableFolders();
+      while (cursor) { if (cursor === id) return fail(reply, 422, '文件夹不能移动到自己的子文件夹中', { code: 'FOLDER_CYCLE' }); cursor = all.find((x) => x.folder_id === cursor)?.parent_id ?? null; }
+    }
+    const next = { ...old, name, parent_id: parentId, updated_at: nowIso() };
+    if (!(await repo.updateTableFolder(next))) return fail(reply, 409, '文件夹已被修改，请刷新后重试', { code: 'VERSION_CONFLICT' });
+    return next;
+  });
+  app.delete('/api/v1/table-folders/:folder_id', async (req, reply) => {
+    const me = await ctx.requireUser(req, reply); if (!me) return;
+    const id = (req.params as { folder_id: string }).folder_id;
+    const f = await repo.getTableFolder(id);
+    if (!f || !folderVisible(f, me)) return fail(reply, 404, '文件夹不存在', { code: 'FOLDER_NOT_FOUND' });
+    if ((await folderChildren(id)).length) return fail(reply, 409, '文件夹不为空，请先处理子文件夹', { code: 'FOLDER_NOT_EMPTY' });
+    const tables = await repo.listCustomTables();
+    for (const table of tables) if ((await folderOf(table.key)) === id) return fail(reply, 409, '文件夹不为空，请先移动其中的数据表', { code: 'FOLDER_NOT_EMPTY' });
+    await repo.deleteTableFolder(id);
+    return reply.code(204).send();
+  });
+  app.patch('/api/v1/tables/:table_key/folder', async (req, reply) => {
+    const me = await ctx.requireUser(req, reply); if (!me) return;
+    const key = (req.params as { table_key: string }).table_key;
+    const res = await svc.load(key); if (!res || res.schema.builtin) return fail(reply, 404, '只能整理自定义数据表', { code: 'TABLE_NOT_FOUND' });
+    const flags = await access.flags(me, res.schema); if (!flags.can_manage) return fail(reply, 403, '只有表的管理者可以移动数据表', { code: 'FORBIDDEN' });
+    const body = (req.body ?? {}) as { folder_id?: unknown };
+    const id = body.folder_id == null || body.folder_id === '' ? null : String(body.folder_id);
+    if (id) { const f = await repo.getTableFolder(id); if (!f || !folderVisible(f, me)) return fail(reply, 404, '目标文件夹不存在', { code: 'FOLDER_NOT_FOUND' }); }
+    const now = nowIso();
+    const old = await repo.getEntity(TABLE_FOLDER_LINK, key);
+    if (id) await repo.saveEntity({ kind: TABLE_FOLDER_LINK, id: key, scope: 'global', data: { folder_id: id }, version: old?.version ?? 0, created_at: old?.created_at ?? now, updated_at: now }, old?.version ?? 0);
+    else if (old) await repo.deleteEntity(TABLE_FOLDER_LINK, key);
+    return { table_key: key, folder_id: id };
+  });
+
   // ---------------- 表 ----------------
 
   // 内置表在前（固定顺序），自定义表按创建时间正序
@@ -174,8 +245,9 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock; notification
     if (!me) return;
     const items = [];
     for (const r of await svc.listAll()) {
+      if (r.schema.builtin) continue;
       const flags = await access.flags(me, r.schema);
-      if (flags.can_view) items.push(describeSchema(r.schema, me, flags));
+      if (flags.can_view) items.push({ ...describeSchema(r.schema, me, flags), folder_id: r.schema.builtin ? null : (await folderOf(r.schema.key)) ?? null });
     }
     return { items };
   });
@@ -249,8 +321,14 @@ export function registerTableRoutes(ctx: Ctx, opts: { clock: Clock; notification
         await store.dropTable?.(key).catch(() => undefined);
         throw err;
       }
+      const folderId = typeof (req.body as Record<string, unknown>)?.folder_id === 'string' ? String((req.body as Record<string, unknown>).folder_id) : null;
+      if (folderId) {
+        const f = await repo.getTableFolder(folderId);
+        if (!f) return fail(reply, 404, '目标文件夹不存在', { code: 'FOLDER_NOT_FOUND' });
+        await repo.saveEntity({ kind: TABLE_FOLDER_LINK, id: key, scope: 'global', data: { folder_id: folderId }, version: 0, created_at: now, updated_at: now }, 0);
+      }
       ctx.publish('table.created', { table_key: key }, undefined, { all: true, user_only: true });
-      return reply.code(201).send(describeSchema(schema, me, await access.flags(me, schema)));
+      return reply.code(201).send({ ...describeSchema(schema, me, await access.flags(me, schema)), folder_id: folderId });
     });
   });
 

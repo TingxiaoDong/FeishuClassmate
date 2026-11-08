@@ -41,7 +41,12 @@ class _MessagesPageState extends State<MessagesPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
       final s = AppScope.read(context);
-      await pushScoped(context, Scaffold(body: SafeArea(child: ChatView(chatId: id, showBack: true))));
+      await pushScoped(
+        context,
+        Scaffold(
+          body: SafeArea(child: ChatView(chatId: id, showBack: true)),
+        ),
+      );
       if (s.currentChatId == id) s.leaveChat();
       if (mounted) setState(() => _pushed = null);
     });
@@ -55,7 +60,8 @@ class _MessagesPageState extends State<MessagesPage> {
         final wide = c.maxWidth >= 760;
         if (!wide) {
           final want = s.currentChatId;
-          if (want != null && _pushed == null && s.module == AppModule.messages) _open(want);
+          if (want != null && _pushed == null && s.module == AppModule.messages)
+            _open(want);
           return ChatListPane(onOpen: s.openChat);
         }
         final cur = s.currentChatId != null ? s.chat(s.currentChatId!) : null;
@@ -111,7 +117,13 @@ class _ChatListPaneState extends State<ChatListPane> {
 
   Future<void> _newP2p() async {
     final s = AppScope.read(context);
-    final ids = await pickUsers(context, users: s.users, title: '发起单聊', multiple: false, exclude: {s.me.userId});
+    final ids = await pickUsers(
+      context,
+      users: s.users,
+      title: '发起单聊',
+      multiple: false,
+      exclude: {s.me.userId},
+    );
     if (ids == null || ids.isEmpty) return;
     try {
       final id = await s.openP2p(ids.first);
@@ -126,11 +138,16 @@ class _ChatListPaneState extends State<ChatListPane> {
     final s = AppScope.of(context);
     var list = s.visibleChats;
     if (keyword.isNotEmpty) {
-      list = list.where((c) => s.chatTitle(c).toLowerCase().contains(keyword.toLowerCase())).toList();
+      list = list
+          .where(
+            (c) => s.chatTitle(c).toLowerCase().contains(keyword.toLowerCase()),
+          )
+          .toList();
     }
     list = switch (filter) {
       _ChatFilter.all => list,
-      _ChatFilter.unread => list.where((c) => (s.unread[c.chatId] ?? 0) > 0).toList(),
+      _ChatFilter.unread =>
+        list.where((c) => (s.unread[c.chatId] ?? 0) > 0).toList(),
       _ChatFilter.p2p => list.where((c) => c.chatType == 'p2p').toList(),
       _ChatFilter.group => list.where((c) => c.chatType == 'group').toList(),
     };
@@ -142,15 +159,24 @@ class _ChatListPaneState extends State<ChatListPane> {
             padding: const EdgeInsets.fromLTRB(16, 14, 10, 8),
             child: Row(
               children: [
-                const Text('消息', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                const Text(
+                  '消息',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                ),
                 const Spacer(),
                 // 全局搜索开放后改用全局搜索（手机端的搜索入口就在这里）
                 FsIconButton(
                   icon: Icons.manage_search_rounded,
                   tooltip: s.feature('search') ? '搜索' : '搜索聊天记录',
-                  onPressed: () => s.feature('search') ? showGlobalSearch(context) : showMessageSearch(context),
+                  onPressed: () => s.feature('search')
+                      ? showGlobalSearch(context)
+                      : showMessageSearch(context),
                 ),
-                FsIconButton(icon: Icons.refresh_rounded, tooltip: '刷新', onPressed: s.refreshChats),
+                FsIconButton(
+                  icon: Icons.refresh_rounded,
+                  tooltip: '刷新',
+                  onPressed: s.refreshChats,
+                ),
                 PopupMenuButton<String>(
                   tooltip: '新建',
                   position: PopupMenuPosition.under,
@@ -159,21 +185,36 @@ class _ChatListPaneState extends State<ChatListPane> {
                     PopupMenuItem(
                       value: 'group',
                       child: Row(
-                        children: [Icon(Icons.group_add_outlined, size: 18), SizedBox(width: 10), Text('发起群聊')],
+                        children: [
+                          Icon(Icons.group_add_outlined, size: 18),
+                          SizedBox(width: 10),
+                          Text('发起群聊'),
+                        ],
                       ),
                     ),
                     PopupMenuItem(
                       value: 'p2p',
                       child: Row(
-                        children: [Icon(Icons.person_add_alt_outlined, size: 18), SizedBox(width: 10), Text('发起单聊')],
+                        children: [
+                          Icon(Icons.person_add_alt_outlined, size: 18),
+                          SizedBox(width: 10),
+                          Text('发起单聊'),
+                        ],
                       ),
                     ),
                   ],
                   child: Container(
                     margin: const EdgeInsets.only(left: 4),
                     padding: const EdgeInsets.all(5),
-                    decoration: BoxDecoration(color: Fs.hover, borderRadius: BorderRadius.circular(Fs.radius)),
-                    child: const Icon(Icons.add_rounded, size: 20, color: Fs.text1),
+                    decoration: BoxDecoration(
+                      color: Fs.hover,
+                      borderRadius: BorderRadius.circular(Fs.radius),
+                    ),
+                    child: const Icon(
+                      Icons.add_rounded,
+                      size: 20,
+                      color: Fs.text1,
+                    ),
                   ),
                 ),
               ],
@@ -181,7 +222,10 @@ class _ChatListPaneState extends State<ChatListPane> {
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: FsSearchField(hint: '搜索会话', onChanged: (v) => setState(() => keyword = v.trim())),
+            child: FsSearchField(
+              hint: '搜索会话',
+              onChanged: (v) => setState(() => keyword = v.trim()),
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
@@ -194,7 +238,10 @@ class _ChatListPaneState extends State<ChatListPane> {
                       selected: filter == f,
                       selectedColor: Fs.primaryLight,
                       radius: 14,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
                       onTap: () => setState(() => filter = f),
                       child: Text(
                         switch (f) {
@@ -206,7 +253,9 @@ class _ChatListPaneState extends State<ChatListPane> {
                         style: TextStyle(
                           fontSize: 12,
                           color: filter == f ? Fs.primary : Fs.text2,
-                          fontWeight: filter == f ? FontWeight.w600 : FontWeight.normal,
+                          fontWeight: filter == f
+                              ? FontWeight.w600
+                              : FontWeight.normal,
                         ),
                       ),
                     ),
@@ -218,18 +267,28 @@ class _ChatListPaneState extends State<ChatListPane> {
             child: list.isEmpty
                 ? EmptyState(
                     icon: Icons.forum_outlined,
-                    title: keyword.isNotEmpty || filter != _ChatFilter.all ? '没有符合条件的会话' : '还没有会话',
-                    subtitle: keyword.isEmpty && filter == _ChatFilter.all ? '点右上角「+」发起单聊或群聊' : null,
+                    title: keyword.isNotEmpty || filter != _ChatFilter.all
+                        ? '没有符合条件的会话'
+                        : '还没有会话',
+                    subtitle: keyword.isEmpty && filter == _ChatFilter.all
+                        ? '点右上角「+」发起单聊或群聊'
+                        : null,
                     action: keyword.isEmpty && filter == _ChatFilter.all
                         ? FilledButton.icon(
                             onPressed: _newGroup,
-                            icon: const Icon(Icons.group_add_outlined, size: 18),
+                            icon: const Icon(
+                              Icons.group_add_outlined,
+                              size: 18,
+                            ),
                             label: const Text('发起群聊'),
                           )
                         : null,
                   )
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
                     itemCount: list.length,
                     itemBuilder: (_, i) => _ChatTile(
                       chat: list[i],
@@ -248,7 +307,11 @@ class _ChatTile extends StatelessWidget {
   final CosChat chat;
   final bool selected;
   final VoidCallback onTap;
-  const _ChatTile({required this.chat, required this.selected, required this.onTap});
+  const _ChatTile({
+    required this.chat,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -261,13 +324,20 @@ class _ChatTile extends StatelessWidget {
     var preview = last == null ? '' : messagePreview(s, last);
     if (last != null && isGroup && last.senderId != s.me.userId) {
       final obo = last.onBehalfOf;
-      preview = obo == null ? '${s.userName(last.senderId)}：$preview' : '${s.userName(last.senderId)}（代${obo.userId == s.me.userId ? '你' : (obo.name.isEmpty ? s.userName(obo.userId) : obo.name)}）：$preview';
+      preview = obo == null
+          ? '${s.userName(last.senderId)}：$preview'
+          : '${s.userName(last.senderId)}（代${obo.userId == s.me.userId ? '你' : (obo.name.isEmpty ? s.userName(obo.userId) : obo.name)}）：$preview';
     }
-    final otherId = chat.memberIds.firstWhere((id) => id != s.me.userId, orElse: () => s.me.userId);
+    final otherId = chat.memberIds.firstWhere(
+      (id) => id != s.me.userId,
+      orElse: () => s.me.userId,
+    );
     final urgent = s.chatUrgent(chat.chatId);
     return GestureDetector(
-      onSecondaryTapDown: (d) => showChatTileMenu(context, chat, d.globalPosition),
-      onLongPressStart: (d) => showChatTileMenu(context, chat, d.globalPosition),
+      onSecondaryTapDown: (d) =>
+          showChatTileMenu(context, chat, d.globalPosition),
+      onLongPressStart: (d) =>
+          showChatTileMenu(context, chat, d.globalPosition),
       child: HoverBox(
         selected: selected,
         onTap: onTap,
@@ -278,7 +348,9 @@ class _ChatTile extends StatelessWidget {
             Badge(
               isLabelVisible: n > 0 || urgent,
               smallSize: 9,
-              label: chat.muted && !urgent ? null : Text(urgent ? '急' : (n > 99 ? '99+' : '$n')),
+              label: chat.muted && !urgent
+                  ? null
+                  : Text(urgent ? '急' : (n > 99 ? '99+' : '$n')),
               backgroundColor: chat.muted && !urgent ? Fs.text3 : Fs.red,
               child: FsAvatar(
                 name: title,
@@ -300,16 +372,28 @@ class _ChatTile extends StatelessWidget {
                           title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
-                      if (isBot) ...[const SizedBox(width: 6), const FsTag('机器人', color: TagColor.blue, fontSize: 10)],
+                      if (isBot) ...[
+                        const SizedBox(width: 6),
+                        const FsTag('机器人', color: TagColor.blue, fontSize: 10),
+                      ],
                       if (isGroup) ...[
                         const SizedBox(width: 4),
-                        Text('(${chat.memberIds.length})', style: const TextStyle(fontSize: 12, color: Fs.text3)),
+                        Text(
+                          '(${chat.memberIds.length})',
+                          style: const TextStyle(fontSize: 12, color: Fs.text3),
+                        ),
                       ],
                       const Spacer(),
-                      Text(fmtRelative(last?.createdAt), style: const TextStyle(fontSize: 11, color: Fs.text3)),
+                      Text(
+                        fmtRelative(last?.createdAt),
+                        style: const TextStyle(fontSize: 11, color: Fs.text3),
+                      ),
                     ],
                   ),
                   const SizedBox(height: 3),
@@ -319,8 +403,13 @@ class _ChatTile extends StatelessWidget {
                         const FsTag('加急', color: TagColor.red, fontSize: 10),
                         const SizedBox(width: 4),
                       ],
-                      if (chat.threadUnreadCount > 0 && s.feature('message.thread')) ...[
-                        FsTag('话题 ${chat.threadUnreadCount}', color: TagColor.blue, fontSize: 10),
+                      if (chat.threadUnreadCount > 0 &&
+                          s.feature('message.thread')) ...[
+                        FsTag(
+                          '话题 ${chat.threadUnreadCount}',
+                          color: TagColor.blue,
+                          fontSize: 10,
+                        ),
                         const SizedBox(width: 4),
                       ],
                       Expanded(
@@ -328,15 +417,27 @@ class _ChatTile extends StatelessWidget {
                           preview.isEmpty ? '暂无消息' : preview,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12.5, color: n > 0 ? Fs.text2 : Fs.text3),
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            color: n > 0 ? Fs.text2 : Fs.text3,
+                          ),
                         ),
                       ),
-                      if (chat.muted) const Icon(Icons.notifications_off_outlined, size: 13, color: Fs.text3),
+                      if (chat.muted)
+                        const Icon(
+                          Icons.notifications_off_outlined,
+                          size: 13,
+                          color: Fs.text3,
+                        ),
                       if (chat.pinned) ...[
                         const SizedBox(width: 3),
                         Transform.rotate(
                           angle: 0.6,
-                          child: const Icon(Icons.push_pin_outlined, size: 13, color: Fs.text3),
+                          child: const Icon(
+                            Icons.push_pin_outlined,
+                            size: 13,
+                            color: Fs.text3,
+                          ),
                         ),
                       ],
                     ],
@@ -389,12 +490,19 @@ class _ChatViewState extends State<ChatView> {
       if (!mounted) return;
       events = _s.eventStream.listen((e) {
         if (e.eventType == 'resync.required') _load();
-        if (e.eventType == 'message.read' && (e.raw['chat_id'] ?? e.read?['chat_id']) == widget.chatId && e.userId != _s.me.userId) {
+        if (e.eventType == 'message.read' &&
+            (e.raw['chat_id'] ?? e.read?['chat_id']) == widget.chatId &&
+            e.userId != _s.me.userId) {
           _receiptDebounce?.cancel();
-          _receiptDebounce = Timer(const Duration(milliseconds: 500), _refreshReceipts);
+          _receiptDebounce = Timer(
+            const Duration(milliseconds: 500),
+            _refreshReceipts,
+          );
         }
       });
-      sub = _s.messageStream.where((m) => m.chatId == widget.chatId).listen(_add);
+      sub = _s.messageStream
+          .where((m) => m.chatId == widget.chatId)
+          .listen(_add);
     });
   }
 
@@ -437,7 +545,11 @@ class _ChatViewState extends State<ChatView> {
         for (final m in list.items.reversed) {
           if (_inMain(m) && ids.add(m.messageId)) messages.add(m);
         }
-        messages.sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
+        messages.sort(
+          (a, b) => (a.createdAt ?? DateTime(0)).compareTo(
+            b.createdAt ?? DateTime(0),
+          ),
+        );
         hasMore = list.hasMore;
         loading = false;
         error = null;
@@ -462,7 +574,8 @@ class _ChatViewState extends State<ChatView> {
       setState(() {
         for (var i = 0; i < messages.length; i++) {
           final n = byId[messages[i].messageId];
-          if (n != null && messages[i].senderId == _s.me.userId) messages[i] = n;
+          if (n != null && messages[i].senderId == _s.me.userId)
+            messages[i] = n;
         }
       });
     } catch (_) {}
@@ -472,10 +585,16 @@ class _ChatViewState extends State<ChatView> {
     if (loadingOlder || messages.isEmpty) return false;
     setState(() => loadingOlder = true);
     try {
-      final p = await AppScope.read(context).api.listMessages(widget.chatId, beforeMessageId: messages.first.messageId);
+      final p = await AppScope.read(context).api.listMessages(
+        widget.chatId,
+        beforeMessageId: messages.first.messageId,
+      );
       if (!mounted) return false;
       setState(() {
-        messages.insertAll(0, p.items.reversed.where((m) => _inMain(m) && ids.add(m.messageId)));
+        messages.insertAll(
+          0,
+          p.items.reversed.where((m) => _inMain(m) && ids.add(m.messageId)),
+        );
         hasMore = p.hasMore;
       });
       return true;
@@ -490,7 +609,12 @@ class _ChatViewState extends State<ChatView> {
   /// 从全局搜索 / 加急横幅跳过来：{type: message, id: chat_id, message_id}。没加载到就往前翻页（最多 10 页）。
   Future<void> _checkTarget() async {
     final t = _s.pendingTarget;
-    if (!mounted || loading || t == null || t['type'] != 'message' || t['id'] != widget.chatId) return;
+    if (!mounted ||
+        loading ||
+        t == null ||
+        t['type'] != 'message' ||
+        t['id'] != widget.chatId)
+      return;
     final mid = t['message_id']?.toString();
     _s.pendingTarget = null;
     if (mid == null) return;
@@ -512,7 +636,12 @@ class _ChatViewState extends State<ChatView> {
     setState(() => highlightId = hid);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final c = _highlightKey.currentContext;
-      if (c != null) Scrollable.ensureVisible(c, alignment: 0.5, duration: const Duration(milliseconds: 300));
+      if (c != null)
+        Scrollable.ensureVisible(
+          c,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 300),
+        );
     });
     _highlightTimer?.cancel();
     _highlightTimer = Timer(const Duration(seconds: 3), () {
@@ -554,7 +683,9 @@ class _ChatViewState extends State<ChatView> {
 
   Future<void> _react(CosMessage m, String emoji, bool add) async {
     try {
-      final r = add ? await _s.api.addReaction(m.messageId, emoji) : await _s.api.removeReaction(m.messageId, emoji);
+      final r = add
+          ? await _s.api.addReaction(m.messageId, emoji)
+          : await _s.api.removeReaction(m.messageId, emoji);
       if (r != null) _add(r);
     } catch (e) {
       if (mounted) showToast(context, describeError(e), error: true);
@@ -566,7 +697,12 @@ class _ChatViewState extends State<ChatView> {
       setState(() => threadRoot = root);
       return;
     }
-    pushScoped(context, Scaffold(body: SafeArea(child: ThreadView(root: root, showBack: true))));
+    pushScoped(
+      context,
+      Scaffold(
+        body: SafeArea(child: ThreadView(root: root, showBack: true)),
+      ),
+    );
   }
 
   Future<void> _forwardSelected(String mode) async {
@@ -584,7 +720,10 @@ class _ChatViewState extends State<ChatView> {
   /// 多选收藏：后端没有批量接口，逐条调用（重复收藏不报错）；已撤回和系统消息跳过。
   Future<void> _favoriteSelected() async {
     final list = messages.where((m) => selected.contains(m.messageId)).toList();
-    final ok = [for (final m in list) if (!m.recalled && m.msgType != 'system') m];
+    final ok = [
+      for (final m in list)
+        if (!m.recalled && m.msgType != 'system') m,
+    ];
     final skipped = list.length - ok.length;
     var failed = 0;
     String? err;
@@ -604,24 +743,39 @@ class _ChatViewState extends State<ChatView> {
         selected.clear();
       });
     }
-    final extra = [if (skipped > 0) '$skipped 条已撤回或是系统消息，不能收藏', if (failed > 0) '$failed 条失败：$err'].join('；');
-    showToast(context, done > 0 ? '已收藏 $done 条${extra.isEmpty ? '' : '（$extra）'}' : (extra.isEmpty ? '没有可收藏的消息' : extra),
-        error: done == 0 || failed > 0);
+    final extra = [
+      if (skipped > 0) '$skipped 条已撤回或是系统消息，不能收藏',
+      if (failed > 0) '$failed 条失败：$err',
+    ].join('；');
+    showToast(
+      context,
+      done > 0
+          ? '已收藏 $done 条${extra.isEmpty ? '' : '（$extra）'}'
+          : (extra.isEmpty ? '没有可收藏的消息' : extra),
+      error: done == 0 || failed > 0,
+    );
   }
 
   Widget _selectBar() => Container(
-        margin: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Fs.line), borderRadius: BorderRadius.circular(10)),
-        child: Row(children: [
-          Text('已选 ${selected.length} 条', style: const TextStyle(fontSize: 14)),
-          const SizedBox(width: 12),
-          // 手机上按钮放不下时可以横向滑动
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              reverse: true,
-              child: Row(mainAxisSize: MainAxisSize.min, children: [
+    margin: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      border: Border.all(color: Fs.line),
+      borderRadius: BorderRadius.circular(10),
+    ),
+    child: Row(
+      children: [
+        Text('已选 ${selected.length} 条', style: const TextStyle(fontSize: 14)),
+        const SizedBox(width: 12),
+        // 手机上按钮放不下时可以横向滑动
+        Expanded(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            reverse: true,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
                 if (_s.feature('message.favorite')) ...[
                   OutlinedButton.icon(
                     key: const ValueKey('select-favorite'),
@@ -632,13 +786,17 @@ class _ChatViewState extends State<ChatView> {
                   const SizedBox(width: 8),
                 ],
                 OutlinedButton.icon(
-                  onPressed: selected.isEmpty ? null : () => _forwardSelected('single'),
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () => _forwardSelected('single'),
                   icon: const Icon(Icons.shortcut_rounded, size: 16),
                   label: const Text('逐条转发'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton.icon(
-                  onPressed: selected.isEmpty ? null : () => _forwardSelected('merge'),
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () => _forwardSelected('merge'),
                   icon: const Icon(Icons.library_books_outlined, size: 16),
                   label: const Text('合并转发'),
                 ),
@@ -650,11 +808,13 @@ class _ChatViewState extends State<ChatView> {
                   }),
                   child: const Text('取消'),
                 ),
-              ]),
+              ],
             ),
           ),
-        ]),
-      );
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -664,7 +824,10 @@ class _ChatViewState extends State<ChatView> {
     final title = s.chatTitle(chat);
     final isGroup = chat.chatType == 'group';
     final isBot = s.isBotChat(chat);
-    final otherId = chat.memberIds.firstWhere((id) => id != s.me.userId, orElse: () => s.me.userId);
+    final otherId = chat.memberIds.firstWhere(
+      (id) => id != s.me.userId,
+      orElse: () => s.me.userId,
+    );
     final main = Container(
       color: Colors.white,
       child: Column(
@@ -677,10 +840,19 @@ class _ChatViewState extends State<ChatView> {
                 if (widget.showBack)
                   IconButton(
                     tooltip: '返回',
-                    icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 18,
+                    ),
                     onPressed: () => Navigator.of(context).maybePop(),
                   ),
-                FsAvatar(name: title, seed: isGroup ? chat.chatId : otherId, size: 32, isBot: isBot, isGroup: isGroup),
+                FsAvatar(
+                  name: title,
+                  seed: isGroup ? chat.chatId : otherId,
+                  size: 32,
+                  isBot: isBot,
+                  isGroup: isGroup,
+                ),
               ],
             ),
             subtitle: Text(
@@ -700,17 +872,28 @@ class _ChatViewState extends State<ChatView> {
                   padding: EdgeInsets.only(right: 4),
                   child: Tooltip(
                     message: '已开启免打扰',
-                    child: Icon(Icons.notifications_off_outlined, size: 18, color: Fs.text3),
+                    child: Icon(
+                      Icons.notifications_off_outlined,
+                      size: 18,
+                      color: Fs.text3,
+                    ),
                   ),
                 ),
               FsIconButton(
                 icon: Icons.search_rounded,
                 tooltip: '搜索聊天记录',
-                onPressed: () => showMessageSearch(context, chatId: chat.chatId),
+                onPressed: () =>
+                    showMessageSearch(context, chatId: chat.chatId),
               ),
-              FsIconButton(icon: Icons.refresh_rounded, tooltip: '刷新消息', onPressed: _load),
               FsIconButton(
-                icon: isGroup ? Icons.settings_outlined : Icons.more_horiz_rounded,
+                icon: Icons.refresh_rounded,
+                tooltip: '刷新消息',
+                onPressed: _load,
+              ),
+              FsIconButton(
+                icon: isGroup
+                    ? Icons.settings_outlined
+                    : Icons.more_horiz_rounded,
                 tooltip: isGroup ? '群设置' : '会话设置',
                 onPressed: () => showChatSettings(context, chat.chatId),
               ),
@@ -719,21 +902,32 @@ class _ChatViewState extends State<ChatView> {
           // R-IM-06：已固定的消息（Pin 列表变化时整条重建）
           if (isGroup && s.feature('message.pin'))
             PinBar(
-              key: ValueKey('pins-${chat.chatId}-${chat.pinnedMessageIds.join(',')}'),
+              key: ValueKey(
+                'pins-${chat.chatId}-${chat.pinnedMessageIds.join(',')}',
+              ),
               chat: chat,
-              onJump: (m) => _s.openTarget({'type': 'message', 'id': chat.chatId, 'message_id': m.messageId}),
+              onJump: (m) => _s.openTarget({
+                'type': 'message',
+                'id': chat.chatId,
+                'message_id': m.messageId,
+              }),
             ),
           Expanded(
             child: Container(
               color: Colors.white,
               child: loading
-                  ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : error != null
                   ? EmptyState(
                       icon: Icons.cloud_off_outlined,
                       title: '消息加载失败',
                       subtitle: error,
-                      action: OutlinedButton(onPressed: _load, child: const Text('重试')),
+                      action: OutlinedButton(
+                        onPressed: _load,
+                        child: const Text('重试'),
+                      ),
                     )
                   : messages.isEmpty
                   ? EmptyState(
@@ -749,11 +943,21 @@ class _ChatViewState extends State<ChatView> {
               onTap: () => showChatSettings(context, chat.chatId),
               child: Container(
                 margin: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(color: const Color(0xFFFFF7E8), borderRadius: BorderRadius.circular(6)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF7E8),
+                  borderRadius: BorderRadius.circular(6),
+                ),
                 child: Row(
                   children: [
-                    const Icon(Icons.campaign_outlined, size: 16, color: Fs.orange),
+                    const Icon(
+                      Icons.campaign_outlined,
+                      size: 16,
+                      color: Fs.orange,
+                    ),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -775,21 +979,29 @@ class _ChatViewState extends State<ChatView> {
               onSent: _add,
               replyTo: replyTo,
               onClearReply: () => setState(() => replyTo = null),
-              hint: chat.threadMode && s.feature('message.thread') ? '发布新话题' : null,
+              hint: chat.threadMode && s.feature('message.thread')
+                  ? '发布新话题'
+                  : null,
             ),
         ],
       ),
     );
     final root = threadRoot;
     if (root == null) return main;
-    return Row(children: [
-      Expanded(child: main),
-      const VerticalDivider(width: 1),
-      SizedBox(
-        width: 400,
-        child: ThreadView(key: ValueKey(root.messageId), root: root, onClose: () => setState(() => threadRoot = null)),
-      ),
-    ]);
+    return Row(
+      children: [
+        Expanded(child: main),
+        const VerticalDivider(width: 1),
+        SizedBox(
+          width: 400,
+          child: ThreadView(
+            key: ValueKey(root.messageId),
+            root: root,
+            onClose: () => setState(() => threadRoot = null),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _list(AppState s, bool isGroup) {
@@ -815,7 +1027,8 @@ class _ChatViewState extends State<ChatView> {
               final prev = i > 0 ? messages[i - 1] : null;
               final t = m.createdAt?.toLocal();
               final pt = prev?.createdAt?.toLocal();
-              final showTime = t != null && (pt == null || t.difference(pt).inMinutes >= 5);
+              final showTime =
+                  t != null && (pt == null || t.difference(pt).inMinutes >= 5);
               final compact =
                   !showTime &&
                   prev != null &&
@@ -831,12 +1044,22 @@ class _ChatViewState extends State<ChatView> {
                   if (showTime)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Text(fmtMessageTime(t), style: const TextStyle(fontSize: 12, color: Fs.text3)),
+                      child: Text(
+                        fmtMessageTime(t),
+                        style: const TextStyle(fontSize: 12, color: Fs.text3),
+                      ),
                     ),
                   MessageItem(
-                    key: m.messageId == highlightId ? _highlightKey : ValueKey(m.messageId),
+                    key: m.messageId == highlightId
+                        ? _highlightKey
+                        : ValueKey(m.messageId),
                     message: m,
-                    compact: compact && m.replyToMessageId == null && m.reactions.isEmpty && prev.reactions.isEmpty && prev.thread == null,
+                    compact:
+                        compact &&
+                        m.replyToMessageId == null &&
+                        m.reactions.isEmpty &&
+                        prev.reactions.isEmpty &&
+                        prev.thread == null,
                     showName: isGroup || m.senderId == kBotId,
                     maxWidth: maxBubble,
                     quoted: _find(m.replyToMessageId),
@@ -848,7 +1071,11 @@ class _ChatViewState extends State<ChatView> {
                     threadMode: s.chat(widget.chatId)?.threadMode == true,
                     selecting: selecting,
                     selected: selected.contains(m.messageId),
-                    onSelect: (x) => setState(() => selected.contains(x.messageId) ? selected.remove(x.messageId) : selected.add(x.messageId)),
+                    onSelect: (x) => setState(
+                      () => selected.contains(x.messageId)
+                          ? selected.remove(x.messageId)
+                          : selected.add(x.messageId),
+                    ),
                     highlighted: m.messageId == highlightId,
                   ),
                 ],
@@ -926,7 +1153,10 @@ class MessageItem extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Center(
-          child: Text('$who撤回了一条消息', style: const TextStyle(fontSize: 12, color: Fs.text3)),
+          child: Text(
+            '$who撤回了一条消息',
+            style: const TextStyle(fontSize: 12, color: Fs.text3),
+          ),
         ),
       );
     }
@@ -936,8 +1166,14 @@ class MessageItem extends StatelessWidget {
         child: Center(
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(color: Fs.hover, borderRadius: BorderRadius.circular(4)),
-            child: Text(m.text, style: const TextStyle(fontSize: 12, color: Fs.text2)),
+            decoration: BoxDecoration(
+              color: Fs.hover,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text(
+              m.text,
+              style: const TextStyle(fontSize: 12, color: Fs.text2),
+            ),
           ),
         ),
       );
@@ -945,11 +1181,24 @@ class MessageItem extends StatelessWidget {
     final mine = !forceLeft && m.senderId == s.me.userId;
     final isBot = m.senderId == kBotId;
     final name = s.userName(m.senderId);
-    final avatar = compact ? const SizedBox(width: 36) : FsAvatar(name: name, seed: m.senderId, size: 36, isBot: isBot);
+    final avatar = compact
+        ? const SizedBox(width: 36)
+        : FsAvatar(name: name, seed: m.senderId, size: 36, isBot: isBot);
     final interactive = onAction != null && !selecting;
-    final canReact = interactive && onReact != null && s.feature('message.reaction') && m.msgType != 'interactive_card';
-    final canThread = interactive && onOpenThread != null && s.feature('message.thread') && m.threadRootId == null;
-    final canForward = interactive && s.feature('message.forward') && m.msgType != 'interactive_card';
+    final canReact =
+        interactive &&
+        onReact != null &&
+        s.feature('message.reaction') &&
+        m.msgType != 'interactive_card';
+    final canThread =
+        interactive &&
+        onOpenThread != null &&
+        s.feature('message.thread') &&
+        m.threadRootId == null;
+    final canForward =
+        interactive &&
+        s.feature('message.forward') &&
+        m.msgType != 'interactive_card';
     final from = m.forwardedFrom;
     final body = GestureDetector(
       onSecondaryTapDown: (d) => _menu(context, s, d.globalPosition),
@@ -957,7 +1206,9 @@ class MessageItem extends StatelessWidget {
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: Column(
-          crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          crossAxisAlignment: mine
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
             if (from != null)
@@ -971,120 +1222,167 @@ class MessageItem extends StatelessWidget {
             if (m.replyToMessageId != null) QuoteBox(quoted: quoted),
             _content(context, s, m, mine),
             // R-IM-07：内部链接卡片、外部链接预览
-            if (s.feature('message.link_preview') && !m.recalled && (m.msgType == 'text' || m.msgType == 'post'))
+            if (s.feature('message.link_preview') &&
+                !m.recalled &&
+                (m.msgType == 'text' || m.msgType == 'post'))
               MessageLinkCards(message: m),
             if (m.edited)
               const Padding(
                 padding: EdgeInsets.only(top: 2),
-                child: Text('已编辑', style: TextStyle(fontSize: 11, color: Fs.text3)),
+                child: Text(
+                  '已编辑',
+                  style: TextStyle(fontSize: 11, color: Fs.text3),
+                ),
               ),
             if (onReact != null && s.feature('message.reaction'))
-              ReactionChips(message: m, onToggle: (e, add) => onReact!(m, e, add)),
-            if (onOpenThread != null && s.feature('message.thread') && m.threadRootId == null)
-              ThreadSummary(message: m, alwaysShow: threadMode, onOpen: () => onOpenThread!(m)),
+              ReactionChips(
+                message: m,
+                onToggle: (e, add) => onReact!(m, e, add),
+              ),
+            if (onOpenThread != null &&
+                s.feature('message.thread') &&
+                m.threadRootId == null)
+              ThreadSummary(
+                message: m,
+                alwaysShow: threadMode,
+                onOpen: () => onOpenThread!(m),
+              ),
             if (mine && m.urgentUnacked > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 2),
-                child: Text('加急 · ${m.urgentUnacked} 人未确认', style: const TextStyle(fontSize: 11, color: Fs.red)),
+                child: Text(
+                  '加急 · ${m.urgentUnacked} 人未确认',
+                  style: const TextStyle(fontSize: 11, color: Fs.red),
+                ),
               ),
-            if (mine && !forceLeft) ReadReceipt(message: m, isGroup: isGroup, onUpdated: onUpdated),
+            if (mine && !forceLeft)
+              ReadReceipt(message: m, isGroup: isGroup, onUpdated: onUpdated),
           ],
         ),
       ),
     );
     Widget bar(bool hover) => SizedBox(
-          height: 30,
-          child: hover && (canReact || canThread || canForward || interactive)
-              ? MessageHoverBar(
-                  message: m,
-                  onReact: canReact ? (e) => onReact!(m, e, !m.reactions.any((r) => r.emoji == e && r.reactedByMe)) : null,
-                  onThread: canThread ? () => onOpenThread!(m) : null,
-                  onForward: canForward ? () => onAction!(MsgAction.forward, m) : null,
-                  onMore: (pos) => _menu(context, s, pos),
-                )
-              : null,
-        );
+      height: 30,
+      child: hover && (canReact || canThread || canForward || interactive)
+          ? MessageHoverBar(
+              message: m,
+              onReact: canReact
+                  ? (e) => onReact!(
+                      m,
+                      e,
+                      !m.reactions.any((r) => r.emoji == e && r.reactedByMe),
+                    )
+                  : null,
+              onThread: canThread ? () => onOpenThread!(m) : null,
+              onForward: canForward
+                  ? () => onAction!(MsgAction.forward, m)
+                  : null,
+              onMore: (pos) => _menu(context, s, pos),
+            )
+          : null,
+    );
     Widget row(bool hover) => Row(
-          mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (selecting)
-              Padding(
-                padding: const EdgeInsets.only(right: 8, top: 6),
-                child: Checkbox(
-                  key: ValueKey('select-${m.messageId}'),
-                  value: selected,
-                  onChanged: onSelect == null ? null : (_) => onSelect!(m),
-                ),
-              ),
-            if (selecting && mine) const Spacer(),
-            if (!mine) ...[avatar, const SizedBox(width: 10)],
-            Flexible(
-              child: Column(
-                crossAxisAlignment: mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-                children: [
-                  if (!compact && !mine && showName)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(name, style: const TextStyle(fontSize: 12, color: Fs.text2)),
-                          if (isBot) ...[
-                            const SizedBox(width: 4),
-                            const FsTag('机器人', color: TagColor.blue, fontSize: 10),
-                          ],
-                          if (m.onBehalfOf != null) ...[
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: Text(
-                                onBehalfLabel(s, m.onBehalfOf!),
-                                key: ValueKey('obo-${m.messageId}'),
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 11, color: Fs.text3),
-                              ),
-                            ),
-                          ],
-                          if (m.createdAt != null) ...[
-                            const SizedBox(width: 6),
-                            Text(fmtHm(m.createdAt!.toLocal()), style: const TextStyle(fontSize: 11, color: Fs.text3)),
-                          ],
-                        ],
-                      ),
-                    ),
-                  Row(
+      mainAxisAlignment: mine ? MainAxisAlignment.end : MainAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (selecting)
+          Padding(
+            padding: const EdgeInsets.only(right: 8, top: 6),
+            child: Checkbox(
+              key: ValueKey('select-${m.messageId}'),
+              value: selected,
+              onChanged: onSelect == null ? null : (_) => onSelect!(m),
+            ),
+          ),
+        if (selecting && mine) const Spacer(),
+        if (!mine) ...[avatar, const SizedBox(width: 10)],
+        Flexible(
+          child: Column(
+            crossAxisAlignment: mine
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              if (!compact && !mine && showName)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (mine && interactive) bar(hover),
-                      if (mine && interactive) const SizedBox(width: 6),
-                      Flexible(
-                        child: Tooltip(
-                          message: m.createdAt != null ? fmtDateTime(m.createdAt!.toLocal()) : '',
-                          waitDuration: const Duration(milliseconds: 800),
-                          child: body,
-                        ),
+                      Text(
+                        name,
+                        style: const TextStyle(fontSize: 12, color: Fs.text2),
                       ),
-                      if (!mine && interactive) const SizedBox(width: 6),
-                      if (!mine && interactive) bar(hover),
+                      if (isBot) ...[
+                        const SizedBox(width: 4),
+                        const FsTag('机器人', color: TagColor.blue, fontSize: 10),
+                      ],
+                      if (m.onBehalfOf != null) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            onBehalfLabel(s, m.onBehalfOf!),
+                            key: ValueKey('obo-${m.messageId}'),
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Fs.text3,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (m.createdAt != null) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          fmtHm(m.createdAt!.toLocal()),
+                          style: const TextStyle(fontSize: 11, color: Fs.text3),
+                        ),
+                      ],
                     ],
                   ),
+                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (mine && interactive) bar(hover),
+                  if (mine && interactive) const SizedBox(width: 6),
+                  Flexible(
+                    child: Tooltip(
+                      message: m.createdAt != null
+                          ? fmtDateTime(m.createdAt!.toLocal())
+                          : '',
+                      waitDuration: const Duration(milliseconds: 800),
+                      child: body,
+                    ),
+                  ),
+                  if (!mine && interactive) const SizedBox(width: 6),
+                  if (!mine && interactive) bar(hover),
                 ],
               ),
-            ),
-            if (mine) ...[const SizedBox(width: 10), avatar],
-          ],
-        );
-    final content = interactive ? HoverReveal(builder: (_, hover) => row(hover)) : row(false);
+            ],
+          ),
+        ),
+        if (mine) ...[const SizedBox(width: 10), avatar],
+      ],
+    );
+    final content = interactive
+        ? HoverReveal(builder: (_, hover) => row(hover))
+        : row(false);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 400),
       decoration: BoxDecoration(
-        color: highlighted ? const Color(0xFFFFF4D6) : (selected ? Fs.primaryBg : Colors.transparent),
+        color: highlighted
+            ? const Color(0xFFFFF4D6)
+            : (selected ? Fs.primaryBg : Colors.transparent),
         borderRadius: BorderRadius.circular(6),
       ),
       padding: EdgeInsets.only(top: compact ? 4 : 12),
       child: selecting && onSelect != null
-          ? GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => onSelect!(m), child: content)
+          ? GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onSelect!(m),
+              child: content,
+            )
           : content,
     );
   }
@@ -1092,20 +1390,34 @@ class MessageItem extends StatelessWidget {
   Widget _content(BuildContext context, AppState s, CosMessage m, bool mine) {
     switch (m.msgType) {
       case 'text' when !mine && m.content['agent_result'] is Map:
-        // M5：机器人回复带结果卡片，建好 / 改过的对象可以直接点开
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-          _bubble(mine, _LinkText(m.text)),
-          AgentResultCard.maybe(m),
-        ]);
+        // M5：机器人回复带结果卡片，建好 / 改过的对象可以直接点开。
+        // Bot 文本按 Markdown 渲染，卡片继续作为消息下方的附加内容。
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _bubble(mine, MarkdownView(m.text, fontSize: 14)),
+            AgentResultCard.maybe(m),
+          ],
+        );
+      case 'text' when !mine && m.senderId == kBotId:
+        // Bot 回复通常带 Markdown（标题、列表、代码块、表格等）。
+        return _bubble(mine, MarkdownView(m.text, fontSize: 14));
       case 'text':
         return _bubble(mine, _LinkText(m.text));
       case 'post' when m.content['markdown'] is String:
         // R-IM-07：富文本消息 {markdown}，渲染复用文档的 Markdown 组件
-        return _bubble(mine, MarkdownView(m.content['markdown'] as String, fontSize: 14));
+        return _bubble(
+          mine,
+          MarkdownView(m.content['markdown'] as String, fontSize: 14),
+        );
       case 'post':
         final title = m.content['title']?.toString();
         final text =
-            m.content['text']?.toString() ?? (m.content['content'] is String ? m.content['content'] as String : '');
+            m.content['text']?.toString() ??
+            (m.content['content'] is String
+                ? m.content['content'] as String
+                : '');
         return _bubble(
           mine,
           Column(
@@ -1115,7 +1427,13 @@ class MessageItem extends StatelessWidget {
               if (title != null && title.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
-                  child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
                 ),
               if (text.isNotEmpty) _LinkText(text),
             ],
@@ -1130,7 +1448,13 @@ class MessageItem extends StatelessWidget {
       case 'interactive_card':
         return CardMessage(content: m.content);
       default:
-        return _bubble(mine, Text('[暂不支持的消息类型：${m.msgType}]', style: const TextStyle(color: Fs.text3)));
+        return _bubble(
+          mine,
+          Text(
+            '[暂不支持的消息类型：${m.msgType}]',
+            style: const TextStyle(color: Fs.text3),
+          ),
+        );
     }
   }
 
@@ -1163,13 +1487,15 @@ class _LinkText extends StatelessWidget {
     final spans = <InlineSpan>[];
     var last = 0;
     for (final m in _url.allMatches(text)) {
-      if (m.start > last) spans.add(TextSpan(text: text.substring(last, m.start)));
+      if (m.start > last)
+        spans.add(TextSpan(text: text.substring(last, m.start)));
       final url = m.group(0)!;
       spans.add(
         TextSpan(
           text: url,
           style: const TextStyle(color: Fs.primary),
-          recognizer: TapGestureRecognizer()..onTap = () => openExternal(context, url),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () => openExternal(context, url),
         ),
       );
       last = m.end;
@@ -1194,8 +1520,13 @@ class ImageMessage extends StatelessWidget {
           return Container(
             width: 200,
             height: 140,
-            decoration: BoxDecoration(color: Fs.hover, borderRadius: BorderRadius.circular(8)),
-            child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            decoration: BoxDecoration(
+              color: Fs.hover,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Center(
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           );
         }
         final url = snap.data!;
@@ -1217,12 +1548,18 @@ class ImageMessage extends StatelessWidget {
                         children: [
                           IconButton(
                             tooltip: '下载',
-                            icon: const Icon(Icons.download_rounded, color: Colors.white),
+                            icon: const Icon(
+                              Icons.download_rounded,
+                              color: Colors.white,
+                            ),
                             onPressed: () => openExternal(context, url),
                           ),
                           IconButton(
                             tooltip: '关闭',
-                            icon: const Icon(Icons.close_rounded, color: Colors.white),
+                            icon: const Icon(
+                              Icons.close_rounded,
+                              color: Colors.white,
+                            ),
                             onPressed: () => Navigator.pop(ctx),
                           ),
                         ],
@@ -1235,7 +1572,12 @@ class ImageMessage extends StatelessWidget {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 280, maxHeight: 280, minWidth: 60, minHeight: 60),
+                constraints: const BoxConstraints(
+                  maxWidth: 280,
+                  maxHeight: 280,
+                  minWidth: 60,
+                  minHeight: 60,
+                ),
                 child: Image.network(
                   url,
                   fit: BoxFit.cover,
@@ -1246,7 +1588,9 @@ class ImageMessage extends StatelessWidget {
                           width: 200,
                           height: 140,
                           color: Fs.hover,
-                          child: const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                          child: const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
                         ),
                 ),
               ),
@@ -1292,9 +1636,17 @@ class FileMessage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(file.fileName, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
+                Text(
+                  file.fileName,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 14),
+                ),
                 const SizedBox(height: 3),
-                Text(fmtSize(file.size), style: const TextStyle(fontSize: 12, color: Fs.text3)),
+                Text(
+                  fmtSize(file.size),
+                  style: const TextStyle(fontSize: 12, color: Fs.text3),
+                ),
               ],
             ),
           ),
@@ -1344,14 +1696,23 @@ class _CardMessageState extends State<CardMessage> {
   Widget build(BuildContext context) {
     final s = AppScope.of(context);
     final cardId = widget.content['card_id']?.toString() ?? '';
-    final question = widget.content['question']?.toString() ?? widget.content['title']?.toString() ?? '';
+    final question =
+        widget.content['question']?.toString() ??
+        widget.content['title']?.toString() ??
+        '';
     final options =
         (widget.content['options'] as List?)
-            ?.map((e) => e is Map ? (e['label'] ?? e['value'] ?? '').toString() : e.toString())
+            ?.map(
+              (e) => e is Map
+                  ? (e['label'] ?? e['value'] ?? '').toString()
+                  : e.toString(),
+            )
             .toList() ??
         const <String>[];
     final answer = widget.content['answer'];
-    final answered = (answer is Map ? answer['action']?.toString() : null) ?? confirmedAnswer;
+    final answered =
+        (answer is Map ? answer['action']?.toString() : null) ??
+        confirmedAnswer;
     return Container(
       width: 360,
       decoration: BoxDecoration(
@@ -1367,10 +1728,18 @@ class _CardMessageState extends State<CardMessage> {
         children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFFDDE8FF), Color(0xFFF0F4FF)])),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFFDDE8FF), Color(0xFFF0F4FF)],
+              ),
+            ),
             child: Row(
               children: [
-                const Icon(Icons.help_center_rounded, size: 18, color: Fs.primary),
+                const Icon(
+                  Icons.help_center_rounded,
+                  size: 18,
+                  color: Fs.primary,
+                ),
                 const SizedBox(width: 6),
                 Text(
                   answered != null
@@ -1378,19 +1747,29 @@ class _CardMessageState extends State<CardMessage> {
                       : widget.content['expired'] == true
                       ? '已过期'
                       : '需要你的确认',
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Fs.primaryPressed),
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Fs.primaryPressed,
+                  ),
                 ),
               ],
             ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
-            child: Text(question, style: const TextStyle(fontSize: 14, height: 1.6)),
+            child: Text(
+              question,
+              style: const TextStyle(fontSize: 14, height: 1.6),
+            ),
           ),
           if (options.isEmpty)
             const Padding(
               padding: EdgeInsets.fromLTRB(14, 4, 14, 14),
-              child: Text('（这张卡片没有可选项）', style: TextStyle(fontSize: 12, color: Fs.text3)),
+              child: Text(
+                '（这张卡片没有可选项）',
+                style: TextStyle(fontSize: 12, color: Fs.text3),
+              ),
             )
           else
             Padding(
@@ -1398,7 +1777,10 @@ class _CardMessageState extends State<CardMessage> {
               child: Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: [for (final o in options) _optionButton(s, cardId, o, answered)],
+                children: [
+                  for (final o in options)
+                    _optionButton(s, cardId, o, answered),
+                ],
               ),
             ),
           if (answered != null)
@@ -1407,10 +1789,17 @@ class _CardMessageState extends State<CardMessage> {
               color: Fs.bg,
               child: Row(
                 children: [
-                  const Icon(Icons.check_circle_rounded, size: 14, color: Fs.green),
+                  const Icon(
+                    Icons.check_circle_rounded,
+                    size: 14,
+                    color: Fs.green,
+                  ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: Text('已选择「$answered」', style: const TextStyle(fontSize: 12, color: Fs.text2)),
+                    child: Text(
+                      '已选择「$answered」',
+                      style: const TextStyle(fontSize: 12, color: Fs.text2),
+                    ),
                   ),
                 ],
               ),
@@ -1422,13 +1811,19 @@ class _CardMessageState extends State<CardMessage> {
 
   Widget _optionButton(AppState s, String cardId, String o, String? answered) {
     final chosen = answered == o;
-    final disabled = answered != null || submitting != null || widget.content['expired'] == true;
+    final disabled =
+        answered != null ||
+        submitting != null ||
+        widget.content['expired'] == true;
     return SizedBox(
       height: 32,
       child: chosen
           ? FilledButton.icon(
               onPressed: null,
-              style: FilledButton.styleFrom(disabledBackgroundColor: Fs.primary, disabledForegroundColor: Colors.white),
+              style: FilledButton.styleFrom(
+                disabledBackgroundColor: Fs.primary,
+                disabledForegroundColor: Colors.white,
+              ),
               icon: const Icon(Icons.check_rounded, size: 16),
               label: Text(o),
             )
@@ -1439,7 +1834,11 @@ class _CardMessageState extends State<CardMessage> {
                 side: const BorderSide(color: Fs.primary),
               ),
               child: submitting == o
-                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : Text(o),
             ),
     );
@@ -1496,7 +1895,14 @@ class _Composer extends StatefulWidget {
   /// 迭代 4：输入框提示语（话题模式「发布新话题」）、话题回复的根消息。
   final String? hint;
   final String? threadRootId;
-  const _Composer({required this.chat, required this.onSent, this.replyTo, this.onClearReply, this.hint, this.threadRootId});
+  const _Composer({
+    required this.chat,
+    required this.onSent,
+    this.replyTo,
+    this.onClearReply,
+    this.hint,
+    this.threadRootId,
+  });
   @override
   State<_Composer> createState() => _ComposerState();
 }
@@ -1529,11 +1935,13 @@ class _ComposerState extends State<_Composer> {
 
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
     if (e is! KeyDownEvent) return KeyEventResult.ignored;
-    if (e.logicalKey != LogicalKeyboardKey.enter && e.logicalKey != LogicalKeyboardKey.numpadEnter) {
+    if (e.logicalKey != LogicalKeyboardKey.enter &&
+        e.logicalKey != LogicalKeyboardKey.numpadEnter) {
       return KeyEventResult.ignored;
     }
     // 输入法组字中（拼音未上屏）不发送
-    if (ctrl.value.composing.isValid && !ctrl.value.composing.isCollapsed) return KeyEventResult.ignored;
+    if (ctrl.value.composing.isValid && !ctrl.value.composing.isCollapsed)
+      return KeyEventResult.ignored;
     if (HardwareKeyboard.instance.isShiftPressed) return KeyEventResult.ignored;
     _send();
     return KeyEventResult.handled;
@@ -1546,21 +1954,30 @@ class _ComposerState extends State<_Composer> {
     setState(() => sending = true);
     try {
       // R-IM-07：写了 Markdown 快捷语法（且没有 @ 人）时发成富文本 post {markdown}
-      final asPost = s.feature('message.rich_text') && mentions.isEmpty && looksLikeMarkdown(text);
+      final asPost =
+          s.feature('message.rich_text') &&
+          mentions.isEmpty &&
+          looksLikeMarkdown(text);
       final m = asPost
-          ? await s.api.sendMessage(widget.chat.chatId, 'post', {'markdown': text},
-              replyToMessageId: widget.replyTo?.messageId, threadRootId: widget.threadRootId, alsoSendToChat: alsoSend)
+          ? await s.api.sendMessage(
+              widget.chat.chatId,
+              'post',
+              {'markdown': text},
+              replyToMessageId: widget.replyTo?.messageId,
+              threadRootId: widget.threadRootId,
+              alsoSendToChat: alsoSend,
+            )
           : await s.api.sendText(
-        widget.chat.chatId,
-        text,
-        mentions: mentions.entries
-            .where((e) => text.contains('@${e.value}'))
-            .map((e) => {'user_id': e.key, 'name': e.value})
-            .toList(),
-        replyToMessageId: widget.replyTo?.messageId,
-        threadRootId: widget.threadRootId,
-        alsoSendToChat: alsoSend,
-      );
+              widget.chat.chatId,
+              text,
+              mentions: mentions.entries
+                  .where((e) => text.contains('@${e.value}'))
+                  .map((e) => {'user_id': e.key, 'name': e.value})
+                  .toList(),
+              replyToMessageId: widget.replyTo?.messageId,
+              threadRootId: widget.threadRootId,
+              alsoSendToChat: alsoSend,
+            );
       ctrl.clear();
       mentions.clear();
       widget.onClearReply?.call();
@@ -1581,8 +1998,13 @@ class _ComposerState extends State<_Composer> {
       final f = await s.pickAndUpload(imageOnly: image);
       if (f == null) return;
       final isImg = image || FileTypeIcon.isImage(f.fileName);
-      final m = await s.api.sendMessage(widget.chat.chatId, isImg ? 'image' : 'file', f.toJson(),
-          threadRootId: widget.threadRootId, alsoSendToChat: alsoSend);
+      final m = await s.api.sendMessage(
+        widget.chat.chatId,
+        isImg ? 'image' : 'file',
+        f.toJson(),
+        threadRootId: widget.threadRootId,
+        alsoSendToChat: alsoSend,
+      );
       widget.onSent(m);
       s.addLocalMessage(m);
     } catch (e) {
@@ -1594,8 +2016,19 @@ class _ComposerState extends State<_Composer> {
 
   Future<void> _mention() async {
     final s = AppScope.read(context);
-    final members = s.users.where((u) => widget.chat.memberIds.contains(u.userId) && u.userId != s.me.userId).toList();
-    final ids = await pickUsers(context, users: members, title: '选择要 @ 的人', multiple: false);
+    final members = s.users
+        .where(
+          (u) =>
+              widget.chat.memberIds.contains(u.userId) &&
+              u.userId != s.me.userId,
+        )
+        .toList();
+    final ids = await pickUsers(
+      context,
+      users: members,
+      title: '选择要 @ 的人',
+      multiple: false,
+    );
     if (ids == null || ids.isEmpty) return;
     mentions[ids.first] = s.userName(ids.first);
     _insert('@${s.userName(ids.first)} ');
@@ -1638,9 +2071,15 @@ class _ComposerState extends State<_Composer> {
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
               child: Row(
                 children: [
-                  const Text('回复 ', style: TextStyle(fontSize: 12, color: Fs.text3)),
+                  const Text(
+                    '回复 ',
+                    style: TextStyle(fontSize: 12, color: Fs.text3),
+                  ),
                   Expanded(
-                    child: QuoteBox(quoted: widget.replyTo, onClose: widget.onClearReply),
+                    child: QuoteBox(
+                      quoted: widget.replyTo,
+                      onClose: widget.onClearReply,
+                    ),
                   ),
                 ],
               ),
@@ -1653,7 +2092,9 @@ class _ComposerState extends State<_Composer> {
             keyboardType: TextInputType.multiline,
             style: const TextStyle(fontSize: 14, height: 1.5),
             decoration: InputDecoration(
-              hintText: widget.hint ?? (widget.threadRootId != null ? '回复话题' : '发送给 $title'),
+              hintText:
+                  widget.hint ??
+                  (widget.threadRootId != null ? '回复话题' : '发送给 $title'),
               filled: false,
               border: InputBorder.none,
               enabledBorder: InputBorder.none,
@@ -1669,7 +2110,11 @@ class _ComposerState extends State<_Composer> {
                   controller: emojiMenu,
                   style: MenuStyle(
                     backgroundColor: const WidgetStatePropertyAll(Colors.white),
-                    shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+                    shape: WidgetStatePropertyAll(
+                      RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
                   ),
                   menuChildren: [
                     Padding(
@@ -1688,7 +2133,12 @@ class _ComposerState extends State<_Composer> {
                                 child: SizedBox(
                                   width: 39,
                                   height: 36,
-                                  child: Center(child: Text(e, style: const TextStyle(fontSize: 20))),
+                                  child: Center(
+                                    child: Text(
+                                      e,
+                                      style: const TextStyle(fontSize: 20),
+                                    ),
+                                  ),
                                 ),
                               ),
                           ],
@@ -1703,37 +2153,57 @@ class _ComposerState extends State<_Composer> {
                   ),
                 ),
                 if (widget.chat.chatType == 'group')
-                  FsIconButton(icon: Icons.alternate_email_rounded, tooltip: '@ 成员', onPressed: _mention),
+                  FsIconButton(
+                    icon: Icons.alternate_email_rounded,
+                    tooltip: '@ 成员',
+                    onPressed: _mention,
+                  ),
                 FsIconButton(
                   icon: Icons.image_outlined,
                   tooltip: '发送图片',
-                  onPressed: uploading != null ? null : () => _sendFile(image: true),
+                  onPressed: uploading != null
+                      ? null
+                      : () => _sendFile(image: true),
                 ),
                 FsIconButton(
                   icon: Icons.attach_file_rounded,
                   tooltip: '发送文件',
-                  onPressed: uploading != null ? null : () => _sendFile(image: false),
+                  onPressed: uploading != null
+                      ? null
+                      : () => _sendFile(image: false),
                 ),
-                if (widget.threadRootId != null && widget.chat.isGroup && !widget.chat.threadMode)
+                if (widget.threadRootId != null &&
+                    widget.chat.isGroup &&
+                    !widget.chat.threadMode)
                   Padding(
                     padding: const EdgeInsets.only(left: 4),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      SizedBox(
-                        width: 28,
-                        child: Checkbox(
-                          key: const ValueKey('also-send'),
-                          value: alsoSend,
-                          visualDensity: VisualDensity.compact,
-                          onChanged: (v) => setState(() => alsoSend = v ?? false),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 28,
+                          child: Checkbox(
+                            key: const ValueKey('also-send'),
+                            value: alsoSend,
+                            visualDensity: VisualDensity.compact,
+                            onChanged: (v) =>
+                                setState(() => alsoSend = v ?? false),
+                          ),
                         ),
-                      ),
-                      const Text('同时发送到群', style: TextStyle(fontSize: 12, color: Fs.text2)),
-                    ]),
+                        const Text(
+                          '同时发送到群',
+                          style: TextStyle(fontSize: 12, color: Fs.text2),
+                        ),
+                      ],
+                    ),
                   ),
                 const Spacer(),
-                if (MediaQuery.sizeOf(context).width > 900 && widget.threadRootId == null)
+                if (MediaQuery.sizeOf(context).width > 900 &&
+                    widget.threadRootId == null)
                   Text(
-                    uploading != null ? '正在上传$uploading…' : 'Enter 发送，Shift + Enter 换行',
+                    uploading != null
+                        ? '正在上传$uploading…'
+                        : 'Enter 发送，Shift + Enter 换行',
                     style: const TextStyle(fontSize: 12, color: Fs.text3),
                   ),
                 const SizedBox(width: 10),
@@ -1744,10 +2214,16 @@ class _ComposerState extends State<_Composer> {
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(56, 30),
                       padding: const EdgeInsets.symmetric(horizontal: 12),
-                      disabledBackgroundColor: Fs.primary.withValues(alpha: 0.35),
+                      disabledBackgroundColor: Fs.primary.withValues(
+                        alpha: 0.35,
+                      ),
                       disabledForegroundColor: Colors.white,
                     ),
-                    child: const Icon(Icons.send_rounded, size: 16, semanticLabel: '发送'),
+                    child: const Icon(
+                      Icons.send_rounded,
+                      size: 16,
+                      semanticLabel: '发送',
+                    ),
                   ),
                 ),
               ],
@@ -1759,7 +2235,6 @@ class _ComposerState extends State<_Composer> {
   }
 }
 
-
 // ---------------- 话题面板（R-IM-02） ----------------
 
 /// 原消息 + 全部回复 + 底部输入框；宽屏在会话右侧，窄屏全屏。
@@ -1767,7 +2242,12 @@ class ThreadView extends StatefulWidget {
   final CosMessage root;
   final bool showBack;
   final VoidCallback? onClose;
-  const ThreadView({super.key, required this.root, this.showBack = false, this.onClose});
+  const ThreadView({
+    super.key,
+    required this.root,
+    this.showBack = false,
+    this.onClose,
+  });
   @override
   State<ThreadView> createState() => _ThreadViewState();
 }
@@ -1810,7 +2290,12 @@ class _ThreadViewState extends State<ThreadView> {
       final l = await _s.api.allThreadReplies(root.messageId);
       if (mounted) {
         setState(() {
-          replies = l..sort((a, b) => (a.createdAt ?? DateTime(0)).compareTo(b.createdAt ?? DateTime(0)));
+          replies = l
+            ..sort(
+              (a, b) => (a.createdAt ?? DateTime(0)).compareTo(
+                b.createdAt ?? DateTime(0),
+              ),
+            );
           loading = false;
           error = null;
         });
@@ -1840,7 +2325,9 @@ class _ThreadViewState extends State<ThreadView> {
 
   Future<void> _react(CosMessage m, String emoji, bool add) async {
     try {
-      final r = add ? await _s.api.addReaction(m.messageId, emoji) : await _s.api.removeReaction(m.messageId, emoji);
+      final r = add
+          ? await _s.api.addReaction(m.messageId, emoji)
+          : await _s.api.removeReaction(m.messageId, emoji);
       if (r != null && mounted) {
         setState(() {
           if (r.messageId == root.messageId) root = r;
@@ -1859,65 +2346,110 @@ class _ThreadViewState extends State<ThreadView> {
     final chat = s.chat(root.chatId);
     return Container(
       color: Colors.white,
-      child: Column(children: [
-        PaneHeader(
-          title: '话题',
-          subtitle: Text(chat == null ? '' : s.chatTitle(chat)),
-          leading: widget.showBack
-              ? IconButton(tooltip: '返回', icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18), onPressed: () => Navigator.of(context).maybePop())
-              : null,
-          actions: [
-            TextButton.icon(
-              onPressed: _toggleFollow,
-              icon: Icon((followed ?? false) ? Icons.notifications_active_outlined : Icons.notifications_none_rounded, size: 16),
-              label: Text((followed ?? false) ? '已关注' : '关注话题'),
-            ),
-            if (widget.onClose != null) FsIconButton(icon: Icons.close_rounded, tooltip: '关闭话题', onPressed: widget.onClose),
-          ],
-        ),
-        Expanded(
-          child: LayoutBuilder(builder: (context, c) {
-            final w = (c.maxWidth - 80).clamp(160.0, 520.0);
-            return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 16), children: [
-              MessageItem(message: root, compact: false, showName: true, maxWidth: w, forceLeft: true,
-                  onReact: _react, onAction: (_, _) {}),
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Row(children: [
-                  Text(loading ? '加载回复…' : '${replies.length} 条回复', style: const TextStyle(fontSize: 12, color: Fs.text3)),
-                  const SizedBox(width: 8),
-                  const Expanded(child: Divider()),
-                ]),
+      child: Column(
+        children: [
+          PaneHeader(
+            title: '话题',
+            subtitle: Text(chat == null ? '' : s.chatTitle(chat)),
+            leading: widget.showBack
+                ? IconButton(
+                    tooltip: '返回',
+                    icon: const Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 18,
+                    ),
+                    onPressed: () => Navigator.of(context).maybePop(),
+                  )
+                : null,
+            actions: [
+              TextButton.icon(
+                onPressed: _toggleFollow,
+                icon: Icon(
+                  (followed ?? false)
+                      ? Icons.notifications_active_outlined
+                      : Icons.notifications_none_rounded,
+                  size: 16,
+                ),
+                label: Text((followed ?? false) ? '已关注' : '关注话题'),
               ),
-              if (error != null)
-                Center(child: TextButton(onPressed: _load, child: Text('加载失败：$error，点击重试')))
-              else
-                for (final m in replies)
-                  MessageItem(
-                    key: ValueKey(m.messageId),
-                    message: m,
-                    compact: false,
-                    showName: true,
-                    maxWidth: w,
-                    forceLeft: true,
-                    onReact: _react,
-                    onAction: (_, _) {},
-                  ),
-            ]);
-          }),
-        ),
-        if (chat != null)
-          _Composer(
-            chat: chat,
-            threadRootId: root.messageId,
-            onSent: (m) {
-              if (!mounted) return;
-              setState(() {
-                if (!replies.any((x) => x.messageId == m.messageId)) replies.add(m);
-              });
-            },
+              if (widget.onClose != null)
+                FsIconButton(
+                  icon: Icons.close_rounded,
+                  tooltip: '关闭话题',
+                  onPressed: widget.onClose,
+                ),
+            ],
           ),
-      ]),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, c) {
+                final w = (c.maxWidth - 80).clamp(160.0, 520.0);
+                return ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                  children: [
+                    MessageItem(
+                      message: root,
+                      compact: false,
+                      showName: true,
+                      maxWidth: w,
+                      forceLeft: true,
+                      onReact: _react,
+                      onAction: (_, _) {},
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Row(
+                        children: [
+                          Text(
+                            loading ? '加载回复…' : '${replies.length} 条回复',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Fs.text3,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          const Expanded(child: Divider()),
+                        ],
+                      ),
+                    ),
+                    if (error != null)
+                      Center(
+                        child: TextButton(
+                          onPressed: _load,
+                          child: Text('加载失败：$error，点击重试'),
+                        ),
+                      )
+                    else
+                      for (final m in replies)
+                        MessageItem(
+                          key: ValueKey(m.messageId),
+                          message: m,
+                          compact: false,
+                          showName: true,
+                          maxWidth: w,
+                          forceLeft: true,
+                          onReact: _react,
+                          onAction: (_, _) {},
+                        ),
+                  ],
+                );
+              },
+            ),
+          ),
+          if (chat != null)
+            _Composer(
+              chat: chat,
+              threadRootId: root.messageId,
+              onSent: (m) {
+                if (!mounted) return;
+                setState(() {
+                  if (!replies.any((x) => x.messageId == m.messageId))
+                    replies.add(m);
+                });
+              },
+            ),
+        ],
+      ),
     );
   }
 }
