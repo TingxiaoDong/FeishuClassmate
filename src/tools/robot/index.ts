@@ -350,7 +350,12 @@ export function registerRobotTools(runtime: AgentRuntime, opts: RobotToolsOption
           : i.kind === 'find_person'
             ? `去 ${i.to_user ?? '?'} 的工位看看人在不在`
             : `依次带参观：${(i.stops ?? []).map((s) => s.location).join(' → ')}`;
-      return `让 Temi ${what}${i.return_home ? '，结束后回充电桩' : ''}。${MOVE_NOTE}`;
+      // 代码审查 A4：人不在时会以你的名义改发私信，卡片上写明发给谁、发什么
+      const im =
+        i.kind === 'deliver_message' && i.fallback_im
+          ? `\n如果 ${i.to_user ?? '对方'} 不在工位，会以你的名义改发私信给他（标注「通过 AI 助手发送」），内容：「${i.text ?? ''}」。`
+          : '';
+      return `让 Temi ${what}${i.return_home ? '，结束后回充电桩' : ''}。${MOVE_NOTE}${im}`;
     },
     async run(i, ctx) {
       const actor = actorOf(ctx);

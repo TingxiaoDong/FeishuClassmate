@@ -13,7 +13,7 @@ import { boundActionOf, inferActionRisk } from '../../src/tools/cos/define.js';
 import type { BotEventPayload, BotEventSource } from '../../src/pal/bot-events.js';
 import type { ImService, PalChatInfo } from '../../src/pal/types.js';
 import type { AgentRuntime, ConfirmResult, RunSessionInput } from '../../src/runtime/types.js';
-import type { LlmClientLike } from '../../src/runtime/llm-client.js';
+import type { LlmClientLike } from '../../src/runtime/openai-client.js';
 
 const silent = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 const noLlm: LlmClientLike = { chat: async () => ({ content: 'ok', toolCalls: [] }) } as unknown as LlmClientLike;

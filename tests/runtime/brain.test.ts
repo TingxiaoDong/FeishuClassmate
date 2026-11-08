@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { createBrain } from '../../src/runtime/brain.js';
 import { createFakeConfig } from '../helpers/fake-config.js';
-import type { ChatCompletionRequest } from '../../src/runtime/llm-client.js';
+import type { ChatCompletionRequest } from '../../src/runtime/openai-client.js';
 
 const silentLogger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 

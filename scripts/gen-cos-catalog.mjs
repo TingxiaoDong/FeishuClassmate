@@ -22,6 +22,8 @@ const outFile = join(root, 'src/cos-sdk/catalog.generated.ts');
 const EXCLUDE = [
   /^\/auth\//,
   /^\/bot\//,
+  // 自动化预授权 v2 调度器内部接口：只给持独立调度器密钥的可信适配器用，不进模型可见的目录。
+  /^\/internal\//,
   /\/ws$/,
   /^\/devices/,
   /^\/health$/,

@@ -65,7 +65,7 @@ describe('M5 指标上报', () => {
 describe('M5 出错时的回复', () => {
   it('按错误类型给出同学能看懂的话', async () => {
     const { describeAgentError } = await import('../../src/runtime/bot-gateway.js');
-    const { LlmError } = await import('../../src/runtime/llm-client.js');
+    const { LlmError } = await import('../../src/runtime/openai-client.js');
     expect(describeAgentError(new LlmError('x', 401))).toContain('访问密钥');
     expect(describeAgentError(new LlmError('x', 402))).toContain('余额');
     expect(describeAgentError(new LlmError('x', 429))).toContain('过一会儿');
@@ -79,7 +79,7 @@ describe('M5 出错时的回复', () => {
 describe('M5 大模型很快失败时同学也能收到回复', () => {
   it('没有进度消息时补发原因；模型没给内容时也有交代', async () => {
     const { createBotGateway } = await import('../../src/runtime/bot-gateway.js');
-    const { LlmError } = await import('../../src/runtime/llm-client.js');
+    const { LlmError } = await import('../../src/runtime/openai-client.js');
     const sent: string[] = [];
     let handler: ((e: unknown) => void) | undefined;
     const eventSource = { onEvent: (fn: (e: unknown) => void) => ((handler = fn), () => {}), connect: async () => {}, close: () => {} };

@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import type { FastifyInstance } from 'fastify';
 import { buildApp, type PlatformUser } from '../../classmateos/server/app.js';
 import { createBrain } from '../../src/runtime/brain.js';
-import type { ChatCompletionRequest } from '../../src/runtime/llm-client.js';
+import type { ChatCompletionRequest } from '../../src/runtime/openai-client.js';
 import type { AgentRuntime, ToolCallContext } from '../../src/runtime/types.js';
 import { autoFieldName } from '../../src/tools/cos/resources.js';
 import { findCatalogEntry } from '../../src/tools/cos/index.js';
@@ -50,11 +50,28 @@ const ctxFor = (userId?: string, chatId?: string): ToolCallContext => ({
   actor: userId ? { userId, chatId } : undefined,
 });
 const run = (rt: AgentRuntime, tool: string, input: unknown, ctx = ctxFor('u_zhang')) => rt.getTool(tool)!.execute(input, ctx) as Promise<Ev>;
+/** 同学已在代发确认卡上点了「确认」（代码审查 A4）：卡片绑定 POST /bot/messages + 这些目标。 */
+const confirmedFor = async (userId: string | undefined, targets: string[]): Promise<ToolCallContext> => {
+  const ctx = ctxFor(userId);
+  const cardId = `card_${n}`;
+  const action = { method: 'POST', route: '/api/v1/bot/messages', path: '/api/v1/bot/messages', target_id: targets.length === 1 ? targets[0] : targets };
+  if (userId) {
+    // 真的发卡并由这位同学点「确认」：后端兜底会核验这张卡
+    await app.inject({
+      method: 'POST', url: '/api/v1/bot/messages', headers: { 'x-bot-token': 'btok' },
+      payload: { receive_id: userId, receive_id_type: 'user_id', msg_type: 'interactive_card', content: { card_id: cardId, kind: 'confirm', question: '代发？', options: ['确认', '取消'], answerable_by: [userId], bound_action: action } },
+    });
+    const pw = USERS.find((u) => u.user_id === userId)!.password;
+    const token = (await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { username: userId, password: pw } })).json().access_token;
+    await app.inject({ method: 'POST', url: `/api/v1/cards/${cardId}/actions`, headers: { authorization: `Bearer ${token}` }, payload: { action: '确认' } });
+  }
+  return { ...ctx, confirmation: { cardId, action } };
+};
 
 describe('平台工具注册', () => {
   it('9 个资源工具 + cos_api / cos_api_catalog，与旧工具共存', () => {
     const names = brain().runtime.listTools();
-    for (const t of ['cos_table', 'cos_doc', 'cos_calendar', 'cos_task', 'cos_im', 'cos_drive', 'cos_contact', 'cos_notify', 'cos_search', 'cos_api', 'cos_api_catalog']) {
+    for (const t of ['cos_table', 'cos_doc', 'cos_wiki', 'cos_calendar', 'cos_task', 'cos_im', 'cos_drive', 'cos_contact', 'cos_notify', 'cos_search', 'cos_api', 'cos_api_catalog']) {
       expect(names).toContain(t);
     }
     expect(names).toContain('feishu_classmate_data_layout');
@@ -214,15 +231,53 @@ describe('cos_im / cos_api', () => {
     const { runtime } = brain();
     const chat = (await admin('POST', '/chats', { chat_type: 'group', name: '管理群', member_ids: ['ou_admin', 'u_li'] })).json();
     expect(chat.chat_id).toBeTruthy();
-    const r = await run(runtime, 'cos_im', { action: 'send', chat_id: chat.chat_id, text: 'hi' });
+    // 代码审查 A4：发到当前对话以外，没确认不发
+    expect(await run(runtime, 'cos_im', { action: 'send', chat_id: chat.chat_id, text: 'hi' })).toMatchObject({ ok: false, code: 'SEND_NEEDS_CONFIRM' });
+    const r = await run(runtime, 'cos_im', { action: 'send', chat_id: chat.chat_id, text: 'hi' }, await confirmedFor('u_zhang', [chat.chat_id]));
     expect(r).toMatchObject({ ok: false, code: 'CHAT_NOT_MEMBER' });
-    // 李华在群里，但机器人不在群里：服务端拒绝（代码审查 B1）
-    const denied = await run(runtime, 'cos_im', { action: 'send', chat_id: chat.chat_id, text: '提醒：3 点开会' }, ctxFor('u_li'));
-    expect(denied.ok).toBe(false);
-    // 机器人也在的群：可以
+    // 后端待改问题 C2（方案 A）：李华在群里、机器人不在群里，确认后也能代李华发，并带代发标记
+    const onBehalf = await run(runtime, 'cos_im', { action: 'send', chat_id: chat.chat_id, text: '提醒：3 点开会' }, await confirmedFor('u_li', [chat.chat_id]));
+    expect(onBehalf.ok).toBe(true);
+    expect(onBehalf.data.sender_id).toBe('bot');
+    expect(onBehalf.data.content.sent_on_behalf_of).toEqual({ user_id: 'u_li', name: '李华' });
+    // 机器人也在的群：同样可以，同样带标记
     const withBot = (await admin('POST', '/chats', { chat_type: 'group', name: '课题组', member_ids: ['ou_admin', 'u_li', 'bot'] })).json();
-    const ok = await run(runtime, 'cos_im', { action: 'send', chat_id: withBot.chat_id, text: '提醒：3 点开会' }, ctxFor('u_li'));
+    // 卡片确认的是别的目标：不能拿来发到这个群
+    expect(await run(runtime, 'cos_im', { action: 'send', chat_id: withBot.chat_id, text: '提醒：3 点开会' }, await confirmedFor('u_li', [chat.chat_id]))).toMatchObject({ ok: false, code: 'SEND_NEEDS_CONFIRM' });
+    const ok = await run(runtime, 'cos_im', { action: 'send', chat_id: withBot.chat_id, text: '提醒：3 点开会' }, await confirmedFor('u_li', [withBot.chat_id]));
     expect(ok.ok).toBe(true);
+    expect(ok.data.content.sent_on_behalf_of?.user_id).toBe('u_li');
+  });
+
+  it('私聊代发：发给别人带代发标记，回同学本人不带', async () => {
+    const { runtime } = brain();
+    const toLi = await run(runtime, 'cos_im', { action: 'send', user_id: 'u_li', text: '张晓明让我提醒你交周报' }, await confirmedFor('u_zhang', ['u_li']));
+    expect(toLi.ok).toBe(true);
+    expect(toLi.data.content.sent_on_behalf_of?.user_id).toBe('u_zhang');
+    // 私信本人：不用确认
+    const toSelf = await run(runtime, 'cos_im', { action: 'send', user_id: 'u_zhang', text: '已帮你提醒李华' });
+    expect(toSelf.ok).toBe(true);
+    expect(toSelf.data.content.sent_on_behalf_of).toBeUndefined();
+    expect((await run(runtime, 'cos_im', { action: 'send', user_id: 'u_nobody', text: 'hi' }, await confirmedFor('u_zhang', ['u_nobody']))).code).toBe('NOT_FOUND');
+  });
+
+  it('不知道代表谁时不发消息', async () => {
+    const { runtime } = brain();
+    expect(await run(runtime, 'cos_im', { action: 'send', user_id: 'u_li', text: 'hi' }, ctxFor())).toMatchObject({ ok: false, code: 'SEND_NEEDS_CONFIRM' });
+    const r = await run(runtime, 'cos_im', { action: 'send', user_id: 'u_li', text: 'hi' }, await confirmedFor(undefined, ['u_li']));
+    expect(r).toMatchObject({ ok: false, code: 'NO_ACTOR' });
+  });
+
+  it('约会议时的群通知也能发到机器人不在的群（确认后）', async () => {
+    const { runtime } = brain();
+    const chat = (await admin('POST', '/chats', { chat_type: 'group', name: '项目组', member_ids: ['ou_admin', 'u_zhang', 'u_li'] })).json();
+    const start = Date.now() + 10 * 86400_000;
+    const input = { title: '中期检查', start_ms: start, end_ms: start + 3600_000, attendees: ['李华'], notify_chat_id: chat.chat_id, force: true };
+    // 没确认：会议也不建（不会建了才发现通知发不出去）
+    expect(await run(runtime, 'cos_schedule_meeting', input)).toMatchObject({ ok: false, code: 'SEND_NEEDS_CONFIRM' });
+    const r = await run(runtime, 'cos_schedule_meeting', input, await confirmedFor('u_zhang', [chat.chat_id]));
+    expect(r.ok).toBe(true);
+    expect(r.summary).toContain('已在群里通知');
   });
 
   it('cos_api 只放行目录内接口，删除需确认', async () => {

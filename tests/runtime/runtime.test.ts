@@ -5,7 +5,7 @@
  *  1. zod → JSON Schema 直出（无 TypeBox）；
  *  2. runSession 完整环：LLM 请求 tool call → 工具执行 → 结果回灌 → 最终回复；
  *  3. onToolCall 钩子（替代 after_tool_call）收到成功/失败事件；
- *  4. MetaClawLlmClient 的 HTTP 行为：X-Session-Id / X-Turn-Type 头 +
+ *  4. OpenAiLlmClient 的 HTTP 行为：X-Session-Id / X-Turn-Type 头 +
  *     /v1/memory/flush_session（用本地 HTTP server 冒充 proxy）。
  */
 
@@ -14,7 +14,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { z } from 'zod';
 import { ClassmateRuntime } from '../../src/runtime/agent-runtime.js';
-import { MetaClawLlmClient, type ChatCompletionRequest } from '../../src/runtime/llm-client.js';
+import { OpenAiLlmClient, type ChatCompletionRequest } from '../../src/runtime/openai-client.js';
 import { registerZodTool, zodToJsonSchema } from '../../src/runtime/zod-tool.js';
 import type { AgentRuntime, ToolCallEvent } from '../../src/runtime/types.js';
 
@@ -164,10 +164,10 @@ describe('ClassmateRuntime (A1/A4)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. MetaClawLlmClient over HTTP (A3): headers + flush endpoint
+// 4. OpenAiLlmClient over HTTP (A3): headers + flush endpoint
 // ---------------------------------------------------------------------------
 
-describe('MetaClawLlmClient (A3)', () => {
+describe('OpenAiLlmClient (A3)', () => {
   it('sends X-Session-Id / X-Turn-Type headers and flushes the session', async () => {
     const received: Array<{ url: string; headers: Record<string, unknown>; body: unknown }> = [];
     const server: Server = createServer((req, res) => {
@@ -195,7 +195,7 @@ describe('MetaClawLlmClient (A3)', () => {
     const port = (server.address() as AddressInfo).port;
 
     try {
-      const client = new MetaClawLlmClient({
+      const client = new OpenAiLlmClient({
         baseUrl: `http://127.0.0.1:${port}/v1`,
         model: 'test-model',
         apiKey: 'k-test',

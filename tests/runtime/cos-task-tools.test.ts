@@ -138,7 +138,14 @@ describe('L1 任务型工具', () => {
     expect(brief.ok).toBe(true);
     expect(brief.data.open_task_count).toBeGreaterThan(0);
 
-    const doc = await run('cos_write_doc', { title: '本周周报', markdown: '# 本周\n- 完成数据整理', share_to: '李华' });
+    // 代码审查 A4：分享给别人要先确认；没确认时整个调用不做
+    const input = { title: '本周周报', markdown: '# 本周\n- 完成数据整理', share_to: '李华' };
+    expect(await run('cos_write_doc', input)).toMatchObject({ ok: false, need_confirmation: true, code: 'SEND_NEEDS_CONFIRM' });
+    const confirmed: ToolCallContext = {
+      ...ctx(),
+      confirmation: { cardId: 'card_doc', action: { method: 'POST', route: '/api/v1/bot/messages', path: '/api/v1/bot/messages', target_id: 'u_li' } },
+    };
+    const doc = await run('cos_write_doc', input, confirmed);
     expect(doc.ok).toBe(true);
     expect(doc.data.shared[0]).toContain('已发给李华');
   });

@@ -17,7 +17,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { MetaClawLlmClient, type LlmClientLike } from '../src/runtime/llm-client.js';
+import { OpenAiLlmClient, type LlmClientLike } from '../src/runtime/openai-client.js';
 import { llmEnvProblem, loadDotEnv, resolveLlmEnv } from '../src/runtime/llm-env.js';
 import { buildApp, type PlatformUser } from '../classmateos/server/app.js';
 import { createBrain } from '../src/runtime/brain.js';
@@ -218,7 +218,7 @@ export async function preflight(): Promise<string | undefined> {
   const env = resolveLlmEnv();
   const problem = llmEnvProblem(env);
   if (problem) return problem;
-  const llm = new MetaClawLlmClient({ baseUrl: env.baseUrl, model: env.model, apiKey: env.apiKey, timeoutMs: 30_000 });
+  const llm = new OpenAiLlmClient({ baseUrl: env.baseUrl, model: env.model, apiKey: env.apiKey, timeoutMs: 30_000 });
   try {
     await llm.chat({ messages: [{ role: 'user', content: '只回复 OK' }], sessionId: 'eval_preflight', turnType: 'user' });
     return undefined;

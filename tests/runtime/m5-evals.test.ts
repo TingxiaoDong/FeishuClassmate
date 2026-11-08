@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { runCase } from '../../scripts/run-evals.js';
 import type { EvalFile } from '../../src/evals/score.js';
-import type { ChatCompletionRequest, LlmClientLike } from '../../src/runtime/llm-client.js';
+import type { ChatCompletionRequest, LlmClientLike } from '../../src/runtime/openai-client.js';
 import type { ChatMessage } from '../../src/runtime/types.js';
 
 const file = JSON.parse(readFileSync('evals/agent-cases.json', 'utf8')) as EvalFile;

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { runCase } from '../../scripts/run-evals.js';
 import { fill, placeholders, scoreCase, validateCases, type EvalCase, type EvalFile } from '../../src/evals/score.js';
 import { createBrain } from '../../src/runtime/brain.js';
-import type { ChatCompletionRequest, LlmClientLike } from '../../src/runtime/llm-client.js';
+import type { ChatCompletionRequest, LlmClientLike } from '../../src/runtime/openai-client.js';
 import { recordTurn } from '../../src/runtime/session-store.js';
 import { loadSkills, selectSkills, searchTerms } from '../../src/runtime/skills-loader.js';
 import type { ChatMessage } from '../../src/runtime/types.js';

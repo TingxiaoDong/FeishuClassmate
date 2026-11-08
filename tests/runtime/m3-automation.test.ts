@@ -12,8 +12,10 @@ function fixture(t = trigger(), allowed = true, output = '已完成') {
   const post = vi.fn(async () => ({ ok: true, data: {} }));
   const runSession = vi.fn(async () => ({ output }));
   const sendText = vi.fn(async () => ({ ok: true, data: {} }));
-  const engine = createTriggerEngine({ client: { get, post } as unknown as CosClient, runtime: { runSession } as unknown as AgentRuntime, im: { sendText } as any, cron: false });
-  return { engine, get, post, runSession, sendText };
+  const deliver = vi.fn(async () => ({ status: 'sent' as const, messageId: 'm1' }));
+  const automationBackend = { begin: async (task: import('../../src/runtime/automation-execution.js').AutomationTask) => ({ ok: true as const, run: { task, runId: 'run', grantId: 'grant', scope: 'bot.messages.send' as const, expiresAt: Date.now() + 60000, targets: [{ type: 'user_id' as const, id: 'alice' }], outputMode: 'controlled_summary' as const, deliver } }) };
+  const engine = createTriggerEngine({ automationBackend, client: { get, post } as unknown as CosClient, runtime: { runSession } as unknown as AgentRuntime, im: { sendText } as any, cron: false });
+  return { engine, get, post, runSession, sendText, deliver };
 }
 const event = { event_type: 'record.changed', table_key: 'table1', record_id: 'r1', action: 'updated' };
 describe('M3 自动化运行时', () => {
@@ -42,8 +44,9 @@ describe('M3 自动化运行时', () => {
   it('执行、私信、回写结果，并受冷却限制', async () => {
     const f = fixture(); await f.engine.start();
     expect(await f.engine.handleEvent(event)).toEqual(['t1']); await f.engine.idle();
-    expect(f.runSession).toHaveBeenCalledWith(expect.objectContaining({ actor: { userId: 'alice', chatId: undefined } }));
-    expect(f.sendText).toHaveBeenCalledWith('alice', expect.stringContaining('已完成'), 'user_id');
+    expect(f.runSession).toHaveBeenCalledWith(expect.objectContaining({ actor: { userId: 'alice' } }));
+    expect(f.sendText).not.toHaveBeenCalled();
+    expect(f.deliver).toHaveBeenCalledWith(expect.objectContaining({ target: { type: 'user_id', id: 'alice' }, purpose: 'final' }));
     expect(f.post).toHaveBeenCalledWith('/bot/triggers/t1/fired', expect.anything(), { asBot: true });
     expect((await f.engine.fire('t1'))?.status).toBe('cooldown'); f.engine.stop();
   });

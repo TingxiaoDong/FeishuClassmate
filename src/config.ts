@@ -1,11 +1,4 @@
-/**
- * Plugin config accessor.
- *
- * Reads from OpenClaw plugin config first, then falls back to env vars.
- * Never throws — callers decide how to react to missing fields.
- */
-
-import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
+/** ClassmateOS Agent 与服务端共用的配置模型。 */
 
 export interface ClassmateConfig {
   feishu: {
@@ -144,16 +137,8 @@ export function assertFeishuConfigured(cfg: ClassmateConfig): void {
   if (!cfg.feishu.appId || !cfg.feishu.appSecret) {
     throw new Error(
       'feishu-classmate: feishu.appId / feishu.appSecret missing. ' +
-        'Set FEISHU_APP_ID + FEISHU_APP_SECRET env vars, or `openclaw config set plugins.feishu-classmate.config.feishu.appId ...`',
+        'Set FEISHU_APP_ID + FEISHU_APP_SECRET env vars, or 在 ClassmateOS 配置中设置 FEISHU_APP_ID / FEISHU_APP_SECRET',
     );
   }
 }
 
-/**
- * Pull config from the runtime api surface. Safe to call inside tools.
- */
-export function getConfigFromApi(api: OpenClawPluginApi): ClassmateConfig {
-  // Plugin-specific config lives under api.pluginConfig; api.config is the full OpenClawConfig.
-  const raw = (api as { pluginConfig?: unknown }).pluginConfig;
-  return readConfig(raw);
-}

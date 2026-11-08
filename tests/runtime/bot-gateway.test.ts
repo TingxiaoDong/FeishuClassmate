@@ -13,7 +13,7 @@ import { WsBotEventSource } from '../../src/pal/bot-events.js';
 import { createClassmateOSAdapter } from '../../src/pal/classmateos-adapter.js';
 import { createBrain } from '../../src/runtime/brain.js';
 import { createBotGateway } from '../../src/runtime/bot-gateway.js';
-import type { ChatCompletionRequest } from '../../src/runtime/llm-client.js';
+import type { ChatCompletionRequest } from '../../src/runtime/openai-client.js';
 
 const silent = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
