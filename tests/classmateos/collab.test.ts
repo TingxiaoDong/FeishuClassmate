@@ -57,6 +57,8 @@ describe('docs 协同编辑（Yjs）', () => {
       payload: { title: '协同文档', markdown: '# 初稿\n' },
     });
     const { doc_id } = created.json();
+    // 新建文档默认仅自己可见（后端待改问题 C1）：分享给组织可读，bob 才能连上（只读）
+    await app.inject({ method: 'PUT', url: `/api/v1/docs/${doc_id}/permissions`, headers: { authorization: `Bearer ${alice}` }, payload: { link_share: 'org_view', members: [] } });
 
     const p1 = connect(base, doc_id, alice);
     const p2 = connect(base, doc_id, bob);

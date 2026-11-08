@@ -275,6 +275,8 @@ describe.each(backends)('前端接口验收清单（$name）', ({ usePg }) => {
     await send(first.call, a, chat.chat_id, '重启前的消息');
     const rec = (await first.call(a, 'POST', '/tables/projects/records', { fields: { title: '四足机器人步态', status: '进行中' } })).json();
     const doc = (await first.call(a, 'POST', '/docs', { title: '组会纪要', markdown: '# 纪要' })).json();
+    // 新建文档默认仅自己可见（后端待改问题 C1）：分享给组织，重启后也要保持
+    expect((await first.call(a, 'PUT', `/docs/${doc.doc_id}/permissions`, { link_share: 'org_view', members: [] })).statusCode).toBe(200);
     const task = (await first.call(a, 'POST', '/tasks', { title: '整理数据', assignee_id: 'u_zhang' })).json();
     await apps.splice(0).pop()!.close();
 
@@ -552,6 +554,9 @@ describe.each(backends)('前端接口验收清单（$name）', ({ usePg }) => {
     const doc = created.json();
     expect(doc).toMatchObject({ title: '10 月 19 日组会纪要', markdown: '# 纪要', created_by: 'admin', updated_by: 'admin', can_edit: true });
     expect(doc.url).toBe(`/api/v1/docs/${doc.doc_id}`);
+    // 新建文档默认仅自己可见（后端待改问题 C1）：别人读不到，分享给组织后可读不可写
+    expect((await call(z, 'GET', `/docs/${doc.doc_id}`)).statusCode).toBe(403);
+    expect((await call(a, 'PUT', `/docs/${doc.doc_id}/permissions`, { link_share: 'org_view', members: [] })).statusCode).toBe(200);
     expect((await call(z, 'GET', `/docs/${doc.doc_id}`)).json().can_edit).toBe(false);
     expect((await call(z, 'PATCH', `/docs/${doc.doc_id}`, { title: 'x' })).statusCode).toBe(403);
 

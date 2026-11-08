@@ -120,6 +120,8 @@ describe.each(backends)('二期迭代 4 全局搜索（$name）', ({ usePg }) =>
   it('文档：私密文档对外人不可见；owner_id / start_ms 筛选；正文命中给片段', async () => {
     const { app, call, search } = await makeApp();
     const open = (await call('ou_li', 'POST', '/docs', { title: '四足步态笔记', markdown: '本周调整了步态参数，四足机器人更稳。' })).json();
+    // 新建文档默认仅自己可见（后端待改问题 C1），这篇分享给组织
+    expect((await call('ou_li', 'PUT', `/docs/${open.doc_id}/permissions`, { link_share: 'org_view', members: [] })).statusCode).toBe(200);
     const priv = (await call('ou_li', 'POST', '/docs', { title: '四足私密', markdown: '仅自己' })).json();
     expect((await call('ou_li', 'PUT', `/docs/${priv.doc_id}/permissions`, { link_share: 'off', members: [{ member_type: 'user', member_id: 'ou_zhang', role: 'viewer' }] })).statusCode).toBe(200);
 
@@ -174,6 +176,7 @@ describe.each(backends)('二期迭代 4 全局搜索（$name）', ({ usePg }) =>
     const { app, call } = await makeApp();
     const a = (await call('ou_li', 'POST', '/docs', { title: '文档甲' })).json();
     const b = (await call('ou_li', 'POST', '/docs', { title: '文档乙' })).json();
+    for (const d of [a, b]) await call('ou_li', 'PUT', `/docs/${d.doc_id}/permissions`, { link_share: 'org_view', members: [] });
     expect((await call('ou_zhang', 'GET', `/docs/${a.doc_id}`)).statusCode).toBe(200);
     expect((await call('ou_zhang', 'GET', '/tables/projects')).statusCode).toBe(200);
     expect((await call('ou_zhang', 'GET', `/docs/${b.doc_id}`)).statusCode).toBe(200);

@@ -22,7 +22,7 @@ describe('迭代2 文档分享权限', () => {
       expect(edited.statusCode).toBe(200);
       expect(edited.json().permissions.can_edit).toBe(true);
       expect((await app.inject({ method: 'PUT', url: `/api/v1/docs/${doc.doc_id}/permissions`, headers: await h('editor'), payload: { link_share: 'org_edit', members: [] } })).statusCode).toBe(403);
-      expect((await app.inject({ method: 'PUT', url: `/api/v1/docs/${doc.doc_id}/permissions`, headers: await h('owner'), payload: { version: 1, link_share: 'off', members: [{ member_type: 'user', member_id: 'editor', role: 'viewer' }] } })).statusCode).toBe(200);
+      expect((await app.inject({ method: 'PUT', url: `/api/v1/docs/${doc.doc_id}/permissions`, headers: await h('owner'), payload: { version: 2, link_share: 'off', members: [{ member_type: 'user', member_id: 'editor', role: 'viewer' }] } })).statusCode).toBe(200);
       expect((await app.inject({ method: 'PATCH', url: `/api/v1/docs/${doc.doc_id}`, headers: await h('editor'), payload: { markdown: 'blocked' } })).statusCode).toBe(403);
       expect((await app.inject({ method: 'PUT', url: `/api/v1/docs/${doc.doc_id}/permissions`, headers: await h('owner'), payload: { version: 1, link_share: 'off', members: [] } })).statusCode).toBe(409);
     } finally { await app.close(); }
