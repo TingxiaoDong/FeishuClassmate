@@ -4,7 +4,7 @@
  * The whole migration hinges on this single interface:
  *   - skills/tools keep calling `registerZodTool`-style registration;
  *   - the LLM loop lives behind `runSession`;
- *   - telemetry hooks ride on `onToolCall` (replaces OpenClaw's
+ *   - telemetry hooks ride on `onToolCall` (替代旧平台的
  *     `after_tool_call` event).
  *
  * Implementations: `ClassmateRuntime` (./agent-runtime.ts) today; a Hermes /
@@ -16,6 +16,8 @@
 export type JsonSchema = Record<string, unknown>;
 
 export interface ToolCallContext {
+  /** 仅受信调度器注入，模型参数不能创建权限。 */
+  execution?: import('./automation-execution.js').AutomationExecution;
   /** Unique id of this tool invocation (matches the LLM tool_call id). */
   toolCallId: string;
   /** Session that produced this call. */
@@ -51,8 +53,12 @@ export interface BoundAction {
 export interface ToolPolicy {
   /** 按这次参数判断风险。没配策略时运行时按 write 处理；策略出错按 destructive（要确认）。 */
   risk?: (input: unknown) => ToolRisk;
-  /** 要不要确认；缺省 destructive / physical 要确认。批量写入可在这里按条数要求确认（预演）。 */
-  needsConfirm?: (input: unknown, risk: ToolRisk) => boolean;
+  /**
+   * 要不要确认；缺省 destructive / physical 要确认。批量写入可在这里按条数要求确认（预演）。
+   * ctx 带着这次会话的 actor（userId / chatId）：代发消息按「发到哪」判断（代码审查 A4）。
+   * 没传 ctx 时按「不知道当前对话」处理，往外发一律要确认。
+   */
+  needsConfirm?: (input: unknown, risk: ToolRisk, ctx?: ToolCallContext) => boolean;
   /** 给同学看的确认说明 / 预演（会改动什么、多少条、示例）。失败时用默认说明。 */
   preview?: (input: unknown, ctx: ToolCallContext) => Promise<string | undefined>;
   /** 进度消息里的步骤名，如「新增记录」。 */
@@ -135,9 +141,10 @@ export interface ChatMessage {
 }
 
 export interface RunSessionInput {
+  execution?: import('./automation-execution.js').AutomationExecution;
   /** Conversation so far (without system prompt — runtime prepends it). */
   messages: ChatMessage[];
-  /** Stable session id; sent to MetaClaw as `X-Session-Id` (PLAN §0.2). */
+  /** Stable session id; 作为 `X-Session-Id` 发送给模型服务 (PLAN §0.2). */
   sessionId?: string;
   /** Optional system prompt override; defaults to runtime's configured prompt. */
   systemPrompt?: string;

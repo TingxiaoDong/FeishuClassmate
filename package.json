@@ -1,14 +1,14 @@
 {
   "name": "feishu-classmate",
   "version": "0.1.0",
-  "description": "OpenClaw extension for the 飞书同学 lab assistant (Temi + Feishu + MetaClaw)",
+  "description": "ClassmateOS lab collaboration platform and agent gateway",
   "type": "module",
-  "main": "./dist/index.mjs",
+  "main": "./dist/cli-main.mjs",
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.mts",
-        "default": "./dist/index.mjs"
+        "types": "./dist/cli-main.d.mts",
+        "default": "./dist/cli-main.mjs"
       }
     }
   },
@@ -16,8 +16,6 @@
     "dist/",
     "skills/",
     "temi-sidecar/",
-    "arc-sidecar/",
-    "openclaw.plugin.json",
     "README.md"
   ],
   "engines": {
@@ -28,7 +26,6 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "asr-openclaw-bridge": "node scripts/asr-openclaw-bridge.mjs",
     "format": "prettier --write .",
     "classmate": "tsx src/runtime/cli-main.ts",
     "classmate:scheduler": "tsx src/runtime/cli-main.ts scheduler",
@@ -37,7 +34,6 @@
   },
   "dependencies": {
     "@fastify/websocket": "^11.3.4",
-    "@larksuiteoapi/node-sdk": "^1.60.0",
     "@sinclair/typebox": "0.34.48",
     "fastify": "^5.12.7",
     "lib0": "^0.2.119",
@@ -50,37 +46,15 @@
     "yjs": "^13.6.33",
     "zod": "^4.3.6"
   },
-  "peerDependencies": {
-    "@larksuite/openclaw-lark": ">=2026.4.1",
-    "openclaw": ">=2026.4.10"
-  },
-  "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": false
-    },
-    "@larksuite/openclaw-lark": {
-      "optional": false
-    }
-  },
   "devDependencies": {
     "@types/node": "^25.2.3",
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.23.1",
     "@types/ws": "^8.18.2",
-    "openclaw": "^2026.4.10",
     "prettier": "^3.8.1",
     "tsdown": "^0.21.4",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^4.1.1"
-  },
-  "openclaw": {
-    "extensions": [
-      "./dist/index.mjs"
-    ],
-    "install": {
-      "npmSpec": "feishu-classmate",
-      "localPath": "extensions/feishu-classmate"
-    }
   }
 }

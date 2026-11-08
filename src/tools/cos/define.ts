@@ -8,17 +8,164 @@
  */
 
 import { z } from 'zod';
+import { automationTargetCode, automationToolCode, automationRequest, automationOperation, revisionOf } from '../../runtime/automation-execution.js';
 import { COS_API_CATALOG } from '../../cos-sdk/catalog.generated.js';
 import { matchTemplate, type CosClient } from '../../cos-sdk/client.js';
 import type { CosRequest, CosResult, HttpMethod } from '../../cos-sdk/types.js';
 import type { AgentRuntime, BoundAction, ToolCallContext, ToolRisk } from '../../runtime/types.js';
 import { defaultToolLabel } from '../../runtime/policy.js';
 import { zodToJsonSchema } from '../../runtime/zod-tool.js';
+import { resolvePeople, SELF_WORDS } from './people.js';
 
 export type { ToolRisk };
 
 /** 一次写入超过这么多条就先请同学确认（预演）。 */
 export const BULK_CONFIRM = 20;
+
+// ---------------------------------------------------------------- 代发消息（代码审查 A4）
+
+/** 代发消息的目标。person 是人名（或 user_id / 「我」），执行时才查成 user_id。 */
+export type SendTarget = { chat_id: string } | { user_id: string } | { person: string };
+/** 一次工具调用会代同学发出的一条消息。 */
+export interface OutboundMessage { to: SendTarget; text: string }
+
+/** 代发接口的路由模板（确认卡片 bound_action.route）。 */
+export const BOT_MESSAGES_ROUTE = '/api/v1/bot/messages';
+/** 平台里机器人的 user_id。 */
+const BOT_USER_ID = 'bot';
+/** 确认卡片上消息正文最多显示多少字。 */
+export const OUTBOUND_PREVIEW_CHARS = 300;
+
+type ActorLike = { userId?: string; chatId?: string; name?: string };
+
+/**
+ * 发到这里要不要先请同学确认：
+ *   - 当前对话（chat_id === actor.chatId）：不用，这就是正常回复；
+ *   - 私信同学本人（user_id 是本人 / 人名是「我」或本人名字）：不用，就是机器人和他自己的单聊；
+ *   - 其他任何群、单聊，或私信给别人：要确认。
+ * 不知道代表谁（没有 actor）时一律要确认。
+ */
+export function sendNeedsConfirm(to: SendTarget, actor?: ActorLike): boolean {
+  if (!actor?.userId) return true;
+  if ('chat_id' in to) return !(actor.chatId && to.chat_id === actor.chatId);
+  if ('user_id' in to) return to.user_id !== actor.userId;
+  const p = to.person.trim().replace(/^@/, '');
+  return !(SELF_WORDS.test(p) || p === actor.userId || (!!actor.name && p === actor.name));
+}
+
+const asSendTarget = (t: { chat_id?: string; user_id?: string }): SendTarget => (t.chat_id ? { chat_id: t.chat_id } : { user_id: t.user_id ?? '' });
+
+const boundIds = (a?: BoundAction): string[] => (a?.target_id === undefined ? [] : Array.isArray(a.target_id) ? a.target_id : [a.target_id]);
+
+/**
+ * 执行时的兜底：这次真要发的目标（人名已查成 user_id）有没有被同学确认过。
+ * 返回 ok=false 时不能发；ok=true 且带 cardId 时，请求上带上这张卡（X-Agent-Confirm）。
+ *   - 不需要确认的目标：直接放行；
+ *   - 代发确认卡（bound_action 是 POST /bot/messages）：目标必须在卡片绑定的 target_id 里；
+ *   - 其他工具自己的确认卡（如 Temi 送话，卡上已写明会改发私信）：必须是同学真点过的卡（有 cardId）。
+ */
+export function sendAllowed(
+  ctx: { actor?: ActorLike; confirmation?: ToolCallContext['confirmation']; execution?: ToolCallContext['execution'] },
+  target: { chat_id?: string; user_id?: string },
+): { ok: boolean; cardId?: string } {
+  if (ctx.execution) return { ok: !automationTargetCode(ctx.execution, { type: target.chat_id ? 'chat_id' : 'user_id', id: target.chat_id ?? target.user_id ?? '' }, ctx.actor?.userId) };
+  const to = asSendTarget(target);
+  if (!sendNeedsConfirm(to, ctx.actor)) return { ok: true };
+  const c = ctx.confirmation;
+  if (!c) return { ok: false };
+  if (!c.cardId || !c.action || c.action.method.toUpperCase() !== 'POST' || c.action.route !== BOT_MESSAGES_ROUTE) return { ok: false };
+  const id = 'chat_id' in to ? to.chat_id : 'user_id' in to ? to.user_id : '';
+  return boundIds(c.action).includes(id) ? { ok: true, cardId: c.cardId } : { ok: false };
+}
+
+/** 只读调用：写请求一律不发（给确认卡片的预演、绑定用）。 */
+function readOnly(call: Call): Call {
+  return ((method, path, req) =>
+    method === 'GET'
+      ? call(method, path, req)
+      : Promise.resolve({ ok: false, status: 0, error: '预演阶段不发写请求', code: 'DRY_RUN' })) as Call;
+}
+
+interface ResolvedTarget { msg: OutboundMessage; needs: boolean; id?: string; label: string }
+
+async function userLabel(call: Call, id: string, cache: Map<string, string>): Promise<string> {
+  if (cache.has(id)) return cache.get(id)!;
+  const r = await call<{ name?: string }>('GET', `/users/${enc(id)}`);
+  const name = r.ok && r.data?.name ? r.data.name : id;
+  cache.set(id, name);
+  return name;
+}
+
+/** 会话 → 给同学看的说明：单聊写对方名字，群写群名和人数、成员。 */
+async function chatLabel(call: Call, chatId: string, actor: ActorLike | undefined, cache: Map<string, string>): Promise<string> {
+  if (actor?.chatId && chatId === actor.chatId) return '当前对话';
+  const r = await call<{ chat_type?: string; name?: string | null; member_ids?: string[] }>('GET', `/chats/${enc(chatId)}`);
+  if (!r.ok) return `会话 ${chatId}（查不到会话信息${r.status === 404 ? '：不存在，或你不在里面' : ''}）`;
+  const all = r.data.member_ids ?? [];
+  const people = all.filter((id) => id !== BOT_USER_ID);
+  const nameOf = (id: string) => (id === actor?.userId ? Promise.resolve('你') : userLabel(call, id, cache));
+  const botNote = all.includes(BOT_USER_ID) ? '' : '，飞书同学不在这个会话里';
+  if (r.data.chat_type === 'p2p') {
+    const others = people.filter((id) => id !== actor?.userId);
+    if (!others.length) return '你和飞书同学的单聊';
+    return `你和${(await Promise.all(others.map(nameOf))).join('、')}的私聊（单聊${botNote}）`;
+  }
+  const SHOW = 8;
+  const names = await Promise.all(people.slice(0, SHOW).map(nameOf));
+  return `群「${r.data.name || chatId}」（${people.length} 人：${names.join('、')}${people.length > SHOW ? ' 等' : ''}${botNote}）`;
+}
+
+/** 把这次要发的消息逐条查清楚：目标 id、要不要确认、给同学看的名字。 */
+async function resolveOutbound(call: Call, msgs: OutboundMessage[], actor: ActorLike | undefined): Promise<ResolvedTarget[]> {
+  const cache = new Map<string, string>();
+  const out: ResolvedTarget[] = [];
+  for (const msg of msgs) {
+    const needs = sendNeedsConfirm(msg.to, actor);
+    const to = msg.to;
+    if ('chat_id' in to) {
+      out.push({ msg, needs, id: to.chat_id, label: await chatLabel(call, to.chat_id, actor, cache) });
+    } else if ('user_id' in to) {
+      const self = to.user_id === actor?.userId;
+      out.push({ msg, needs, id: to.user_id, label: self ? '你自己（和飞书同学的单聊）' : `${await userLabel(call, to.user_id, cache)}（私信）` });
+    } else {
+      const p = await resolvePeople(call, [to.person]);
+      const hit = p.found[to.person.trim()];
+      if (hit) {
+        const self = hit.user_id === actor?.userId;
+        out.push({ msg, needs: needs && !self, id: hit.user_id, label: self ? '你自己（和飞书同学的单聊）' : `${hit.name}${hit.department ? `（${hit.department}）` : ''}（私信）` });
+      } else {
+        const amb = p.ambiguous[to.person.trim()];
+        out.push({ msg, needs: true, label: amb ? `「${to.person}」（有 ${amb.length} 个同名的人，还没确定是谁，不会发出）` : `「${to.person}」（通讯录里找不到，不会发出）` });
+      }
+    }
+  }
+  return out;
+}
+
+const quoteText = (text: string): string => {
+  const chars = [...text];
+  return chars.length > OUTBOUND_PREVIEW_CHARS
+    ? `${chars.slice(0, OUTBOUND_PREVIEW_CHARS).join('')}…\n（共 ${chars.length} 字，这里只显示前 ${OUTBOUND_PREVIEW_CHARS} 字）`
+    : text;
+};
+
+/** 确认卡片上「发给谁、发什么、以谁的名义」那一段。 */
+export function describeOutbound(targets: ResolvedTarget[]): string {
+  const byText = new Map<string, string[]>();
+  for (const t of targets) byText.set(t.msg.text, [...(byText.get(t.msg.text) ?? []), t.label]);
+  const parts = ['将以你的名义发送消息（对方会看到「通过 AI 助手发送」的标注）：'];
+  for (const [text, labels] of byText) {
+    parts.push(`发给：\n${labels.map((l) => `· ${l}`).join('\n')}`);
+    parts.push(`消息内容：\n${quoteText(text)}`);
+  }
+  return parts.join('\n');
+}
+
+/** 代发确认卡绑定的操作：POST /bot/messages + 目标 chat_id / user_id（A2：一次调用用一次）。 */
+function outboundAction(targets: ResolvedTarget[]): BoundAction {
+  const ids = [...new Set(targets.filter((t) => t.needs && t.id).map((t) => t.id!))];
+  return { method: 'POST', route: BOT_MESSAGES_ROUTE, path: BOT_MESSAGES_ROUTE, ...(ids.length ? { target_id: ids.length === 1 ? ids[0] : ids } : {}) };
+}
 
 export interface CosToolResult {
   ok: boolean;
@@ -48,6 +195,13 @@ export interface CosToolDef<S extends z.ZodTypeAny> {
   bulk?: (input: z.infer<S>) => number;
   /** 确认卡片上的预演说明：会改动 / 删除什么。可以先查一下平台（只读）。 */
   preview?: (input: z.infer<S>, call: Call) => Promise<string | undefined>;
+  /**
+   * 这次调用会代同学发出的消息（代码审查 A4）。有发到当前对话以外的，就先发确认卡片，
+   * 卡片上同时写「做什么」（preview）和「发给谁、发什么」——一张卡，不连弹两张。
+   */
+  outbound?: (input: z.infer<S>) => OutboundMessage[];
+  /** 其他按参数 / 会话要确认的情况（如 cos_api 加急消息）。 */
+  confirmIf?: (input: z.infer<S>, ctx?: ToolCallContext) => boolean;
   run: (input: z.infer<S>, call: Call, ctx: ToolCallContext & { client: CosClient }) => Promise<CosToolResult>;
 }
 
@@ -120,7 +274,9 @@ async function captureWrite<S extends z.ZodTypeAny>(
     get(target, prop, receiver) {
       if (prop === 'request') return call;
       const v = Reflect.get(target, prop, receiver);
-      return typeof v === 'function' ? v.bind(target) : v;
+      // 绑定到代理本身：post / patch / uploadBytes 内部调用 this.request 时也会被拦下，
+      // 不会在演练阶段真的发出写请求（例如代发消息走的 client.post）
+      return typeof v === 'function' ? v.bind(receiver) : v;
     },
   });
   try {
@@ -175,16 +331,18 @@ export function registerCosTool<S extends z.ZodTypeAny>(runtime: AgentRuntime, c
   const parameters = zodToJsonSchema(def.schema);
   COS_TOOL_META.set(def.name, { risk: def.risk ?? {} });
   const callFor = (ctx: ToolCallContext, signal?: AbortSignal): Call => {
-    // 一张确认卡只用一次：只在这次调用的第一个写请求上带（代码审查 A2）
-    let cardId = ctx.confirmation?.cardId;
-    return (method, path, req = {}) => {
+    // 一张确认卡只用一次：只在这次调用的第一个写请求上带（代码审查 A2）。
+    // 代发确认卡（绑定 POST /bot/messages）只给代发请求用，由 botSend 带上，不挂到建会议 / 写文档的请求上。
+    let cardId = ctx.confirmation?.action?.route === BOT_MESSAGES_ROUTE ? undefined : ctx.confirmation?.cardId;
+    return <T = unknown>(method: HttpMethod, path: string, req: Omit<CosRequest, 'actor'> = {}): Promise<CosResult<T>> => {
       const confirmCardId = method !== 'GET' ? cardId : undefined;
       if (confirmCardId) cardId = undefined;
-      return client.request(method, path, {
+      const request: CosRequest = {
         ...req,
         signal: req.signal ?? signal ?? ctx.signal,
         actor: { userId: ctx.actor?.userId, sessionId: ctx.sessionId, toolCallId: ctx.toolCallId, confirmCardId },
-      });
+      };
+      return ctx.execution ? automationRequest<T>(ctx.execution, method, path, request) : client.request<T>(method, path, request);
     };
   };
   const riskOf = (raw: unknown): ToolRisk => {
@@ -199,6 +357,9 @@ export function registerCosTool<S extends z.ZodTypeAny>(runtime: AgentRuntime, c
     return typeof action === 'string' ? inferActionRisk(action) : 'write';
   };
   const parse = (raw: unknown) => def.schema.safeParse(raw);
+  /** 这次调用有没有要发到当前对话以外的消息。 */
+  const outboundNeedsConfirm = (input: z.infer<S>, ctx?: ToolCallContext) =>
+    !ctx?.execution && !!def.outbound?.(input).some((m) => sendNeedsConfirm(m.to, ctx?.actor));
   runtime.registerTool(
     def.name,
     parameters,
@@ -206,6 +367,10 @@ export function registerCosTool<S extends z.ZodTypeAny>(runtime: AgentRuntime, c
       const parsed = parse(raw);
       if (!parsed.success) {
         return { ok: false, error: `参数不对：${parsed.error.issues.map((i) => `${i.path.join('.') || '(根)'} ${i.message}`).join('；')}` };
+      }
+      if (ctx.execution) {
+        const code = automationToolCode(ctx.execution, def.name, ctx.actor?.userId);
+        if (code) return { ok: false, code, delivery: 'blocked' };
       }
       const input = parsed.data as z.infer<S> & { action?: string };
       // 兜底：没经过确认就到了这里（例如直接调用 execute），删除类一律不执行
@@ -216,7 +381,24 @@ export function registerCosTool<S extends z.ZodTypeAny>(runtime: AgentRuntime, c
           error: `「${input.action}」会删除数据且不能撤销，需要同学在确认卡片上点「确认」后才能执行。`,
         } satisfies CosToolResult;
       }
+      // 兜底（代码审查 A4）：要往别的会话 / 别人发消息却没经过确认，整个调用都不做（不会建了会议才发现通知发不出去）
+      if (!ctx.confirmation && outboundNeedsConfirm(input, ctx)) {
+        return {
+          ok: false,
+          need_confirmation: true,
+          code: 'SEND_NEEDS_CONFIRM',
+          error: '这一步要以同学的名义往当前对话以外的会话或别人发消息，需要同学在确认卡片上点「确认」后才能执行。',
+        } satisfies CosToolResult;
+      }
+      if (!ctx.confirmation && def.confirmIf?.(input, ctx)) {
+        return { ok: false, need_confirmation: true, error: '这一步需要同学在确认卡片上点「确认」后才能执行。' } satisfies CosToolResult;
+      }
       try {
+        if (ctx.execution) {
+          const operationId = `${def.name}:${revisionOf(parsed.data)}`;
+          const trustedCtx = { ...ctx, toolCallId: operationId };
+          return await automationOperation(ctx.execution, operationId, () => def.run(parsed.data, callFor(trustedCtx), { ...trustedCtx, client }));
+        }
         return await def.run(parsed.data, callFor(ctx), { ...ctx, client });
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -226,27 +408,41 @@ export function registerCosTool<S extends z.ZodTypeAny>(runtime: AgentRuntime, c
       description: def.description,
       policy: {
         risk: riskOf,
-        needsConfirm: (raw, risk) => {
+        needsConfirm: (raw, risk, ctx) => {
           if (risk === 'destructive' || risk === 'physical') return true;
-          if (risk !== 'write' || !def.bulk) return false;
           const p = parse(raw);
-          return p.success && def.bulk(p.data) > BULK_CONFIRM;
+          if (!p.success) return false;
+          // 代发消息按「发到哪」判断（代码审查 A4）；其余写入按条数
+          if (outboundNeedsConfirm(p.data, ctx)) return true;
+          if (def.confirmIf?.(p.data, ctx)) return true;
+          if (ctx?.execution && def.name === 'cos_broadcast') return false;
+          return risk === 'write' && !!def.bulk && def.bulk(p.data) > BULK_CONFIRM;
         },
         label: (raw) => defaultToolLabel(def.name, raw),
         bind: async (raw, ctx) => {
           const p = parse(raw);
           if (!p.success) return undefined;
+          if (outboundNeedsConfirm(p.data, ctx)) {
+            // 代发：卡片绑定 POST /bot/messages + 目标 chat_id / user_id（人名先查成 user_id）
+            const targets = await resolveOutbound(readOnly(callFor(ctx, AbortSignal.timeout(8_000))), def.outbound!(p.data), ctx.actor);
+            return outboundAction(targets);
+          }
           const w = await captureWrite(def, p.data, client, ctx);
           return w ? boundActionOf(w.method, w.path, w.body) : undefined;
         },
-        preview: def.preview
-          ? async (raw, ctx) => {
-              const p = parse(raw);
-              if (!p.success) return undefined;
-              // 预演只读：超时 8 秒，失败就用默认说明
-              return def.preview!(p.data, callFor(ctx, AbortSignal.timeout(8_000)));
-            }
-          : undefined,
+        preview:
+          def.preview || def.outbound
+            ? async (raw, ctx) => {
+                const p = parse(raw);
+                if (!p.success) return undefined;
+                // 预演只读：超时 8 秒，失败就用默认说明
+                const call = readOnly(callFor(ctx, AbortSignal.timeout(8_000)));
+                const base = def.preview ? await def.preview(p.data, call).catch(() => undefined) : undefined;
+                if (!outboundNeedsConfirm(p.data, ctx)) return base;
+                const send = describeOutbound(await resolveOutbound(call, def.outbound!(p.data), ctx.actor));
+                return [base, send].filter(Boolean).join('\n\n');
+              }
+            : undefined,
       },
     },
   );

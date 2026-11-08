@@ -7,9 +7,10 @@
  */
 
 import { z } from 'zod';
+import { deliverAutomation } from '../../runtime/automation-execution.js';
 import type { CosClient } from '../../cos-sdk/client.js';
-import type { AgentRuntime } from '../../runtime/types.js';
-import { enc, fromResult, need, registerCosTool, type Call, type CosToolResult } from './define.js';
+import type { AgentRuntime, ToolCallContext } from '../../runtime/types.js';
+import { enc, fromResult, need, registerCosTool, sendAllowed, type Call, type CosToolResult } from './define.js';
 
 // ---------------------------------------------------------------- 确认卡片上的预演说明
 
@@ -357,6 +358,83 @@ function registerDoc(runtime: AgentRuntime, client: CosClient) {
   });
 }
 
+// ---------------------------------------------------------------- cos_wiki
+
+const wikiSchema = z.object({
+  action: z.enum(['list_spaces', 'list_nodes', 'get_node', 'create_page', 'rename_page', 'append_page', 'import_doc']),
+  space_id: z.string().optional().describe('知识空间 ID（先 list_spaces 获取）'),
+  parent_id: z.string().nullable().optional().describe('父页面 node_id；不填或 null = 放在空间根目录'),
+  node_id: z.string().optional(),
+  doc_id: z.string().optional().describe('import_doc：要移入知识库的已有云文档'),
+  title: z.string().optional(),
+  markdown: z.string().optional().describe('create_page 的初始正文 / append_page 追加的 Markdown'),
+});
+
+function registerWiki(runtime: AgentRuntime, client: CosClient) {
+  registerCosTool(runtime, client, {
+    name: 'cos_wiki',
+    description:
+      'ClassmateOS 知识库（知识空间里的页面树）。同学说「在知识库 / 知识空间 / wiki 里新建页面、写到知识库」时必须用它，不要用 cos_doc（cos_doc 建的是云文档，不在知识库里）。' +
+      '流程：list_spaces 找空间 → （要放在某页面下就 list_nodes）→ create_page 建页面并写入正文。已有云文档要放进知识库用 import_doc。',
+    schema: wikiSchema,
+    risk: { create_page: 'write', rename_page: 'write', append_page: 'write', import_doc: 'write' },
+    async run(i, call) {
+      const sp = i.space_id ? `/wiki/spaces/${enc(i.space_id)}` : '';
+      switch (i.action) {
+        case 'list_spaces':
+          return fromResult(await call('GET', '/wiki/spaces'));
+        case 'list_nodes': {
+          const m = need(i, 'list_nodes', ['space_id']);
+          if (m) return m;
+          return fromResult(await call('GET', `${sp}/nodes`, { query: i.parent_id ? { parent_id: i.parent_id } : undefined }));
+        }
+        case 'get_node':
+          return need(i, 'get_node', ['node_id']) ?? fromResult(await call('GET', `/wiki/nodes/${enc(i.node_id!)}`));
+        case 'create_page': {
+          const m = need(i, 'create_page', ['space_id', 'title']);
+          if (m) return m;
+          const r = await call<{ node_id: string; obj_id?: string }>('POST', `${sp}/nodes`, {
+            body: { parent_id: i.parent_id ?? null, title: i.title, obj_type: 'doc' },
+          });
+          if (!r.ok) return fromResult(r);
+          const docId = r.data.obj_id;
+          if (i.markdown && docId) {
+            const w = await call('PATCH', `/docs/${enc(docId)}`, { body: { markdown: i.markdown } });
+            if (!w.ok) return { ...fromResult(r), ok: false, error: `页面已建好（${r.data.node_id}），但写入正文失败` };
+          }
+          return fromResult(r, (x) => `已在知识库新建页面「${i.title}」(${x.node_id})`, (x) => [`cos://wiki/${i.space_id}/${x.node_id}`]);
+        }
+        case 'rename_page': {
+          const m = need(i, 'rename_page', ['node_id', 'title']);
+          if (m) return m;
+          return fromResult(await call('PATCH', `/wiki/nodes/${enc(i.node_id!)}`, { body: { title: i.title } }), () => '页面已改名');
+        }
+        case 'append_page': {
+          const m = need(i, 'append_page', ['node_id', 'markdown']);
+          if (m) return m;
+          const n = await call<{ obj_id?: string }>('GET', `/wiki/nodes/${enc(i.node_id!)}`);
+          if (!n.ok) return fromResult(n);
+          const docId = n.data.obj_id;
+          if (!docId) return { ok: false, error: '没找到这个页面对应的文档' };
+          for (let a = 0; a < 2; a++) {
+            const cur = await call<{ markdown: string; updated_at: string }>('GET', `/docs/${enc(docId)}`);
+            if (!cur.ok) return fromResult(cur);
+            const sep = cur.data.markdown && !cur.data.markdown.endsWith('\n') ? '\n\n' : cur.data.markdown ? '\n' : '';
+            const r = await call('PATCH', `/docs/${enc(docId)}`, { body: { markdown: `${cur.data.markdown}${sep}${i.markdown}`, base_updated_at: cur.data.updated_at } });
+            if (r.ok || r.status !== 409) return fromResult(r, () => '已追加到知识库页面末尾');
+          }
+          return { ok: false, error: '页面正被别人频繁修改，追加失败，请稍后再试' };
+        }
+        case 'import_doc': {
+          const m = need(i, 'import_doc', ['space_id', 'doc_id']);
+          if (m) return m;
+          return fromResult(await call('POST', `${sp}/import`, { body: { doc_id: i.doc_id, parent_id: i.parent_id ?? null } }), () => '文档已移入知识库');
+        }
+      }
+    },
+  });
+}
+
 // ---------------------------------------------------------------- cos_calendar
 
 const calSchema = z.object({
@@ -480,9 +558,12 @@ function registerIm(runtime: AgentRuntime, client: CosClient) {
   registerCosTool(runtime, client, {
     name: 'cos_im',
     description:
-      'ClassmateOS 消息：列出同学所在的会话、读会话历史、搜索消息、以「飞书同学」身份发消息（发到群需要提问的同学也在群里，或私聊发给某位同学）。',
+      'ClassmateOS 消息：列出同学所在的会话、读会话历史、搜索消息、以「飞书同学」身份代同学发消息（发到群需要提问的同学也在群里，或私聊发给某位同学）。' +
+      '发到当前对话以外的会话、或私信别人时，系统会先给同学发确认卡片。',
     schema: imSchema,
     risk: { send: 'write' },
+    // 代码审查 A4：按「发到哪」决定要不要确认
+    outbound: (i) => (i.action === 'send' && i.text && (i.chat_id || i.user_id) ? [{ to: i.chat_id ? { chat_id: i.chat_id } : { user_id: i.user_id! }, text: i.text }] : []),
     async run(i, call, ctx) {
       switch (i.action) {
         case 'list_chats':
@@ -511,20 +592,45 @@ function registerIm(runtime: AgentRuntime, client: CosClient) {
  *   - 发到群：服务端只看这位同学在不在群里，机器人不在群也能发，消息自动带 sent_on_behalf_of 代发标记；
  *   - 私发某人：机器人与对方的单聊里发出，同样带代发标记（发给同学本人时不标）。
  * 成员检查交给服务端，避免客户端先查一次再发的竞态和误报。
+ * 发到当前对话以外时要先经过同学确认（代码审查 A4，见 define.ts 的 sendNeedsConfirm / sendAllowed）。
  */
+export interface BotSendContext {
+  execution?: ToolCallContext['execution'];
+  actor?: { userId?: string; chatId?: string; name?: string };
+  sessionId: string;
+  toolCallId: string;
+  signal?: AbortSignal;
+  confirmation?: ToolCallContext['confirmation'];
+}
+
 export async function botSend(
   client: CosClient,
-  ctx: { actor?: { userId?: string }; sessionId: string; toolCallId: string; signal?: AbortSignal },
+  ctx: BotSendContext,
   target: { chat_id?: string; user_id?: string },
   text: string,
 ): Promise<CosToolResult> {
+  if (ctx.execution) {
+    const delivery = await deliverAutomation(ctx.execution, { type: target.chat_id ? 'chat_id' : 'user_id', id: target.chat_id ?? target.user_id ?? '' }, `tool:${ctx.toolCallId}`, 'business', ctx.actor?.userId);
+    return { ok: delivery.status === 'sent', code: delivery.code, data: { delivery }, ...(delivery.status !== 'sent' ? { error: '自动化投递受阻或失败，业务对象不会因此回滚' } : {}) };
+  }
   // 和其他调用一样：没有发消息人时用 defaultUserId（定时任务的服务账号），匿名一律拒绝
   const userId = client.resolveUserId(ctx.actor);
   if (!userId) return { ok: false, code: 'NO_ACTOR', error: '不知道代表哪位同学发消息（缺少发消息人身份）' };
+  // 代码审查 A4：发到当前对话以外（别的群、别人的私聊、私信别人）必须是同学确认过的目标。
+  // 所有代发入口（cos_im / 约会议通知 / 写文档分享 / 群发私信 / Temi 改发私信）都走这里。
+  const allowed = sendAllowed(ctx, target);
+  if (!allowed.ok) {
+    return {
+      ok: false,
+      need_confirmation: true,
+      code: 'SEND_NEEDS_CONFIRM',
+      error: '要以同学的名义往当前对话以外的会话或别人发消息，但同学没有确认过发到这里，这条消息没有发出。',
+    };
+  }
   const r = await client.post(
     '/bot/messages',
     { receive_id: target.chat_id ?? target.user_id, receive_id_type: target.chat_id ? 'chat_id' : 'user_id', msg_type: 'text', content: { text } },
-    { actor: { userId, sessionId: ctx.sessionId, toolCallId: ctx.toolCallId }, signal: ctx.signal },
+    { actor: { userId, sessionId: ctx.sessionId, toolCallId: ctx.toolCallId, ...(allowed.cardId ? { confirmCardId: allowed.cardId } : {}) }, signal: ctx.signal },
   );
   if (!r.ok) {
     if (r.code === 'CHAT_NOT_MEMBER') return { ok: false, code: 'CHAT_NOT_MEMBER', error: '你不在这个会话里，不能代你往里面发消息' };
@@ -536,7 +642,7 @@ export async function botSend(
 // ---------------------------------------------------------------- cos_drive
 
 const driveSchema = z.object({
-  action: z.enum(['list', 'usage', 'download_url', 'upload_text', 'delete']),
+  action: z.enum(['list', 'usage', 'download_url', 'upload_text', 'remove_from_drive']),
   file_key: z.string().optional(),
   keyword: z.string().optional(),
   scope: z.enum(['all', 'mine', 'shared']).optional(),
@@ -549,10 +655,10 @@ const driveSchema = z.object({
 function registerDrive(runtime: AgentRuntime, client: CosClient) {
   registerCosTool(runtime, client, {
     name: 'cos_drive',
-    description: 'ClassmateOS 云盘：列文件、查容量、拿下载链接、把一段文本（CSV/Markdown/JSON）存成文件放进同学云盘、删除文件。',
+    description: 'ClassmateOS 云盘：列文件、查容量、拿下载链接、把一段文本（CSV/Markdown/JSON）存成文件放进同学云盘、移出自己上传的文件。移出云盘后，仍被会话或表格引用的文件会保留在引用位置。',
     schema: driveSchema,
-    risk: { upload_text: 'write', delete: 'destructive' },
-    preview: async (i) => (i.action === 'delete' && i.file_key ? `将删除云盘文件 ${i.file_key}，删除后不能撤销。` : undefined),
+    risk: { upload_text: 'write', remove_from_drive: 'write' },
+    preview: async (i) => (i.action === 'remove_from_drive' && i.file_key ? `将把文件 ${i.file_key} 移出你的云盘；如果仍被会话或表格引用，引用位置会继续保留。` : undefined),
     async run(i, call, ctx) {
       switch (i.action) {
         case 'list':
@@ -561,8 +667,8 @@ function registerDrive(runtime: AgentRuntime, client: CosClient) {
           return fromResult(await call('GET', '/files/usage'));
         case 'download_url':
           return need(i, 'download_url', ['file_key']) ?? fromResult(await call('GET', `/files/${enc(i.file_key!)}/download-url`));
-        case 'delete':
-          return need(i, 'delete', ['file_key']) ?? fromResult(await call('DELETE', `/files/${enc(i.file_key!)}`), () => '文件已删除');
+        case 'remove_from_drive':
+          return need(i, 'remove_from_drive', ['file_key']) ?? fromResult(await call('DELETE', `/files/${enc(i.file_key!)}`), (d) => (d as { deleted?: boolean }).deleted ? '文件已移出云盘并删除' : '文件已移出云盘；因仍有引用，文件保留在引用位置');
         case 'upload_text': {
           const m = need(i, 'upload_text', ['file_name', 'content']);
           if (m) return m;
@@ -577,6 +683,61 @@ function registerDrive(runtime: AgentRuntime, client: CosClient) {
           return { ok: true, data: up.data, summary: `已保存「${i.file_name}」`, links: [`cos://file/${up.data.file_key}`] };
         }
       }
+    },
+  });
+}
+
+// ---------------------------------------------------------------- cos_workbench
+
+const dashboardSchema = z.object({
+  action: z.enum(['list', 'data', 'create', 'update', 'delete']),
+  dashboard_id: z.string().optional().describe('update / delete：看板 id'),
+  title: z.string().optional().describe('create / update：看板标题'),
+  table_key: z.string().optional().describe('create / update：数据表 key；先 list 获取'),
+  field_name: z.string().nullable().optional().describe('按字段统计时使用的字段名；数字模板可不填'),
+  template: z.enum(['number', 'bar', 'donut', 'recent']).optional().describe('number=记录总数，bar=条形图，donut=占比条，recent=最近记录列表'),
+  limit: z.number().int().min(3).max(20).optional().describe('recent 模板显示条数，3 到 20'),
+});
+
+type DashboardItem = { id: string; title: string; table_key: string; field_name?: string | null; template: string; limit?: number };
+
+function registerWorkbench(runtime: AgentRuntime, client: CosClient) {
+  registerCosTool(runtime, client, {
+    name: 'cos_workbench',
+    description:
+      'ClassmateOS 工作台数据看板：查看当前用户可访问的自定义数据表和已有看板，按用户需求创建或修改数字统计、条形图、占比条、最近记录列表看板，也可以删除看板配置。看板只影响当前用户的工作台，不会删除数据表或记录。创建前先 list 了解 table_key 和字段名；bar、donut、recent 必须指定 field_name。',
+    schema: dashboardSchema,
+    risk: { delete: 'destructive', create: 'write', update: 'write' },
+    preview: async (i) => i.action === 'delete' ? `将从你的工作台移除看板「${i.dashboard_id ?? ''}」，不会删除数据表或记录。` : undefined,
+    async run(i, call) {
+      if (i.action === 'list') return fromResult(await call('GET', '/workbench/dashboards'));
+      if (i.action === 'data') return fromResult(await call('GET', '/workbench/dashboards/data'));
+      const current = await call<{ dashboards?: DashboardItem[] }>('GET', '/workbench/dashboards');
+      if (!current.ok) return fromResult(current);
+      const items = Array.isArray(current.data.dashboards) ? current.data.dashboards : [];
+      if (i.action === 'delete') {
+        const next = items.filter((d) => d.id !== i.dashboard_id);
+        if (next.length === items.length) return { ok: false, error: '找不到这个看板，请先用 list 查看已有看板' };
+        return fromResult(await call('PUT', '/workbench/dashboards', { body: { dashboards: next } }), () => '看板已从工作台移除');
+      }
+      if (!i.title || !i.table_key || !i.template) return { ok: false, error: '创建或修改看板需要 title、table_key、template' };
+      if (i.template !== 'number' && !i.field_name) return { ok: false, error: '条形图、占比条和最近记录列表需要 field_name' };
+      const item: DashboardItem = {
+        id: i.action === 'update' ? (i.dashboard_id ?? '') : '',
+        title: i.title,
+        table_key: i.table_key,
+        field_name: i.field_name ?? null,
+        template: i.template,
+        limit: i.limit ?? 5,
+      };
+      let next: DashboardItem[];
+      if (i.action === 'update') {
+        if (!i.dashboard_id || !items.some((d) => d.id === i.dashboard_id)) return { ok: false, error: '找不到这个看板，请先用 list 查看已有看板' };
+        next = items.map((d) => d.id === i.dashboard_id ? { ...d, ...item, id: d.id } : d);
+      } else {
+        next = [...items, item];
+      }
+      return fromResult(await call('PUT', '/workbench/dashboards', { body: { dashboards: next } }), (d) => i.action === 'create' ? '看板已添加到工作台' : '看板已更新');
     },
   });
 }
@@ -656,10 +817,12 @@ function registerSearch(runtime: AgentRuntime, client: CosClient) {
 export function registerCosResourceTools(runtime: AgentRuntime, client: CosClient): void {
   registerTable(runtime, client);
   registerDoc(runtime, client);
+  registerWiki(runtime, client);
   registerCalendar(runtime, client);
   registerTask(runtime, client);
   registerIm(runtime, client);
   registerDrive(runtime, client);
+  registerWorkbench(runtime, client);
   registerContact(runtime, client);
   registerNotify(runtime, client);
   registerSearch(runtime, client);

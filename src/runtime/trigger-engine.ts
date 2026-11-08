@@ -14,6 +14,8 @@
  * 同一个触发器串行；全局最多 maxConcurrent 个同时运行，其余排队，队列满了丢弃并记日志。
  */
 
+import { beginAutomation, deliverAutomation, automationStatus, executionCode, revisionOf, type AutomationBackend } from './automation-execution.js';
+import { occurrenceTime, scheduleOccurrence, type TrustedScheduler } from './automation-scheduler-client.js';
 import cron, { type ScheduledTask } from 'node-cron';
 import type { CosClient } from '../cos-sdk/client.js';
 import type { BotEventSource } from '../pal/bot-events.js';
@@ -24,6 +26,7 @@ export type TriggerEvent = 'record.changed' | 'task.assigned' | 'task.updated' |
 
 export interface Trigger {
   trigger_id: string;
+  task_revision?: string;
   owner_id: string;
   name: string;
   event: TriggerEvent;
@@ -41,6 +44,8 @@ export interface Trigger {
 export type PlatformEvent = { event_id?: string; event_type: string; via_bot?: boolean } & Record<string, unknown>;
 
 export interface TriggerEngineOptions {
+  automationBackend?: AutomationBackend;
+  trustedScheduler?: TrustedScheduler;
   client: CosClient;
   runtime: AgentRuntime;
   im: Pick<ImService, 'sendText'>;
@@ -55,6 +60,8 @@ export interface TriggerEngineOptions {
   /** 关闭 cron（测试用）。 */
   cron?: boolean;
   now?: () => number;
+  /** 可信调度器扫描待恢复触发的间隔（默认 20 秒；每条记录自己的退避时间另算）。 */
+  recoveryIntervalMs?: number;
 }
 
 export interface TriggerEngine {
@@ -64,14 +71,16 @@ export interface TriggerEngine {
   /** 测试 / 诊断：处理一条平台事件，返回被触发的触发器 id。 */
   handleEvent(e: PlatformEvent): Promise<string[]>;
   /** 测试 / 诊断：立即执行某个触发器（schedule 或手动）。 */
-  fire(triggerId: string, reason?: string): Promise<FireResult | undefined>;
+  fire(triggerId: string, reason?: string, scheduledAt?: number): Promise<FireResult | undefined>;
+  /** 测试 / 诊断：立即扫描一次待恢复触发（与定时恢复同一条路径）。 */
+  recoverNow(): Promise<void>;
   list(): Trigger[];
   /** 等所有排队中的执行结束（测试用）。 */
   idle(): Promise<void>;
 }
 
 export interface FireResult {
-  status: 'done' | 'skipped' | 'failed' | 'cooldown';
+  status: 'done' | 'skipped' | 'failed' | 'cooldown' | 'blocked' | 'partial';
   output?: string;
 }
 
@@ -167,6 +176,19 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
   const inflight = new Set<Promise<unknown>>();
   let unsubscribe: (() => void) | undefined;
   let stopped = false;
+  let recoveryTimer: ReturnType<typeof setInterval> | undefined;
+  let recovering = false;
+  async function recover() {
+    if (recovering || stopped) return;
+    recovering = true;
+    try {
+      for (const r of (await opts.trustedScheduler?.recover()) ?? []) {
+        // 只记任务、触发时刻和结果码；不记凭证、正文、目标名单
+        log(`[triggers] ${r.taskId} ${r.occurrenceId} 恢复 → ${r.result.status}${r.result.output ? ` (${r.result.output})` : ''}${r.result.retryAt ? `，${new Date(r.result.retryAt).toISOString()} 后再试` : ''}`);
+      }
+    } catch { onError(new Error('自动化恢复失败')); }
+    finally { recovering = false; }
+  }
 
   const bot = { asBot: true as const };
 
@@ -195,7 +217,7 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
     if (opts.cron === false || stopped) return;
     for (const t of triggers.values()) {
       if (t.event !== 'schedule' || !t.cron || cronTasks.has(t.trigger_id) || !cron.validate(t.cron)) continue;
-      const task = cron.schedule(t.cron, () => void fire(t.trigger_id).catch(onError), { timezone: 'Asia/Shanghai' }) as ScheduledTask & { __expr?: string };
+      const task = cron.schedule(t.cron, (context) => void fire(t.trigger_id, undefined, context.date.getTime()).catch(onError), { timezone: 'Asia/Shanghai' }) as ScheduledTask & { __expr?: string };
       task.__expr = t.cron;
       cronTasks.set(t.trigger_id, task);
     }
@@ -244,43 +266,59 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
     waiters.shift()?.();
   }
 
-  async function execute(queued: Trigger, what: string): Promise<FireResult> {
+  async function execute(queued: Trigger, what: string, occurrenceId?: string): Promise<FireResult> {
     const t = triggers.get(queued.trigger_id);
     // 排队期间被停用、删除或网关停止：不再执行
     if (stopped || !t?.enabled) return { status: 'skipped', output: '自动化已停用' };
     const cooldown = (t.cooldown_sec ?? 300) * 1000;
+    // 可信定时路径按计划触发时刻算冷却：cron 回调晚几百毫秒不会把下一周期误判成冷却中
+    const at = opts.trustedScheduler && occurrenceId ? (occurrenceTime(occurrenceId) ?? now()) : now();
     const last = lastFire.get(t.trigger_id);
-    if (last !== undefined && now() - last < cooldown) {
+    if (last !== undefined && at - last < cooldown) {
       log(`[triggers] ${t.trigger_id} cooldown`);
       return { status: 'cooldown' };
     }
-    lastFire.set(t.trigger_id, now());
+    lastFire.set(t.trigger_id, at);
     await acquire();
     let result: FireResult;
     try {
+      if (opts.trustedScheduler) {
+        result = t.event === 'schedule' && occurrenceId
+          ? await opts.trustedScheduler.execute(t.trigger_id, occurrenceId)
+          : { status: 'blocked', output: 'UNSUPPORTED_CAPABILITY' };
+        const r = result as FireResult & { runId?: string; retryAt?: number };
+        if (r.retryAt) log(`[triggers] ${t.trigger_id} ${occurrenceId} 待恢复：${new Date(r.retryAt).toISOString()} 后再试`);
+      } else {
+      const execution = await beginAutomation({ taskKind: 'trigger', taskId: t.trigger_id, taskRevision: t.task_revision ?? revisionOf({ prompt: t.prompt, condition: t.condition, filter: t.filter, cron: t.cron, chat_id: t.chat_id, owner_id: t.owner_id }), principalId: t.owner_id, occurrenceId: `trg_${t.trigger_id}_${now()}` }, opts.automationBackend);
+      const denied = executionCode(execution, t.owner_id);
+      if (denied) {
+        result = { status: 'blocked', output: denied };
+      } else {
       const prompt = buildTriggerPrompt(t, what);
       const res = await opts.runtime.runSession({
         sessionId: `trg_${t.trigger_id}_${now()}`,
         messages: [{ role: 'user', content: prompt }],
-        actor: { userId: t.owner_id, chatId: t.chat_id ?? undefined },
+        actor: { userId: t.owner_id },
+        execution,
         systemPrompt: opts.systemPromptFor?.(`${t.prompt} ${t.condition ?? ''}`),
         maxTurns: 12,
       });
       const out = res.output.trim();
       if (!out || /^skip\b/i.test(out) || out === 'SKIP') {
-        result = { status: 'skipped', output: out };
+        result = { status: 'skipped' };
       } else {
-        const sent = await opts.im.sendText(t.chat_id ?? t.owner_id, `🤖 自动化「${t.name}」\n${out}`, t.chat_id ? 'chat_id' : 'user_id');
-        if (!sent.ok) onError(new Error(`trigger result send failed: ${sent.error}`));
-        result = { status: 'done', output: out };
+        const sent = await deliverAutomation(execution, { type: t.chat_id ? 'chat_id' : 'user_id', id: t.chat_id ?? t.owner_id }, 'final', 'final', t.owner_id);
+        result = { status: automationStatus(execution), output: sent.code };
+      }
+      }
       }
     } catch (err) {
-      onError(err);
-      result = { status: 'failed', output: err instanceof Error ? err.message : String(err) };
+      onError(new Error('自动化运行失败'));
+      result = { status: 'failed', output: 'RUN_FAILED' };
     } finally {
       release();
     }
-    const note = result.status === 'skipped' ? '条件不满足，未打扰' : result.status === 'failed' ? `失败：${result.output}` : (result.output ?? '');
+    const note = `自动化状态：${result.status}`;
     const r = await opts.client.post(`/bot/triggers/${encodeURIComponent(t.trigger_id)}/fired`, { result: note.slice(0, 500) }, bot);
     if (!r.ok) onError(new Error(`trigger fired report failed: ${r.error}`));
     log(`[triggers] ${t.trigger_id} → ${result.status}`);
@@ -288,13 +326,13 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
   }
 
   /** 同一个触发器串行。 */
-  function enqueue(t: Trigger, what: string): Promise<FireResult> {
+  function enqueue(t: Trigger, what: string, occurrenceId?: string): Promise<FireResult> {
     if (inflight.size >= maxQueue) {
       onError(new Error(`trigger queue full, dropped ${t.trigger_id}`));
       return Promise.resolve({ status: 'skipped' as const });
     }
     const prev = perTrigger.get(t.trigger_id) ?? Promise.resolve();
-    const p = prev.catch(() => undefined).then(() => execute(t, what));
+    const p = prev.catch(() => undefined).then(() => execute(t, what, occurrenceId));
     perTrigger.set(t.trigger_id, p);
     inflight.add(p);
     void p.finally(() => {
@@ -304,10 +342,10 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
     return p;
   }
 
-  async function fire(triggerId: string, reason?: string): Promise<FireResult | undefined> {
+  async function fire(triggerId: string, reason?: string, scheduledAt = now()): Promise<FireResult | undefined> {
     const t = triggers.get(triggerId);
     if (!t || stopped) return undefined;
-    return enqueue(t, describeEvent(t, undefined, reason));
+    return enqueue(t, describeEvent(t, undefined, reason), t.event === 'schedule' && t.cron ? scheduleOccurrence(t.cron, scheduledAt) : undefined);
   }
 
   async function handleEvent(e: PlatformEvent): Promise<string[]> {
@@ -319,6 +357,10 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
     const fired: string[] = [];
     for (const t of triggers.values()) {
       if (!matchTrigger(t, e)) continue;
+      if (opts.trustedScheduler) {
+        log(`[triggers] ${t.trigger_id} blocked: UNSUPPORTED_CAPABILITY`);
+        continue;
+      }
       try {
         if (!(await ownerCanSee(t, e))) continue;
       } catch (err) {
@@ -335,17 +377,24 @@ export function createTriggerEngine(opts: TriggerEngineOptions): TriggerEngine {
     async start() {
       stopped = false;
       await reload();
+      if (opts.trustedScheduler) {
+        await recover();
+        recoveryTimer = setInterval(() => void recover(), opts.recoveryIntervalMs ?? 20_000);
+        recoveryTimer.unref();
+      }
       if (opts.eventSource) {
         unsubscribe = opts.eventSource.onEvent((e) => void handleEvent(e as unknown as PlatformEvent).catch(onError));
       }
     },
     stop() {
       stopped = true;
+      if (recoveryTimer) clearInterval(recoveryTimer);
       unsubscribe?.();
       for (const t of cronTasks.values()) t.stop();
       cronTasks.clear();
     },
     reload,
+    recoverNow: recover,
     handleEvent,
     fire,
     list: () => [...triggers.values()],

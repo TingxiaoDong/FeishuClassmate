@@ -58,6 +58,54 @@ export const COS_API_CATALOG: CosApiEntry[] = [
   },
   {
     "method": "GET",
+    "path": "/automation/capabilities",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "GET",
+    "path": "/automation/drafts",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "POST",
+    "path": "/automation/drafts",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "GET",
+    "path": "/automation/drafts/:draftId",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "POST",
+    "path": "/automation/drafts/:draftId/approve",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "POST",
+    "path": "/automation/drafts/:draftId/revoke",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "GET",
+    "path": "/automation/runs",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "GET",
+    "path": "/automation/runs/:runId",
+    "group": "other",
+    "summary": ""
+  },
+  {
+    "method": "GET",
     "path": "/calendar/events",
     "group": "calendar",
     "summary": "查询时间窗内的日程"
@@ -1147,5 +1195,23 @@ export const COS_API_CATALOG: CosApiEntry[] = [
     "path": "/workbench/shortcuts",
     "group": "other",
     "summary": "整体覆盖我的快捷方式（最多 50 个），新项分配 id"
+  },
+  {
+    "method": "GET",
+    "path": "/workbench/dashboards",
+    "group": "workbench",
+    "summary": "查看我的看板和可访问的自定义数据表字段"
+  },
+  {
+    "method": "PUT",
+    "path": "/workbench/dashboards",
+    "group": "workbench",
+    "summary": "整体保存我的工作台看板配置"
+  },
+  {
+    "method": "GET",
+    "path": "/workbench/dashboards/data",
+    "group": "workbench",
+    "summary": "查看我的看板统计数据"
   }
 ];

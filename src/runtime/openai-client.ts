@@ -1,15 +1,7 @@
 /**
- * OpenAI-compatible LLM client targeting the MetaClaw proxy (PLAN §0.2 / §1.2-A3).
- *
- * MetaClaw is a transparent OpenAI-compatible proxy (default :30000/v1) that
- * sits between the brain and the real LLM: it injects relevant skills per turn
- * and distils new SKILL.md files at session end. Integration surface is
- * deliberately tiny:
- *   1. `base_url` points at the proxy;
- *   2. every request carries `X-Session-Id` and `X-Turn-Type` headers;
- *   3. when a session ends we POST `/v1/memory/flush_session`.
- *
- * Zero dependencies — uses the global `fetch` (Node >= 18).
+ * OpenAI-compatible LLM client for the ClassmateOS agent gateway.
+ * Uses the standard `/chat/completions` API and carries the session metadata
+ * required by the gateway. Zero dependencies; uses the global `fetch`.
  */
 
 import type { ChatMessage } from './types.js';
@@ -40,7 +32,7 @@ export interface ChatCompletionRequest {
   messages: ChatMessage[];
   tools?: ToolSpecForLlm[];
   sessionId: string;
-  /** MetaClaw turn annotation: 'user' for user-initiated turns, 'tool' after tool results. */
+  /** Gateway turn annotation: 'user' for user-initiated turns, 'tool' after tool results. */
   turnType: 'user' | 'tool';
   temperature?: number;
   /** 会话被中断时取消正在进行的请求。 */
@@ -82,7 +74,7 @@ export class LlmError extends Error {
   }
 }
 
-export class MetaClawLlmClient {
+export class OpenAiLlmClient {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly apiKey?: string;
@@ -144,22 +136,6 @@ export class MetaClawLlmClient {
     };
   }
 
-  /**
-   * Signal session end so MetaClaw can distil skills / flush incremental
-   * memory (PLAN §1.2-A4). Best-effort: callers should not let a flush
-   * failure break the session.
-   */
-  async flushSession(sessionId: string): Promise<void> {
-    const res = await this.fetchWithTimeout(`${this.baseUrl}/memory/flush_session`, {
-      method: 'POST',
-      headers: this.headers(sessionId, 'user'),
-      body: JSON.stringify({ session_id: sessionId }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new LlmError(`flush_session failed: HTTP ${res.status}`, res.status, text.slice(0, 500));
-    }
-  }
 
   private headers(sessionId: string, turnType: string): Record<string, string> {
     const h: Record<string, string> = {

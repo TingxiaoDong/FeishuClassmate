@@ -1,7 +1,7 @@
 /**
  * `classmate` standalone CLI (PLAN §1.2-A7).
  *
- * Replaces `openclaw classmate <cmd>`. Zero new deps — hand-rolled argv
+ * Replaces `classmate <cmd>`. Zero new deps — hand-rolled argv
  * parsing is enough for three subcommands.
  *
  *   classmate status     打印配置/连通性健康状态（对齐旧 CLI 输出）
@@ -11,11 +11,11 @@
  * Entry: bin.mjs next to this file (built output) or via `node --experimental-strip-types`.
  */
 
+import { createGatewayTriggers } from './gateway-triggers.js';
 import { loadConfig } from './config-loader.js';
-import { createRuntime } from './index.js';
-import { scheduledPrompt, startScheduler } from './scheduler.js';
+import { runScheduledAutomation } from './scheduler.js';
+import { startScheduler } from './scheduler.js';
 import { createCosJobTracker } from './job-tracker.js';
-import { createTriggerEngine } from './trigger-engine.js';
 import { createBrain } from './brain.js';
 import { createBotGateway } from './bot-gateway.js';
 import { attachPlatformMetrics } from './agent-metrics.js';
@@ -35,12 +35,14 @@ Commands:
 
 Env:
   CLASSMATE_CONFIG   配置文件路径（yaml/json），缺省查找 ./classmate.config.*
-  METACLAW_URL       MetaClaw proxy 地址，缺省 http://127.0.0.1:30000/v1
+  LLM_BASE_URL      OpenAI 兼容接口地址，缺省 http://127.0.0.1:8080/v1
+  LLM_API_KEY       大模型 API Key（直连服务时填写）
   CLASSMATE_MODEL    模型名
   CLASSMATE_OS_URL   平台 API，缺省 http://localhost:8080/api/v1
-  CLASSMATE_OS_TOKEN 旧 PAL 兼容令牌（cos_* 工具不需要）
   CLASSMATE_OS_BOT_TOKEN  Bot 令牌
   CLASSMATE_OS_AGENT_USER 定时任务使用的服务账号 user_id（scheduler 用平台工具时必填）
+  CLASSMATE_OS_AUTOMATION_SCHEDULER_TOKEN  可信调度器专用密钥（不配置则禁止外发）
+  CLASSMATE_AUTOMATION_STATE_DIR  持久恢复目录（默认用户目录下 .classmate/automation）
   CLASSMATE_TRIGGERS      设为 0 关闭「自动化」触发器引擎
 `;
 
@@ -100,12 +102,13 @@ async function cmdScheduler(): Promise<number> {
   const config = loadConfig();
   const botToken = process.env.CLASSMATE_OS_BOT_TOKEN ?? '';
   const agentUser = process.env.CLASSMATE_OS_AGENT_USER || undefined;
-  // 有 Bot 令牌：走新大脑（平台工具 + skills），以服务账号身份执行；否则退回旧运行时
-  const brain = botToken
-    ? createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills', cos: { baseUrl: process.env.CLASSMATE_OS_URL ?? 'http://localhost:8080/api/v1', botToken } })
-    : undefined;
-  if (brain && !agentUser) console.warn('[scheduler] CLASSMATE_OS_AGENT_USER 未设置：平台工具会拒绝执行');
-  const runtime = brain?.runtime ?? createRuntime({ config });
+  if (!botToken) {
+    console.error('CLASSMATE_OS_BOT_TOKEN is required for scheduler');
+    return 2;
+  }
+  const brain = createBrain({ config, skillsDir: process.env.CLASSMATE_SKILLS_DIR ?? 'skills', cos: { baseUrl: process.env.CLASSMATE_OS_URL ?? 'http://localhost:8080/api/v1', botToken } });
+  if (!agentUser) console.warn('[scheduler] CLASSMATE_OS_AGENT_USER 未设置：平台工具会拒绝执行');
+  const runtime = brain.runtime;
   const ac = new AbortController();
 
   const handle = startScheduler({
@@ -114,15 +117,10 @@ async function cmdScheduler(): Promise<number> {
     onLog: (m) => console.log(m),
     emit: async (task, jobId) => {
       try {
-        const res = await runtime.runSession({
-          sessionId: `sched_${jobId}_${Date.now()}`,
-          messages: [{ role: 'user', content: brain ? scheduledPrompt(task.prompt, config, agentUser) : task.prompt }],
-          actor: agentUser ? { userId: agentUser } : undefined,
-          systemPrompt: brain?.systemPromptFor(task.prompt),
-        });
-        console.log(`[scheduler/${jobId}] done: ${res.output.slice(0, 200)}`);
+        const result = await runScheduledAutomation({ runtime, config, task, jobId, principalId: agentUser ?? '', systemPrompt: brain?.systemPromptFor(task.prompt) });
+        console.log(`[scheduler/${jobId}] ${result.status}`);
       } catch (err) {
-        console.error(`[scheduler/${jobId}] failed:`, err instanceof Error ? err.message : err);
+        console.error(`[scheduler/${jobId}] failed`);
       }
     },
   });
@@ -155,7 +153,6 @@ async function cmdGateway(): Promise<number> {
   const progressMs = Number(process.env.CLASSMATE_PROGRESS_DELAY_MS ?? 3000);
   const pal = createClassmateOSAdapter({
     baseUrl,
-    accessToken: process.env.CLASSMATE_OS_TOKEN,
     botToken,
   });
   const eventSource = new WsBotEventSource({ baseUrl, botToken });
@@ -175,10 +172,9 @@ async function cmdGateway(): Promise<number> {
   console.log(`bot gateway running against ${baseUrl}`);
 
   // 「自动化」触发器（AGENT_PLAN M3 §2.5）：同学在平台上建的规则，事件 / 定时触发后以他的身份跑一轮
-  const triggers =
-    brain.cos && process.env.CLASSMATE_TRIGGERS !== '0'
-      ? createTriggerEngine({ client: brain.cos, runtime, im: pal.im, eventSource, systemPromptFor: brain.systemPromptFor, onLog: (m) => console.log(m), onError: logErr })
-      : undefined;
+  const triggers = brain.cos
+    ? createGatewayTriggers({ baseUrl, botToken, client: brain.cos, runtime, im: pal.im, eventSource, systemPromptFor: brain.systemPromptFor, onLog: (m) => console.log(m), onError: logErr })
+    : undefined;
   await triggers?.start().catch(logErr);
 
   // 工具调用指标（AGENT_PLAN M5 §4）：只报工具名 / 成败 / 耗时，工作台「AI 助手」卡片展示

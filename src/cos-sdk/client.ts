@@ -4,7 +4,7 @@
  * 只用 bot 令牌：
  *   - 代同学操作：X-Bot-Token + X-On-Behalf-Of（服务端按该同学权限 ∩ bot 作用域执行，并写审计）；
  *   - bot 自己发言：/bot/* 接口，只带 X-Bot-Token。
- * 不再需要冒用某位同学的登录令牌（旧的 CLASSMATE_OS_TOKEN）。
+ * 统一通过 Bot 令牌和代办身份头执行平台请求。
  */
 
 import type { CosActor, CosRequest, CosResult, HttpMethod } from './types.js';

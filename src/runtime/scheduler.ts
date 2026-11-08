@@ -1,7 +1,7 @@
 /**
  * Standalone scheduler (PLAN §1.2-A6).
  *
- * Decouples the six cron jobs from the OpenClaw gateway: instead of
+ * Decouples the six cron jobs from the ClassmateOS 网关: instead of
  * `api.emitAgentTask`, tasks are emitted through an injected `emit` callback —
  * the standalone process wires it to `runtime.runSession`, tests wire it to a
  * spy. Cron expressions keep coming from ClassmateConfig.schedules, so config
@@ -10,8 +10,20 @@
  * Job set and prompts are ported 1:1 from src/services/project-scheduler.ts.
  */
 
-import { scheduleCron, type CronHandle } from '../util/cron.js';
+import { beginAutomation, deliverAutomation, automationStatus, executionCode, revisionOf, type AutomationBackend } from './automation-execution.js';
+import type { AgentRuntime } from './types.js';
+import cron from 'node-cron';
 import type { ClassmateConfig } from '../config.js';
+
+type CronHandle = { stop: () => void };
+
+function scheduleCron(expression: string, run: () => Promise<void>, signal?: AbortSignal): CronHandle {
+  const task = cron.schedule(expression, () => void run());
+  const stop = () => task.stop();
+  if (signal?.aborted) stop();
+  else signal?.addEventListener('abort', stop, { once: true });
+  return { stop };
+}
 
 export interface ScheduledTaskSpec {
   /** Stable job id for logs. */
@@ -135,4 +147,23 @@ export function startScheduler(opts: {
   }
 
   return { stop: () => handles.forEach((h) => h.stop()), jobIds };
+}
+
+/** 两个调度入口共享预授权投递；配置目标永远不构成授权。 */
+export async function runScheduledAutomation(opts: {
+  runtime: AgentRuntime; config: ClassmateConfig; task: { prompt: string }; jobId: string;
+  principalId: string; backend?: AutomationBackend; systemPrompt?: string;
+  occurrenceId?: string; taskRevision?: string;
+}) {
+  if (!opts.backend) return { status: 'blocked', code: 'UNSUPPORTED_CAPABILITY' };
+  const execution = await beginAutomation({ taskKind: 'scheduler', taskId: opts.jobId,
+    taskRevision: opts.taskRevision ?? revisionOf({ prompt: opts.task.prompt, schedules: opts.config.schedules, target: opts.config.labInfo.broadcastChatId }),
+    principalId: opts.principalId, occurrenceId: opts.occurrenceId ?? `sched_${opts.jobId}_${Date.now()}` }, opts.backend);
+  const code = executionCode(execution, opts.principalId);
+  if (code) return { status: 'blocked', code };
+  await opts.runtime.runSession({ sessionId: `sched_${opts.jobId}`, actor: { userId: opts.principalId }, execution,
+    messages: [{ role: 'user', content: scheduledPrompt(opts.task.prompt, opts.config, opts.principalId) }], systemPrompt: opts.systemPrompt });
+  const target = opts.config.labInfo.broadcastChatId;
+  const delivery = await deliverAutomation(execution, { type: target ? 'chat_id' : 'user_id', id: target || opts.principalId }, 'final', 'final', opts.principalId);
+  return { status: automationStatus(execution), delivery };
 }

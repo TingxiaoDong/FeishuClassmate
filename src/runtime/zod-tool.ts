@@ -2,7 +2,7 @@
  * registerZodTool — zod-based tool registration against the self-hosted
  * AgentRuntime (PLAN §1.2-A2).
  *
- * Replaces the old OpenClaw adapter (src/util/register-tool.ts):
+ * Replaces the old 旧工具适配器 (src/util/register-tool.ts):
  *   - No more TypeBox conversion — zod v4 emits JSON Schema natively via
  *     `z.toJSONSchema`, which is exactly what OpenAI-style `function.parameters`
  *     expects.

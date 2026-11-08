@@ -1,7 +1,7 @@
 /**
  * Local config loader (PLAN §1.2-A5).
  *
- * Replaces `~/.openclaw/openclaw.json` as the config source. Resolution order:
+ * Replaces 旧配置文件 as the config source. Resolution order:
  *   1. `$CLASSMATE_CONFIG` explicit file path (yaml or json);
  *   2. `classmate.config.yaml` / `.yml` / `.json` in the working directory;
  *   3. env vars only (handled inside readConfig fallbacks).

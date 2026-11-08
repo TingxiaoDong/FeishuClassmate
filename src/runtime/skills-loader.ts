@@ -2,12 +2,12 @@
  * Skills loader (PLAN §1.2-A8).
  *
  * Scans `skills/<name>/SKILL.md`, parses YAML frontmatter, and injects the
- * relevant skills into the system prompt — mirroring MetaClaw's injection
+ * relevant skills into the system prompt — mirroring Agent 的技能注入
  * semantics so the same SKILL.md files work whether or not the proxy is in
  * the loop.
  *
  * Relevance is intentionally simple (keyword overlap over name + description +
- * body headings); MetaClaw does the smart retrieval when present — this is the
+ * body headings); 运行时负责按问题选择技能 — this is the
  * offline/保底 path.
  */
 
@@ -118,7 +118,7 @@ export function buildSkillsIndex(skills: SkillDoc[]): string {
   return `# 其他可用技能（未展开）\n\n${lines.join('\n')}`;
 }
 
-/** Render skills into a system-prompt section (MetaClaw-style injection). */
+/** Render skills into a system-prompt section (按问题注入技能). */
 export function buildSkillsPrompt(skills: SkillDoc[]): string {
   if (skills.length === 0) return '';
   const parts = skills.map(

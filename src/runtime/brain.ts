@@ -1,39 +1,29 @@
 /**
- * Brain assembly entry (PLAN §1.2-A9): wires config → runtime → compat api →
- * existing tool registry → ToolTrace telemetry. This replaces the OpenClaw
- * plugin entry (index.ts) for the new stack.
- *
- * Everything the old plugin did that still matters:
- *   - registerAllTools        → identical, via compat api
- *   - after_tool_call hook    → attachToolTraceTelemetry
- *   - scheduler               → separate process (src/runtime/scheduler.ts)
- *   - commands                → CLI (src/runtime/cli.ts)
+ * ClassmateOS Agent 组装入口：连接配置、运行时、平台工具和遥测。
+ * 网关、调度器和客户端都通过这里构建同一套新栈 Agent。
  */
 
 import { ClassmateRuntime } from './agent-runtime.js';
-import { createCompatApi, consoleLogger, type CompatApi, type LoggerLike } from './compat-api.js';
+import { consoleLogger, type LoggerLike } from './logger.js';
 import { loadConfig } from './config-loader.js';
-import { MetaClawLlmClient, type LlmClientLike } from './llm-client.js';
+import { OpenAiLlmClient, type LlmClientLike } from './openai-client.js';
 import { resolveLlmEnv } from './llm-env.js';
 import { loadSkills, buildSkillsPrompt, buildSkillsIndex, selectSkills } from './skills-loader.js';
-import { legacyPolicies } from './policy.js';
 import { attachToolTraceTelemetry } from './tool-trace.js';
-import { registerAllTools } from '../tools/index.js';
 import { registerCosTools, COS_TOOLS_PROMPT } from '../tools/cos/index.js';
 import { registerM4Simulation } from '../robot/assembly.js';
 import { ROBOT_TOOLS_PROMPT } from '../tools/robot/index.js';
 import type { CosClient, CosClientOptions } from '../cos-sdk/client.js';
-import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 import type { ClassmateConfig } from '../config.js';
 
 export interface BrainOptions {
   /** 可选视觉模型适配器；未配置时机器人只返回感知数据。 */
   describeImage?: import('../tools/robot/index.js').RobotToolsOptions['describeImage'];
   config?: ClassmateConfig;
-  /** Test hook: inject a mock LLM instead of the MetaClaw proxy client. */
+  /** Test hook: inject a mock LLM instead of the network client. */
   llm?: LlmClientLike;
   skillsDir?: string;
-  metaclawUrl?: string;
+  llmBaseUrl?: string;
   model?: string;
   logger?: LoggerLike;
   /** Set false to disable ToolTrace writes (tests). Default true. */
@@ -49,7 +39,6 @@ export interface Brain {
   robot?: import('../robot/controller.js').RobotController;
   runtime: ClassmateRuntime;
   config: ClassmateConfig;
-  api: CompatApi;
   /** 已注册平台工具时的客户端。 */
   cos?: CosClient;
   /** 大模型客户端（网关用来做会话摘要）。 */
@@ -77,8 +66,8 @@ export function createBrain(opts: BrainOptions = {}): Brain {
   const llmEnv = resolveLlmEnv();
   const llm =
     opts.llm ??
-    new MetaClawLlmClient({
-      baseUrl: opts.metaclawUrl ?? llmEnv.baseUrl,
+    new OpenAiLlmClient({
+      baseUrl: opts.llmBaseUrl ?? llmEnv.baseUrl,
       model: opts.model ?? llmEnv.model,
       apiKey: llmEnv.apiKey,
     });
@@ -97,24 +86,14 @@ export function createBrain(opts: BrainOptions = {}): Brain {
     return [...base, buildSkillsPrompt(picked), buildSkillsIndex(rest)].filter(Boolean).join('\n\n');
   };
 
-  const flushTarget = (opts.llm || llmEnv.flush || opts.metaclawUrl) && 'flushSession' in llm && typeof llm.flushSession === 'function'
-    ? (llm as MetaClawLlmClient)
-    : undefined;
-
   const runtime = new ClassmateRuntime({
     llm,
     systemPrompt,
-    flushSession: flushTarget ? (sid) => flushTarget.flushSession(sid) : undefined,
     onError: (err) => logger.warn?.(`[brain] non-fatal: ${err instanceof Error ? err.message : err}`),
   });
 
-  // 旧业务工具（Temi 等）注册时就带上风险策略；CLASSMATE_ROBOT_CONFIRM=off 时移动不弹确认，急停永远不拦
-  const api = createCompatApi({ runtime, config, logger, policies: legacyPolicies() });
-  // registerAllTools expects OpenClawPluginApi; the compat shim covers the
-  // exact surface the tools use (registerTool / pluginConfig / logger).
-  const m4Robot = process.env.CLASSMATE_ROBOT_M4 === '1';
-  registerAllTools(api as unknown as OpenClawPluginApi, { legacyTemi: !m4Robot });
   const cos = cosOpts ? registerCosTools(runtime, { client: cosOpts }) : undefined;
+  const m4Robot = process.env.CLASSMATE_ROBOT_M4 === '1';
   const robot = m4Robot ? registerM4Simulation(runtime, config, cos, opts.describeImage) : undefined;
 
   if (opts.telemetry !== false) {
@@ -122,5 +101,5 @@ export function createBrain(opts: BrainOptions = {}): Brain {
   }
 
   logger.info(`[brain] ready: ${runtime.listTools().length} tools registered`);
-  return { runtime, config, api, cos, llm, systemPromptFor, robot };
+  return { runtime, config, cos, llm, systemPromptFor, robot };
 }

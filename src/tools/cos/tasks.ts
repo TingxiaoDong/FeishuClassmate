@@ -21,7 +21,8 @@ import { z } from 'zod';
 import type { CosClient } from '../../cos-sdk/client.js';
 import type { AgentRuntime } from '../../runtime/types.js';
 import { BULK_CONFIRM, enc, fromResult, registerCosTool, type Call, type CosToolResult } from './define.js';
-import { autoFieldName, botSend as sendOnBehalf, FIELD_TYPE_IDS } from './resources.js';
+import { autoFieldName, botSend as sendOnBehalf, FIELD_TYPE_IDS, type BotSendContext } from './resources.js';
+import { resolvePeople, SELF_WORDS, type PeopleResolution } from './people.js';
 
 // ---------------------------------------------------------------- 时间（北京时间）
 
@@ -58,32 +59,8 @@ export function parseDateCn(v: unknown): number | undefined {
 
 // ---------------------------------------------------------------- 找人
 
-interface PersonHit { user_id: string; name: string; department?: string | null }
-export interface PeopleResolution {
-  found: Record<string, PersonHit>;
-  ambiguous: Record<string, PersonHit[]>;
-  missing: string[];
-}
-
-/** 名字（或 user_id）→ 人。完全同名优先；同名多人算「有歧义」，交给模型问同学。 */
-export async function resolvePeople(call: Call, names: string[]): Promise<PeopleResolution> {
-  const out: PeopleResolution = { found: {}, ambiguous: {}, missing: [] };
-  for (const raw of [...new Set(names.map((n) => n.trim()).filter(Boolean))]) {
-    const name = raw.replace(/^@/, '');
-    if (/^(我|me|自己|本人)$/i.test(name)) {
-      const me = await call<PersonHit>('GET', '/users/me');
-      if (me.ok) { out.found[raw] = { user_id: me.data.user_id, name: me.data.name }; continue; }
-    }
-    const r = await call<{ items: PersonHit[] }>('GET', '/users', { query: { keyword: name, page_size: 20 } });
-    const items = r.ok ? r.data.items : [];
-    const exact = items.filter((u) => u.name === name || u.user_id === name);
-    const pick = exact.length ? exact : items;
-    if (pick.length === 1) out.found[raw] = { user_id: pick[0].user_id, name: pick[0].name, department: pick[0].department };
-    else if (pick.length > 1) out.ambiguous[raw] = pick.slice(0, 5).map((u) => ({ user_id: u.user_id, name: u.name, department: u.department }));
-    else out.missing.push(raw);
-  }
-  return out;
-}
+// 实现挪到了 people.ts（define.ts 生成确认卡片时也要用），这里保留原来的导出
+export { resolvePeople, type PeopleResolution } from './people.js';
 
 /** 找人没全部找到时的统一回复。 */
 function unresolved(p: PeopleResolution): CosToolResult | undefined {
@@ -221,8 +198,20 @@ async function insertRows(call: Call, tableKey: string, records: Array<Record<st
 // ---------------------------------------------------------------- 发消息（代同学发，带代发标记）
 
 /** 旧签名保留给现有调用方；实现见 resources.ts 的 botSend（C2 方案 A，成员检查交给服务端）。 */
-export async function botSend(client: CosClient, _call: Call, ctx: { actor?: { userId?: string }; sessionId: string; toolCallId: string; signal?: AbortSignal }, target: { chat_id?: string; user_id?: string }, text: string): Promise<CosToolResult> {
+export async function botSend(client: CosClient, _call: Call, ctx: BotSendContext, target: { chat_id?: string; user_id?: string }, text: string): Promise<CosToolResult> {
   return sendOnBehalf(client, ctx, target, text);
+}
+
+const isSelfWord = (n: string) => SELF_WORDS.test(n.trim().replace(/^@/, ''));
+
+/** 会议通知正文（确认卡片和真正发出的用同一个函数生成）。 */
+function meetingNotice(i: { title: string; start_ms: number; end_ms: number; location?: string }, names: string): string {
+  return `【会议通知】${i.title}\n时间：${fmtCn(i.start_ms)} - ${fmtCn(i.end_ms).slice(11)}${i.location ? `\n地点：${i.location}` : ''}${names ? `\n参会：${names}` : ''}`;
+}
+
+/** 文档分享正文。确认时文档还没建，链接位置写「（文档链接）」。 */
+function docShareText(i: { title: string; share_note?: string }, link: string): string {
+  return `${i.share_note ? `${i.share_note}\n` : ''}📄 《${i.title}》\n${link}`;
 }
 
 // ---------------------------------------------------------------- 注册
@@ -299,10 +288,16 @@ export function registerCosTaskTools(runtime: AgentRuntime, client: CosClient): 
       attendees: peopleList.default([]),
       location: z.string().optional(),
       description: z.string().optional(),
-      notify_chat_id: z.string().optional().describe('建好后把会议通知发到这个群'),
+      notify_chat_id: z.string().optional().describe('建好后把会议通知发到这个群（不是当前对话时会先请同学确认）'),
       force: z.boolean().optional().describe('有人冲突也照样建'),
     }),
     riskOf: () => 'write',
+    // 代码审查 A4：建会议本身不用确认；通知要发到别的群时，一张卡片同时写会议内容和通知目标
+    outbound: (i) =>
+      i.notify_chat_id ? [{ to: { chat_id: i.notify_chat_id }, text: meetingNotice(i, i.attendees.filter((n) => !isSelfWord(n)).join('、')) }] : [],
+    preview: async (i) =>
+      `将新建会议「${i.title}」：${fmtCn(i.start_ms)} - ${fmtCn(i.end_ms).slice(11)}${i.location ? `，地点 ${i.location}` : ''}` +
+      `${i.attendees.length ? `，邀请 ${i.attendees.filter((n) => !isSelfWord(n)).join('、')}` : ''}${i.force ? '（有人冲突也照样建）' : ''}。`,
     async run(i, call, ctx) {
       if (i.end_ms <= i.start_ms) return { ok: false, error: '结束时间要晚于开始时间' };
       const p = await resolvePeople(call, ['我', ...i.attendees]);
@@ -324,14 +319,16 @@ export function registerCosTaskTools(runtime: AgentRuntime, client: CosClient): 
       });
       if (!r.ok) return fromResult(r);
       let notice = '';
+      let delivery: unknown;
       if (i.notify_chat_id) {
         const names = uniq.filter((u) => u.user_id !== meId).map((u) => u.name).join('、');
-        const s = await botSend(client, call, ctx, { chat_id: i.notify_chat_id }, `【会议通知】${i.title}\n时间：${fmtCn(i.start_ms)} - ${fmtCn(i.end_ms).slice(11)}${i.location ? `\n地点：${i.location}` : ''}${names ? `\n参会：${names}` : ''}`);
+        const s = await botSend(client, call, ctx, { chat_id: i.notify_chat_id }, meetingNotice(i, names));
+        delivery = s.data ?? { status: s.ok ? 'sent' : 'blocked', code: s.code };
         notice = s.ok ? '，已在群里通知' : `，但群通知没发出去：${s.error}`;
       }
       return {
         ok: true,
-        data: { event_id: r.data.event_id, attendees: uniq.map((u) => u.name), conflicts },
+        data: { created: true, delivery, event_id: r.data.event_id, attendees: uniq.map((u) => u.name), conflicts },
         summary: `已约「${i.title}」${fmtCn(i.start_ms)}，邀请了 ${attendeeIds.length} 人${conflicts.length ? `（${conflicts.join('、')} 有冲突）` : ''}${notice}`,
         links: [`cos://calendar/${r.data.event_id}`],
       };
@@ -457,14 +454,25 @@ export function registerCosTaskTools(runtime: AgentRuntime, client: CosClient): 
       share_note: z.string().max(500).optional().describe('分享时附带的一句话'),
     }),
     riskOf: () => 'write',
+    // 代码审查 A4：写文档本身不用确认；要分享到别的群 / 发给别人时，一张卡片同时写文档和分享目标
+    outbound: (i) => {
+      const text = docShareText(i, '（文档链接）');
+      return [
+        ...(i.share_chat_id ? [{ to: { chat_id: i.share_chat_id }, text }] : []),
+        ...(i.share_to ? [{ to: { person: i.share_to }, text }] : []),
+      ];
+    },
+    preview: async (i) => `将新建文档《${i.title}》（正文 ${[...i.markdown].length} 字），写好后把文档链接发出去。`,
     async run(i, call, ctx) {
       const r = await call<{ doc_id: string }>('POST', '/docs', { body: { title: i.title, markdown: i.markdown } });
       if (!r.ok) return fromResult(r);
       const link = `cos://doc/${r.data.doc_id}`;
       const shared: string[] = [];
-      const text = `${i.share_note ? `${i.share_note}\n` : ''}📄 《${i.title}》\n${link}`;
+      const deliveries: unknown[] = [];
+      const text = docShareText(i, link);
       if (i.share_chat_id) {
         const s = await botSend(client, call, ctx, { chat_id: i.share_chat_id }, text);
+        deliveries.push(s.data ?? { status: s.ok ? 'sent' : 'blocked', code: s.code });
         shared.push(s.ok ? '已发到群里' : `发群失败：${s.error}`);
       }
       if (i.share_to) {
@@ -473,10 +481,11 @@ export function registerCosTaskTools(runtime: AgentRuntime, client: CosClient): 
         if (!u) shared.push(`发给「${i.share_to}」失败：${unresolved(p)?.error ?? '找不到人'}`);
         else {
           const s = await botSend(client, call, ctx, { user_id: u.user_id }, text);
+          deliveries.push(s.data ?? { status: s.ok ? 'sent' : 'blocked', code: s.code });
           shared.push(s.ok ? `已发给${u.name}` : `发给${u.name}失败：${s.error}`);
         }
       }
-      return { ok: true, data: { doc_id: r.data.doc_id, shared }, summary: `已写好文档《${i.title}》${shared.length ? `，${shared.join('，')}` : ''}`, links: [link] };
+      return { ok: true, data: { created: true, doc_id: r.data.doc_id, shared, deliveries }, summary: `已写好文档《${i.title}》${shared.length ? `，${shared.join('，')}` : ''}`, links: [link] };
     },
   });
 
@@ -555,18 +564,22 @@ export function registerCosTaskTools(runtime: AgentRuntime, client: CosClient): 
     schema: z.object({ people: peopleList.min(1).max(BULK_CONFIRM * 2), text: z.string().min(1).max(2000) }),
     riskOf: () => 'write',
     bulk: (i) => i.people.length,
-    preview: async (i) => `将以「飞书同学」的名义分别私信 ${i.people.length} 人：${i.people.join('、')}\n内容：${i.text.slice(0, 100)}`,
+    // 代码审查 A4：只要私信的不是本人就确认，不再只看人数；卡片上列出每个人和消息全文
+    outbound: (i) => i.people.map((p) => ({ to: { person: p }, text: i.text })),
+    preview: async (i) => `将分别私信 ${i.people.length} 人。`,
     async run(i, call, ctx) {
       const p = await resolvePeople(call, i.people);
       const bad = unresolved(p);
       if (bad) return bad;
       const sent: string[] = [];
+      const deliveries: unknown[] = [];
       const failed: string[] = [];
       for (const u of new Map(Object.values(p.found).map((x) => [x.user_id, x])).values()) {
         const r = await botSend(client, call, ctx, { user_id: u.user_id }, i.text);
+        deliveries.push(r.data ?? { status: r.ok ? 'sent' : 'blocked', code: r.code });
         (r.ok ? sent : failed).push(r.ok ? u.name : `${u.name}：${r.error}`);
       }
-      return { ok: failed.length === 0, data: { sent, failed }, summary: `已发给 ${sent.join('、') || '0 人'}${failed.length ? `；失败 ${failed.length} 人` : ''}` };
+      return { ok: failed.length === 0, data: { sent, failed, deliveries }, summary: `已发给 ${sent.join('、') || '0 人'}${failed.length ? `；失败 ${failed.length} 人` : ''}` };
     },
   });
 

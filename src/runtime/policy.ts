@@ -2,7 +2,7 @@
  * 工具护栏策略（AGENT_PLAN M2 §2.4）。
  *
  *   - 平台工具（cos_*）的策略在 src/tools/cos/ 里随工具一起声明；
- *   - 旧业务工具（Temi 等，经 compat-api 注册）在这里补：会让机器人移动的算 physical，要先确认；
+ *   - 旧业务工具（Temi 等，通过运行时注册）在这里补：会让机器人移动的算 physical，要先确认；
  *     temi_stop 永远不拦（急停必须随时可用）。
  *   - defaultToolLabel：进度消息里显示的步骤名。
  */
@@ -12,6 +12,7 @@ import type { AgentRuntime, ToolPolicy } from './types.js';
 const TOOL_LABELS: Record<string, string> = {
   cos_table: '多维表格',
   cos_doc: '云文档',
+  cos_wiki: '知识库',
   cos_calendar: '日历',
   cos_task: '任务',
   cos_im: '消息',
@@ -19,6 +20,7 @@ const TOOL_LABELS: Record<string, string> = {
   cos_contact: '通讯录',
   cos_notify: '通知',
   cos_search: '搜索',
+  cos_workbench: '工作台看板',
   cos_api_catalog: '查接口目录',
   cos_api: '调用平台接口',
   cos_find_people: '查找同学',
@@ -56,13 +58,22 @@ const ACTION_LABELS: Record<string, string> = {
   get_record: '查看记录', create_records: '新增记录', update_records: '修改记录', delete_records: '删除记录',
   add_field: '添加字段', update_field: '修改字段', delete_field: '删除字段', list_views: '查看视图', create_view: '新建视图',
   list: '列出', get: '查看', create: '新建', update: '修改', append: '追加内容', delete: '删除',
-  list_comments: '查看评论', add_comment: '添加评论', comment: '评论', search: '搜索', me: '查看本人',
+  list_comments: '查看评论', add_comment: '添加评论', comment: '发表评论', search: '搜索', me: '查看本人',
   send: '发送', rsvp: '回复邀请', upload_text: '上传文件', mark_read: '标为已读', freebusy: '查忙闲',
+  // 知识库
+  list_spaces: '查看知识空间', list_nodes: '查看页面目录', get_node: '查看页面',
+  create_page: '新建页面', rename_page: '重命名页面', append_page: '追加页面内容', import_doc: '导入云文档',
+  // 日历 / 任务
+  subtasks: '查看子任务', list_tasklists: '查看任务清单',
+  // 消息 / 云盘 / 通知
+  list_chats: '查看会话', history: '查看聊天记录', usage: '查看空间用量',
+  download_url: '获取下载地址', remove_from_drive: '移出云盘', unread_count: '查看未读数',
+  data: '查看看板数据',
 };
 
 /** 进度消息里的步骤名：「多维表格 · 新增记录」。 */
 export function defaultToolLabel(name: string, input: unknown): string {
-  const base = TOOL_LABELS[name] ?? name.replace(/^feishu_classmate_/, '');
+  const base = TOOL_LABELS[name] ?? (name.startsWith('cos_') ? '平台操作' : name.replace(/^feishu_classmate_/, ''));
   const action = input && typeof input === 'object' ? (input as { action?: unknown }).action : undefined;
   if (name === 'cos_api' && input && typeof input === 'object') {
     const i = input as { method?: unknown; path?: unknown };
@@ -71,7 +82,7 @@ export function defaultToolLabel(name: string, input: unknown): string {
   if (name === 'feishu_classmate_temi_navigate_to' && input && typeof input === 'object') {
     return `${base}「${String((input as { location?: unknown }).location ?? '')}」`;
   }
-  return typeof action === 'string' ? `${base} · ${ACTION_LABELS[action] ?? action}` : base;
+  return typeof action === 'string' ? `${base} · ${ACTION_LABELS[action] ?? '执行操作'}` : base;
 }
 
 /** temi_control 的自然语言指令里有没有会让机器人移动的意思。 */

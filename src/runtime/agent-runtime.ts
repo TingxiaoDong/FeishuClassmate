@@ -12,8 +12,9 @@
  * 同学说「停」时网关触发 signal：当前 LLM 请求和剩余工具调用都取消，返回 aborted=true。
  */
 
+import { automationToolCode } from './automation-execution.js';
 import { randomUUID } from 'node:crypto';
-import type { LlmClientLike } from './llm-client.js';
+import type { LlmClientLike } from './openai-client.js';
 import { defaultToolLabel } from './policy.js';
 import type {
   AgentRuntime,
@@ -38,7 +39,7 @@ export interface ClassmateRuntimeOptions {
   /** Default max LLM round-trips per session. Default 16. */
   maxTurns?: number;
   /**
-   * Called when a session ends so MetaClaw can flush memory. Best-effort —
+   * Called when a session ends so 模型服务 can flush memory. Best-effort —
    * errors are swallowed and reported via onError. Omit to disable.
    */
   flushSession?: (sessionId: string) => Promise<void>;
@@ -199,7 +200,7 @@ export class ClassmateRuntime implements AgentRuntime {
   private async dispatchToolCall(
     sessionId: string,
     tc: { id: string; name: string; arguments: string },
-    input: Pick<RunSessionInput, 'actor' | 'signal' | 'confirm' | 'onProgress'>,
+    input: Pick<RunSessionInput, 'actor' | 'signal' | 'confirm' | 'onProgress' | 'execution'>,
   ): Promise<string> {
     const { actor, signal } = input;
     const tool = this.tools.get(tc.name);
@@ -226,7 +227,11 @@ export class ClassmateRuntime implements AgentRuntime {
       return JSON.stringify({ ok: false, error });
     }
 
-    const ctx: ToolCallContext = { toolCallId: tc.id, sessionId, actor, signal };
+    const ctx: ToolCallContext = { toolCallId: tc.id, sessionId, actor, signal, execution: input.execution };
+    if (ctx.execution) {
+      const code = automationToolCode(ctx.execution, tc.name, actor?.userId);
+      if (code) return JSON.stringify({ ok: false, delivery: 'blocked', code });
+    }
     const policy = tool.policy;
     let label = tc.name;
     try {
@@ -234,7 +239,7 @@ export class ClassmateRuntime implements AgentRuntime {
     } catch {
       label = defaultToolLabel(tc.name, params);
     }
-    const { risk, needs } = this.assessRisk(tc.name, policy, params);
+    const { risk, needs } = this.assessRisk(tc.name, policy, params, ctx);
 
     // 护栏：高风险调用先问同学（AGENT_PLAN M2 §2.4）
     if (needs) {
@@ -272,10 +277,10 @@ export class ClassmateRuntime implements AgentRuntime {
    *   - 没配策略 / 策略没给结果 → write（不会被当成只读悄悄放过）；
    *   - 策略函数抛异常 → destructive，一定要确认，并上报 onError。
    */
-  assessRisk(name: string, policy: ToolPolicy | undefined, params: unknown): { risk: ToolRisk; needs: boolean } {
+  assessRisk(name: string, policy: ToolPolicy | undefined, params: unknown, ctx?: ToolCallContext): { risk: ToolRisk; needs: boolean } {
     try {
       const risk: ToolRisk = policy?.risk?.(params) ?? 'write';
-      const needs = policy?.needsConfirm ? policy.needsConfirm(params, risk) : risk === 'destructive' || risk === 'physical';
+      const needs = policy?.needsConfirm ? policy.needsConfirm(params, risk, ctx) : risk === 'destructive' || risk === 'physical';
       return { risk, needs };
     } catch (err) {
       this.onError?.(new Error(`tool policy failed for ${name}, treated as destructive: ${err instanceof Error ? err.message : String(err)}`));
